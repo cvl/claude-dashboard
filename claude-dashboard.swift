@@ -96,16 +96,17 @@ func stateFileEvent(_ pid: pid_t) -> String? {
 func resolveState(_ pid: pid_t) -> State {
     let state: State
     guard kill(pid, 0) == 0 else { state = .dead; return track(pid, state) }
-    let hookState = stateFileEvent(pid)
-    if hookState == "needs_input" {
-        state = .needsInput
-    } else if isWorking(pid) {
-        if hookState == "stop" {
-            try? FileManager.default.removeItem(atPath: "\(stateDir)/\(pid).state")
-        }
+    let working = isWorking(pid)
+    if working {
+        // Working clears any state file
+        try? FileManager.default.removeItem(atPath: "\(stateDir)/\(pid).state")
         state = .working
     } else {
-        state = .idle
+        switch stateFileEvent(pid) {
+        case "needs_input": state = .needsInput
+        case "stop":        state = .idle
+        default:            state = .idle
+        }
     }
     return track(pid, state)
 }
@@ -706,6 +707,17 @@ class App: NSObject, NSApplicationDelegate {
     var dashView: DashboardView!
     var timer: Timer?
     var currentSessions: [Session] = []
+    var wakeOnAttention: Bool {
+        get { UserDefaults.standard.bool(forKey: "wakeOnAttention") }
+        set { UserDefaults.standard.set(newValue, forKey: "wakeOnAttention") }
+    }
+    var didWake = false  // prevent repeated wake calls
+    var alwaysOnTop: Bool {
+        get { UserDefaults.standard.object(forKey: "alwaysOnTop") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "alwaysOnTop") }
+    }
+    var workingStartTime: Date?
+    var wasWorking = false
 
     func applicationDidFinishLaunching(_: Notification) {
         setupDependencies()
@@ -718,7 +730,7 @@ class App: NSObject, NSApplicationDelegate {
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered, defer: false)
         panel.title = "Claude Dashboard"
-        panel.level = .floating
+        panel.level = alwaysOnTop ? .floating : .normal
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
@@ -763,11 +775,19 @@ class App: NSObject, NSApplicationDelegate {
     }
 
     @objc func toggleAlwaysOnTop(_ sender: NSMenuItem) {
-        if panel.level == .floating {
-            panel.level = .normal
-        } else {
-            panel.level = .floating
-        }
+        alwaysOnTop = !alwaysOnTop
+        panel.level = alwaysOnTop ? .floating : .normal
+    }
+
+    @objc func toggleWakeOnAttention(_ sender: NSMenuItem) {
+        wakeOnAttention = !wakeOnAttention
+    }
+
+    func wakeDisplay() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
+        p.arguments = ["-u", "-t", "30"]
+        try? p.run()
     }
 
     @objc func menuSessionClicked(_ sender: NSMenuItem) {
@@ -790,6 +810,28 @@ class App: NSObject, NSApplicationDelegate {
         bar.button?.title = n > 0 ? " \(n)" : (w > 0 ? " \(w)" : "")
         NSApp.applicationIconImage = dockIcon(c)
 
+        // ── Wake on attention (one-shot per transition) ──
+        if wakeOnAttention {
+            let isWorking = w > 0
+            if isWorking {
+                if !wasWorking { workingStartTime = Date() }
+                didWake = false // reset so we can wake on next transition
+            } else if !didWake {
+                var shouldWake = false
+                if n > 0 { shouldWake = true } // needs input
+                if wasWorking, let start = workingStartTime,
+                   Date().timeIntervalSince(start) > 60 {
+                    shouldWake = true // finished after 1+ min
+                    workingStartTime = nil
+                }
+                if shouldWake {
+                    wakeDisplay()
+                    didWake = true
+                }
+            }
+            wasWorking = isWorking
+        }
+
         // ── Dropdown menu ──
         let menu = NSMenu()
 
@@ -803,8 +845,15 @@ class App: NSObject, NSApplicationDelegate {
             title: "Always on Top",
             action: #selector(toggleAlwaysOnTop(_:)), keyEquivalent: "")
         onTop.target = self
-        onTop.state = panel.level == .floating ? .on : .off
+        onTop.state = alwaysOnTop ? .on : .off
         menu.addItem(onTop)
+
+        let awake = NSMenuItem(
+            title: "Wake on Attention",
+            action: #selector(toggleWakeOnAttention(_:)), keyEquivalent: "")
+        awake.target = self
+        awake.state = wakeOnAttention ? .on : .off
+        menu.addItem(awake)
 
         menu.addItem(.separator())
 
