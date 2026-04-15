@@ -51,6 +51,10 @@ The install script compiles the Swift source and creates the `.app` bundle in `/
 | `~/.claude/dashboard-notes/` | Session notes (plain text, never auto-deleted) |
 | `~/.claude/hooks/dash-state.sh` | Hook script (auto-installed) |
 
+## Known limitations
+
+- **Needs Input state after cancel** — if a permission prompt is denied or canceled, the "Needs Input" status may persist until the next user prompt triggers a Stop hook. This is because Claude Code doesn't fire a Stop event on prompt cancellation.
+
 ## License
 
 MIT

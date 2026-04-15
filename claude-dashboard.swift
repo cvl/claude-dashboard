@@ -96,15 +96,16 @@ func stateFileEvent(_ pid: pid_t) -> String? {
 func resolveState(_ pid: pid_t) -> State {
     let state: State
     guard kill(pid, 0) == 0 else { state = .dead; return track(pid, state) }
-    if isWorking(pid) {
-        try? FileManager.default.removeItem(atPath: "\(stateDir)/\(pid).state")
+    let hookState = stateFileEvent(pid)
+    if hookState == "needs_input" {
+        state = .needsInput
+    } else if isWorking(pid) {
+        if hookState == "stop" {
+            try? FileManager.default.removeItem(atPath: "\(stateDir)/\(pid).state")
+        }
         state = .working
     } else {
-        switch stateFileEvent(pid) {
-        case "needs_input": state = .needsInput
-        case "stop":        state = .idle
-        default:            state = .idle
-        }
+        state = .idle
     }
     return track(pid, state)
 }
