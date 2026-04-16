@@ -161,7 +161,7 @@ func hasNotesFile(name: String, sessionId: String) -> Bool {
 /// Seed lastActiveTime from persisted store (once on first load)
 var didSeedTimes = false
 
-func loadSessions() -> [Session] {
+func loadSessions(autoClean: Bool = true) -> [Session] {
     let fm = FileManager.default
     try? fm.createDirectory(atPath: notesDir, withIntermediateDirectories: true)
 
@@ -224,7 +224,24 @@ func loadSessions() -> [Session] {
     }
     saveStore(store)
 
-    // Build final list: live sessions + dead stored sessions
+    // Clean up stale state files
+    if let stateFiles = try? fm.contentsOfDirectory(atPath: stateDir) {
+        for f in stateFiles where f.hasSuffix(".state") {
+            let pid = pid_t(Int(f.replacingOccurrences(of: ".state", with: "")) ?? 0)
+            if pid > 0 && kill(pid, 0) != 0 {
+                try? fm.removeItem(atPath: "\(stateDir)/\(f)")
+            }
+        }
+    }
+
+    if autoClean {
+        let deadKeys = store.keys.filter { liveBySessionId[$0] == nil }
+        for k in deadKeys { store.removeValue(forKey: k) }
+        saveStore(store)
+        return Array(liveBySessionId.values).sorted { $0.startedAt > $1.startedAt }
+    }
+
+    // Keep dead sessions visible
     var result = Array(liveBySessionId.values)
     for (sid, stored) in store {
         if liveBySessionId[sid] == nil {
@@ -310,18 +327,6 @@ func openNotes(for session: Session, relativeTo window: NSWindow?) {
     }
 }
 
-func removeSession(_ session: Session) {
-    let alert = NSAlert()
-    alert.messageText = "Remove \"\(session.name)\"?"
-    alert.informativeText = "The session will be removed from the dashboard.\n\nNotes are kept in:\n\(notesDir)"
-    alert.alertStyle = .warning
-    alert.addButton(withTitle: "Remove")
-    alert.addButton(withTitle: "Cancel")
-    guard alert.runModal() == .alertFirstButtonReturn else { return }
-    var store = loadStore()
-    store.removeValue(forKey: session.sessionId)
-    saveStore(store)
-}
 
 // MARK: - Formatting
 
@@ -447,7 +452,6 @@ class DashboardView: NSView {
     }
     var onSessionClick: ((Session) -> Void)?
     var onNotesClick: ((Session) -> Void)?
-    var onRemoveClick: ((Session) -> Void)?
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -456,7 +460,6 @@ class DashboardView: NSView {
     private let padX: CGFloat = 12
     private let padY: CGFloat = 10
     private var noteButtons: [NSButton] = []
-    private var removeButtons: [NSButton] = []
 
     override var isFlipped: Bool { true }
 
@@ -491,16 +494,10 @@ class DashboardView: NSView {
         onNotesClick?(sessions[sender.tag])
     }
 
-    @objc func removeBtnClicked(_ sender: NSButton) {
-        guard sender.tag < sessions.count else { return }
-        onRemoveClick?(sessions[sender.tag])
-    }
 
     func rebuildButtons() {
         noteButtons.forEach { $0.removeFromSuperview() }
-        removeButtons.forEach { $0.removeFromSuperview() }
         noteButtons.removeAll()
-        removeButtons.removeAll()
 
         for (i, s) in sessions.enumerated() {
             let rect = cardRect(at: i)
@@ -518,25 +515,6 @@ class DashboardView: NSView {
             addSubview(nb)
             noteButtons.append(nb)
 
-            // Remove button (dead sessions only) — next to DEAD label on row 1
-            if s.state == .dead {
-                let nameW = NSAttributedString(string: s.name, attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold)]).size().width
-                let stateW = NSAttributedString(string: "DEAD", attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold)]).size().width
-                let rbX = rect.minX + 14 + nameW + 10 + stateW + 6
-                let rb = NSButton(frame: NSRect(x: rbX, y: rect.minY + 8, width: 20, height: 20))
-                rb.bezelStyle = .inline
-                rb.image = NSImage(systemSymbolName: "xmark.circle",
-                                   accessibilityDescription: "Remove")
-                rb.imagePosition = .imageOnly
-                rb.tag = i
-                rb.target = self
-                rb.action = #selector(removeBtnClicked(_:))
-                rb.toolTip = "Remove session"
-                addSubview(rb)
-                removeButtons.append(rb)
-            }
         }
     }
 
@@ -716,6 +694,10 @@ class App: NSObject, NSApplicationDelegate {
         get { UserDefaults.standard.object(forKey: "alwaysOnTop") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "alwaysOnTop") }
     }
+    var autoCleanDead: Bool {
+        get { UserDefaults.standard.object(forKey: "autoCleanDead") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "autoCleanDead") }
+    }
     var workingStartTime: Date?
     var wasWorking = false
 
@@ -729,6 +711,7 @@ class App: NSObject, NSApplicationDelegate {
             contentRect: NSRect(x: 0, y: 0, width: 340, height: 300),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
         panel.title = "Claude Dashboard"
         panel.level = alwaysOnTop ? .floating : .normal
         panel.isMovableByWindowBackground = true
@@ -746,10 +729,6 @@ class App: NSObject, NSApplicationDelegate {
         panel.contentView!.addSubview(dashView)
         dashView.onSessionClick = { s in revealSession(s) }
         dashView.onNotesClick = { [weak self] s in openNotes(for: s, relativeTo: self?.panel) }
-        dashView.onRemoveClick = { [weak self] s in
-            removeSession(s)
-            self?.poll()
-        }
 
         panel.center()
         panel.makeKeyAndOrderFront(nil)
@@ -783,6 +762,11 @@ class App: NSObject, NSApplicationDelegate {
         wakeOnAttention = !wakeOnAttention
     }
 
+    @objc func toggleAutoCleanDead(_ sender: NSMenuItem) {
+        autoCleanDead = !autoCleanDead
+        poll()
+    }
+
     func wakeDisplay() {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
@@ -797,7 +781,7 @@ class App: NSObject, NSApplicationDelegate {
     }
 
     func poll() {
-        let ss = loadSessions()
+        let ss = loadSessions(autoClean: autoCleanDead)
         currentSessions = ss
         let counts = Dictionary(grouping: ss, by: \.state).mapValues(\.count)
         let w = counts[.working] ?? 0
@@ -854,6 +838,13 @@ class App: NSObject, NSApplicationDelegate {
         awake.target = self
         awake.state = wakeOnAttention ? .on : .off
         menu.addItem(awake)
+
+        let clean = NSMenuItem(
+            title: "Auto Clean Dead",
+            action: #selector(toggleAutoCleanDead(_:)), keyEquivalent: "")
+        clean.target = self
+        clean.state = autoCleanDead ? .on : .off
+        menu.addItem(clean)
 
         menu.addItem(.separator())
 
