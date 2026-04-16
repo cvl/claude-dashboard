@@ -781,7 +781,14 @@ class App: NSObject, NSApplicationDelegate {
     }
 
     func poll() {
-        let ss = loadSessions(autoClean: autoCleanDead)
+        let clean = autoCleanDead
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ss = loadSessions(autoClean: clean)
+            DispatchQueue.main.async { self?.updateUI(ss) }
+        }
+    }
+
+    func updateUI(_ ss: [Session]) {
         currentSessions = ss
         let counts = Dictionary(grouping: ss, by: \.state).mapValues(\.count)
         let w = counts[.working] ?? 0
@@ -799,13 +806,13 @@ class App: NSObject, NSApplicationDelegate {
             let isWorking = w > 0
             if isWorking {
                 if !wasWorking { workingStartTime = Date() }
-                didWake = false // reset so we can wake on next transition
+                didWake = false
             } else if !didWake {
                 var shouldWake = false
-                if n > 0 { shouldWake = true } // needs input
+                if n > 0 { shouldWake = true }
                 if wasWorking, let start = workingStartTime,
                    Date().timeIntervalSince(start) > 60 {
-                    shouldWake = true // finished after 1+ min
+                    shouldWake = true
                     workingStartTime = nil
                 }
                 if shouldWake {
