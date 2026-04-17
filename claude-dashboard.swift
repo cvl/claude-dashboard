@@ -718,6 +718,11 @@ class App: NSObject, NSApplicationDelegate {
     }
     var workingStartTime: Date?
     var wasWorking = false
+    var idleSleepProc: Process?  // caffeinate -i while sessions are working
+
+    func applicationWillTerminate(_: Notification) {
+        stopPreventIdleSleep()
+    }
 
     func applicationDidFinishLaunching(_: Notification) {
         setupDependencies()
@@ -790,6 +795,20 @@ class App: NSObject, NSApplicationDelegate {
         try? p.run()
     }
 
+    func startPreventIdleSleep() {
+        guard idleSleepProc == nil else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
+        p.arguments = ["-i"] // prevent idle sleep only, display can still sleep
+        try? p.run()
+        idleSleepProc = p
+    }
+
+    func stopPreventIdleSleep() {
+        idleSleepProc?.terminate()
+        idleSleepProc = nil
+    }
+
     @objc func menuSessionClicked(_ sender: NSMenuItem) {
         let idx = sender.tag
         guard idx < currentSessions.count else { return }
@@ -809,6 +828,10 @@ class App: NSObject, NSApplicationDelegate {
         bar.button?.image = dot(c)
         bar.button?.title = n > 0 ? " \(n)" : (w > 0 ? " \(w)" : "")
         NSApp.applicationIconImage = dockIcon(c)
+
+        // ── Prevent idle sleep while working (always active) ──
+        if w > 0 { startPreventIdleSleep() }
+        else { stopPreventIdleSleep() }
 
         // ── Wake on attention (one-shot per transition) ──
         if wakeOnAttention {
