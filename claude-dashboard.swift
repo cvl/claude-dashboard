@@ -448,6 +448,7 @@ class DashboardView: NSView {
     var onSessionClick: ((Session) -> Void)?
     var onNotesClick: ((Session) -> Void)?
     var onRemoveClick: ((Session) -> Void)?
+    var onResumeClick: ((Session) -> Void)?
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -456,6 +457,7 @@ class DashboardView: NSView {
     private let padX: CGFloat = 12
     private let padY: CGFloat = 10
     private var noteButtons: [NSButton] = []
+    var resumeButtons: [NSButton] = []
     private var removeButtons: [NSButton] = []
 
     override var isFlipped: Bool { true }
@@ -491,6 +493,11 @@ class DashboardView: NSView {
         onNotesClick?(sessions[sender.tag])
     }
 
+    @objc func resumeBtnClicked(_ sender: NSButton) {
+        guard sender.tag < sessions.count else { return }
+        onResumeClick?(sessions[sender.tag])
+    }
+
     @objc func removeBtnClicked(_ sender: NSButton) {
         guard sender.tag < sessions.count else { return }
         onRemoveClick?(sessions[sender.tag])
@@ -498,12 +505,27 @@ class DashboardView: NSView {
 
     func rebuildButtons() {
         noteButtons.forEach { $0.removeFromSuperview() }
+        resumeButtons.forEach { $0.removeFromSuperview() }
         removeButtons.forEach { $0.removeFromSuperview() }
         noteButtons.removeAll()
+        resumeButtons.removeAll()
         removeButtons.removeAll()
 
         for (i, s) in sessions.enumerated() {
             let rect = cardRect(at: i)
+
+            // Resume button (copy command to clipboard)
+            let rb = NSButton(frame: NSRect(x: rect.maxX - 56, y: rect.minY + 14, width: 24, height: 24))
+            rb.bezelStyle = .inline
+            rb.image = NSImage(systemSymbolName: "play.fill",
+                               accessibilityDescription: "Copy resume command")
+            rb.imagePosition = .imageOnly
+            rb.tag = i
+            rb.target = self
+            rb.action = #selector(resumeBtnClicked(_:))
+            rb.toolTip = "Copy resume command"
+            addSubview(rb)
+            resumeButtons.append(rb)
 
             // Notes button
             let nb = NSButton(frame: NSRect(x: rect.maxX - 30, y: rect.minY + 14, width: 24, height: 24))
@@ -575,7 +597,7 @@ class DashboardView: NSView {
             NSGraphicsContext.restoreGraphicsState()
 
             let tx = rect.minX + 14
-            let rightEdge = rect.maxX - 36 // leave space for buttons
+            let rightEdge = rect.maxX - 62 // leave space for buttons
 
             // Row 1: name + state + duration
             let nameAttr = NSAttributedString(string: s.name, attributes: [
@@ -753,6 +775,17 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.contentView!.addSubview(dashView)
         dashView.onSessionClick = { s in revealSession(s) }
         dashView.onNotesClick = { [weak self] s in openNotes(for: s, relativeTo: self?.panel) }
+        dashView.onResumeClick = { [weak self] s in
+            let cmd = "cd \(s.cwd) && claude --resume \(s.sessionId) --name '\(s.name)'"
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(cmd, forType: .string)
+            if let btn = self?.dashView.resumeButtons.first(where: {
+                $0.tag < (self?.dashView.sessions.count ?? 0) &&
+                self?.dashView.sessions[$0.tag].sessionId == s.sessionId
+            }) {
+                self?.showToast("Resume command copied", near: btn)
+            }
+        }
         dashView.onRemoveClick = { [weak self] s in
             removeSession(s)
             self?.poll()
@@ -773,6 +806,42 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         poll()
         timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
             self?.poll()
+        }
+    }
+
+    func showToast(_ message: String, near button: NSView) {
+        let label = NSTextField(labelWithString: message)
+        label.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+        label.textColor = .white
+        label.backgroundColor = .clear
+        label.isBezeled = false
+        label.drawsBackground = false
+        label.alignment = .center
+        label.sizeToFit()
+
+        let padX: CGFloat = 12, padY: CGFloat = 6
+        let toast = NSView(frame: NSRect(x: 0, y: 0,
+            width: label.frame.width + padX * 2,
+            height: label.frame.height + padY * 2))
+        toast.wantsLayer = true
+        toast.layer?.backgroundColor = NSColor(white: 0.15, alpha: 0.92).cgColor
+        toast.layer?.cornerRadius = 6
+        label.frame.origin = NSPoint(x: padX, y: padY)
+        toast.addSubview(label)
+
+        let btnFrame = button.convert(button.bounds, to: panel.contentView!)
+        let x = (panel.contentView!.bounds.width - toast.frame.width) / 2
+        let y = btnFrame.midY - toast.frame.height / 2
+        toast.frame.origin = NSPoint(x: x, y: y)
+        panel.contentView!.addSubview(toast)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.4
+                toast.animator().alphaValue = 0
+            }, completionHandler: {
+                toast.removeFromSuperview()
+            })
         }
     }
 
