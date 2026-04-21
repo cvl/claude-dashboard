@@ -243,71 +243,12 @@ func loadSessions() -> [Session] {
 
 // MARK: - Notes
 
-func isNoteOpenInTextEdit(_ fileName: String) -> Bool {
-    guard AXIsProcessTrusted() else { return false }
-    var err: NSDictionary?
-    let result = NSAppleScript(source: """
-        tell application "System Events"
-            if not (exists process "TextEdit") then return "no"
-            tell process "TextEdit"
-                repeat with w in windows
-                    if name of w contains "\(fileName)" then return "yes"
-                end repeat
-            end tell
-        end tell
-        return "no"
-    """)?.executeAndReturnError(&err)
-    return result?.stringValue == "yes"
-}
-
-func openNotes(for session: Session, relativeTo window: NSWindow?) {
+func openNotes(for session: Session) {
     let path = notesPath(name: session.name, sessionId: session.sessionId)
     if !FileManager.default.fileExists(atPath: path) {
         try? "".write(toFile: path, atomically: true, encoding: .utf8)
     }
-
-    let fileName = notesFileName(name: session.name, sessionId: session.sessionId)
-    let alreadyOpen = isNoteOpenInTextEdit(fileName)
-
     NSWorkspace.shared.open(URL(fileURLWithPath: path))
-
-    // If already open, just focus it — don't reposition
-    if alreadyOpen { return }
-    guard let dashFrame = window?.frame else { return }
-
-    // Prompt for Accessibility if missing
-    guard AXIsProcessTrusted() else {
-        AXIsProcessTrustedWithOptions(
-            [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
-        return
-    }
-
-    let screen = window?.screen ?? NSScreen.main ?? NSScreen.screens[0]
-    let screenFrame = screen.visibleFrame
-    let editorW: CGFloat = 770
-    let editorH: CGFloat = 510
-    let leftX = dashFrame.minX - editorW - 8
-    let x = leftX >= screenFrame.minX ? leftX : dashFrame.maxX + 8
-    let posX = Int(x)
-    let posY = Int(screenFrame.maxY - dashFrame.minY - editorH)
-
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-        let script = """
-        tell application "System Events"
-            tell process "TextEdit"
-                repeat with w in windows
-                    if name of w contains "\(fileName)" then
-                        set position of w to {\(posX), \(posY)}
-                        set size of w to {\(Int(editorW)), \(Int(editorH))}
-                        return
-                    end if
-                end repeat
-            end tell
-        end tell
-        """
-        var error: NSDictionary?
-        NSAppleScript(source: script)?.executeAndReturnError(&error)
-    }
 }
 
 func removeSession(_ session: Session) {
@@ -774,7 +715,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView.autoresizingMask = [.width, .height]
         panel.contentView!.addSubview(dashView)
         dashView.onSessionClick = { s in revealSession(s) }
-        dashView.onNotesClick = { [weak self] s in openNotes(for: s, relativeTo: self?.panel) }
+        dashView.onNotesClick = { s in openNotes(for: s) }
         dashView.onResumeClick = { [weak self] s in
             let cmd = "cd \(s.cwd) && claude --resume \(s.sessionId) --name '\(s.name)'"
             NSPasteboard.general.clearContents()
