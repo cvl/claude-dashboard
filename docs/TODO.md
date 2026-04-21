@@ -20,3 +20,4 @@
 - [ ] Click dead session → open transcript/last conversation
 - [ ] Launch at login toggle in menu
 - [ ] Sound notification when session changes to NEEDS INPUT
+- [ ] Reorder sessions manually

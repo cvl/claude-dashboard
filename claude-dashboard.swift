@@ -701,7 +701,7 @@ func setupDependencies() {
 
 // MARK: - App
 
-class App: NSObject, NSApplicationDelegate {
+class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var bar: NSStatusItem!
     var panel: NSWindow!
     var dashView: DashboardView!
@@ -735,6 +735,8 @@ class App: NSObject, NSApplicationDelegate {
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered, defer: false)
         panel.title = "Claude Dashboard"
+        panel.isReleasedWhenClosed = false
+        panel.delegate = self
         panel.level = alwaysOnTop ? .floating : .normal
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -772,6 +774,16 @@ class App: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
             self?.poll()
         }
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sender.orderOut(nil)
+        return false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { panel.makeKeyAndOrderFront(nil) }
+        return true
     }
 
     @objc func togglePanel() {
@@ -815,8 +827,16 @@ class App: NSObject, NSApplicationDelegate {
         revealSession(currentSessions[idx])
     }
 
+    private let pollQueue = DispatchQueue(label: "poll", qos: .userInitiated)
+
     func poll() {
-        let ss = loadSessions()
+        pollQueue.async { [weak self] in
+            let ss = loadSessions()
+            DispatchQueue.main.async { self?.updateUI(ss) }
+        }
+    }
+
+    func updateUI(_ ss: [Session]) {
         currentSessions = ss
         let counts = Dictionary(grouping: ss, by: \.state).mapValues(\.count)
         let w = counts[.working] ?? 0
