@@ -484,9 +484,9 @@ class DashboardView: NSView {
             // Remove button (dead sessions only) — next to DEAD label on row 1
             if s.state == .dead {
                 let nameW = NSAttributedString(string: s.name, attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold)]).size().width
+                    .font: Self.fontBold12]).size().width
                 let stateW = NSAttributedString(string: "DEAD", attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold)]).size().width
+                    .font: Self.fontSemi9]).size().width
                 let rbX = rect.minX + 14 + nameW + 10 + stateW + 6
                 let rb = NSButton(frame: NSRect(x: rbX, y: rect.minY + 8, width: 20, height: 20))
                 rb.bezelStyle = .inline
@@ -510,17 +510,25 @@ class DashboardView: NSView {
         }
     }
 
+    // ── Fonts (cached) ──
+    private static let fontBold12  = NSFont.monospacedSystemFont(ofSize: 12, weight: .bold)
+    private static let fontSemi9   = NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold)
+    private static let fontReg10   = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+    private static let fontReg12   = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    private static let fontReg9    = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
+
     // ── Draw ──
     override func draw(_ dirtyRect: NSRect) {
-        if sessions.isEmpty {
+        let ss = sessions // local snapshot
+        if ss.isEmpty {
             let str = NSAttributedString(string: "No active sessions", attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .font: Self.fontReg12,
                 .foregroundColor: NSColor.secondaryLabelColor])
             str.draw(at: NSPoint(x: padX, y: 24))
             return
         }
 
-        for (i, s) in sessions.enumerated() {
+        for (i, s) in ss.enumerated() {
             let rect = cardRect(at: i)
 
             // Card background
@@ -542,28 +550,28 @@ class DashboardView: NSView {
 
             // Row 1: name + state + duration
             let nameAttr = NSAttributedString(string: s.name, attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold),
+                .font: Self.fontBold12,
                 .foregroundColor: NSColor.labelColor])
             nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
 
             let stateAttr = NSAttributedString(string: s.state.label, attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold),
+                .font: Self.fontSemi9,
                 .foregroundColor: s.state.color])
             stateAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 10, y: rect.minY + 10))
 
             let durAttr = NSAttributedString(string: timeAgo(s.lastActive), attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
+                .font: Self.fontReg10,
                 .foregroundColor: NSColor.secondaryLabelColor])
             durAttr.draw(at: NSPoint(x: rightEdge - durAttr.size().width, y: rect.minY + 9))
 
             // Row 2: path + pid
             let pathAttr = NSAttributedString(string: shortPath(s.cwd), attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
+                .font: Self.fontReg10,
                 .foregroundColor: NSColor.secondaryLabelColor])
             pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 30))
 
             let pidAttr = NSAttributedString(string: "pid:\(s.pid)", attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .regular),
+                .font: Self.fontReg9,
                 .foregroundColor: NSColor.secondaryLabelColor])
             pidAttr.draw(at: NSPoint(x: rightEdge - pidAttr.size().width, y: rect.minY + 31))
 
