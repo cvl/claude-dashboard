@@ -390,8 +390,10 @@ class DashboardView: NSView {
     var onNotesClick: ((Session) -> Void)?
     var onRemoveClick: ((Session) -> Void)?
     var onResumeClick: ((Session) -> Void)?
+    var onReorder: ((Int, Int) -> Void)?  // (fromIndex, toInsertBeforeIndex)
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
 
     private let cardH: CGFloat = 52
     private let gap: CGFloat = 8
@@ -400,6 +402,13 @@ class DashboardView: NSView {
     private var noteButtons: [NSButton] = []
     var resumeButtons: [NSButton] = []
     private var removeButtons: [NSButton] = []
+
+    // Drag-to-reorder state
+    private var dragSourceIndex: Int?
+    private var dragStartPoint: NSPoint?
+    private var isDragging = false
+    private var dropTargetIndex: Int?
+    private let dragThreshold: CGFloat = 5
 
     override var isFlipped: Bool { true }
 
@@ -422,11 +431,42 @@ class DashboardView: NSView {
         return NSRect(x: padX, y: y, width: bounds.width - padX * 2, height: cardH)
     }
 
-    // ── Click ──
+    // ── Click / Drag ──
     override func mouseDown(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
         guard let idx = cardIndex(at: loc), idx < sessions.count else { return }
-        onSessionClick?(sessions[idx])
+        dragSourceIndex = idx
+        dragStartPoint = loc
+        isDragging = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let srcIdx = dragSourceIndex, let start = dragStartPoint else { return }
+        let loc = convert(event.locationInWindow, from: nil)
+        if !isDragging {
+            let dist = hypot(loc.x - start.x, loc.y - start.y)
+            guard dist > dragThreshold else { return }
+            isDragging = true
+        }
+        let relY = loc.y - padY + gap / 2
+        var idx = Int(round(relY / (cardH + gap)))
+        idx = max(0, min(idx, sessions.count))
+        // Skip no-op positions (same slot)
+        dropTargetIndex = (idx == srcIdx || idx == srcIdx + 1) ? nil : idx
+        needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if isDragging, let src = dragSourceIndex, let tgt = dropTargetIndex {
+            onReorder?(src, tgt)
+        } else if let src = dragSourceIndex, !isDragging {
+            onSessionClick?(sessions[src])
+        }
+        dragSourceIndex = nil
+        dragStartPoint = nil
+        isDragging = false
+        dropTargetIndex = nil
+        needsDisplay = true
     }
 
     @objc func notesBtnClicked(_ sender: NSButton) {
@@ -577,6 +617,22 @@ class DashboardView: NSView {
 
             // Buttons are NSButton subviews managed by rebuildButtons()
         }
+
+        // ── Drop indicator ──
+        if isDragging, let tgt = dropTargetIndex {
+            let lineY = padY + CGFloat(tgt) * (cardH + gap) - gap / 2
+            let line = NSBezierPath()
+            line.move(to: NSPoint(x: padX, y: lineY))
+            line.line(to: NSPoint(x: bounds.width - padX, y: lineY))
+            line.lineWidth = 2
+            NSColor.systemBlue.setStroke()
+            line.stroke()
+            // Small circles at ends
+            for x in [padX, bounds.width - padX] {
+                NSColor.systemBlue.setFill()
+                NSBezierPath(ovalIn: NSRect(x: x - 3, y: lineY - 3, width: 6, height: 6)).fill()
+            }
+        }
     }
 }
 
@@ -687,6 +743,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         get { UserDefaults.standard.object(forKey: "alwaysOnTop") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "alwaysOnTop") }
     }
+    var sessionOrder: [String] {
+        get { UserDefaults.standard.stringArray(forKey: "sessionOrder") ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: "sessionOrder") }
+    }
     var workingStartTime: Date?
     var wasWorking = false
     var idleSleepProc: Process?  // caffeinate -i while sessions are working
@@ -734,6 +794,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }) {
                 self?.showToast("Resume command copied", near: btn)
             }
+        }
+        dashView.onReorder = { [weak self] from, to in
+            guard let self else { return }
+            var ids = self.dashView.sessions.map(\.sessionId)
+            let sid = ids.remove(at: from)
+            let insertAt = to > from ? to - 1 : to
+            ids.insert(sid, at: insertAt)
+            self.sessionOrder = ids
+            self.poll()
         }
         dashView.onRemoveClick = { [weak self] s in
             removeSession(s)
@@ -845,6 +914,21 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         revealSession(currentSessions[idx])
     }
 
+    func applyCustomOrder(_ sessions: [Session]) -> [Session] {
+        let order = sessionOrder
+        var ordered: [Session] = []
+        var remaining = sessions
+        for sid in order {
+            if let idx = remaining.firstIndex(where: { $0.sessionId == sid }) {
+                ordered.append(remaining.remove(at: idx))
+            }
+        }
+        // New sessions (not in order) go at the bottom, sorted by startedAt desc
+        remaining.sort { $0.startedAt > $1.startedAt }
+        ordered.append(contentsOf: remaining)
+        return ordered
+    }
+
     private let pollQueue = DispatchQueue(label: "poll", qos: .userInitiated)
 
     func poll() {
@@ -944,7 +1028,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         bar.menu = menu
 
         // ── Window ──
-        dashView.sessions = ss
+        dashView.sessions = applyCustomOrder(ss)
         let idealH = dashView.idealHeight
         var frame = panel.frame
         let topY = frame.maxY
