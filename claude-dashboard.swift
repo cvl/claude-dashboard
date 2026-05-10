@@ -887,6 +887,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         wakeOnAttention = !wakeOnAttention
     }
 
+    @objc func openNotesFolder() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: notesDir))
+    }
+
     func wakeDisplay() {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
@@ -999,6 +1003,12 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         awake.target = self
         awake.state = wakeOnAttention ? .on : .off
         menu.addItem(awake)
+
+        let openNotes = NSMenuItem(
+            title: "Open Notes Folder",
+            action: #selector(openNotesFolder), keyEquivalent: "")
+        openNotes.target = self
+        menu.addItem(openNotes)
 
         menu.addItem(.separator())
 
