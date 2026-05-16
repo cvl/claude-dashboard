@@ -182,6 +182,37 @@ func saveStore(_ store: [String: StoredSession]) {
     try? data.write(to: URL(fileURLWithPath: storeFile))
 }
 
+let historyFile = "\(notesDir)/history.txt"
+var knownSessionIds: Set<String> = []
+
+func appendToHistory(_ session: StoredSession) {
+    guard !knownSessionIds.contains(session.sessionId) else { return }
+    knownSessionIds.insert(session.sessionId)
+
+    let df = DateFormatter()
+    df.dateFormat = "yyyy-MM-dd HH:mm"
+    let date = df.string(from: Date(timeIntervalSince1970: session.startedAt / 1000))
+    let notes = notesFileName(name: session.name, sessionId: session.sessionId)
+    let resume = "cd \(session.cwd) && claude --resume \(session.sessionId) --name '\(session.name)'"
+
+    let entry = """
+    [\(date)] \(session.name)
+      cwd:    \(session.cwd)
+      notes:  \(notes)
+      resume: \(resume)
+
+    """
+    let line = entry.split(separator: "\n").map { $0.drop(while: { $0 == " " }) }.joined(separator: "\n") + "\n\n"
+
+    if let fh = FileHandle(forWritingAtPath: historyFile) {
+        fh.seekToEndOfFile()
+        fh.write(line.data(using: .utf8)!)
+        fh.closeFile()
+    } else {
+        try? line.write(toFile: historyFile, atomically: true, encoding: .utf8)
+    }
+}
+
 func notesFileName(name: String, sessionId: String) -> String {
     let safe = name.replacingOccurrences(of: "/", with: "-")
         .replacingOccurrences(of: ":", with: "-")
@@ -205,14 +236,20 @@ func loadSessions() -> [Session] {
 
     var store = loadStore()
 
-    // Seed in-memory times from store on first load
+    // Seed in-memory times from store on first load; backfill history
     if !didSeedTimes {
         didSeedTimes = true
-        for (_, stored) in store {
+        let needsBackfill = !fm.fileExists(atPath: historyFile)
+        for (sid, stored) in store {
             let p = pid_t(stored.lastPid)
             if lastActiveTime[p] == nil, let ts = stored.lastActiveTs {
                 lastActiveTime[p] = Date(timeIntervalSince1970: ts)
                 previousState[p] = .idle // assume idle on startup
+            }
+            if needsBackfill {
+                appendToHistory(stored)
+            } else {
+                knownSessionIds.insert(sid)
             }
         }
     }
@@ -256,9 +293,11 @@ func loadSessions() -> [Session] {
         let staleKeys = store.filter { $0.key != sid && $0.value.lastPid == Int(s.pid) }.map(\.key)
         for k in staleKeys { store.removeValue(forKey: k) }
 
-        store[sid] = StoredSession(sessionId: sid, name: s.name, cwd: s.cwd,
+        let stored = StoredSession(sessionId: sid, name: s.name, cwd: s.cwd,
                                    startedAt: s.startedAt, lastPid: Int(s.pid),
                                    lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970)
+        store[sid] = stored
+        appendToHistory(stored)
     }
     saveStore(store)
 
@@ -325,59 +364,21 @@ func shortPath(_ p: String) -> String {
 // MARK: - Terminal reveal
 
 func revealSession(_ session: Session) {
-    let tty = session.tty
-    guard !tty.isEmpty else { return }
-
-    let apps = NSWorkspace.shared.runningApplications
-    let hasITerm = apps.contains { $0.bundleIdentifier == "com.googlecode.iterm2" }
-
-    let script: String
-    if hasITerm {
-        script = """
-        tell application "iTerm2"
-            repeat with w in windows
-                repeat with t in tabs of w
-                    repeat with s in sessions of t
-                        if tty of s is "/dev/\(tty)" then
-                            select s
-                            tell t to select
-                            set index of w to 1
-                        end if
-                    end repeat
-                end repeat
-            end repeat
-        end tell
-        """
-    } else {
-        script = """
-        tell application "Terminal"
-            repeat with w in windows
-                repeat with t in tabs of w
-                    if tty of t is "/dev/\(tty)" then
-                        set selected tab of w to t
-                        set index of w to 1
-                    end if
-                end repeat
-            end repeat
-            activate
-        end tell
-        """
-    }
-
-    DispatchQueue.global(qos: .userInitiated).async {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", script]
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
-        try? proc.run()
-    }
+    revealTTY(session.tty)
 }
 
 func revealTTY(_ tty: String) {
     guard !tty.isEmpty else { return }
     let apps = NSWorkspace.shared.runningApplications
     let hasITerm = apps.contains { $0.bundleIdentifier == "com.googlecode.iterm2" }
+    let bundleId = hasITerm ? "com.googlecode.iterm2" : "com.apple.Terminal"
+    let appName = hasITerm ? "iTerm2" : "Terminal"
+
+    // Activate the terminal app first from the main thread
+    if let app = apps.first(where: { $0.bundleIdentifier == bundleId }) {
+        app.activate()
+    }
+
     let script: String
     if hasITerm {
         script = """
@@ -389,7 +390,7 @@ func revealTTY(_ tty: String) {
                             select s
                             tell t to select
                             set index of w to 1
-                            activate
+                            return
                         end if
                     end repeat
                 end repeat
@@ -398,20 +399,21 @@ func revealTTY(_ tty: String) {
         """
     } else {
         script = """
-        tell application "Terminal"
+        tell application "\(appName)"
             repeat with w in windows
                 repeat with t in tabs of w
                     if tty of t is "/dev/\(tty)" then
                         set selected tab of w to t
                         set index of w to 1
+                        return
                     end if
                 end repeat
             end repeat
-            activate
         end tell
         """
     }
-    DispatchQueue.global(qos: .userInitiated).async {
+    // Small delay to let the app activate before selecting the tab
+    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.1) {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         proc.arguments = ["-e", script]
