@@ -28,5 +28,12 @@ cat > "$APP/Contents/Info.plist" << 'EOF'
 </plist>
 EOF
 
+# Install claudedashboard CLI
+CLI_SRC="$(cd "$(dirname "$0")" && pwd)/claudedashboard"
+CLI_DST="/usr/local/bin/claudedashboard"
+cp "$CLI_SRC" "$CLI_DST" 2>/dev/null || sudo cp "$CLI_SRC" "$CLI_DST"
+chmod +x "$CLI_DST"
+
 echo "Installed to $APP"
+echo "CLI: claudedashboard <name>"
 echo "Run: open /Applications/ClaudeDashboard.app"

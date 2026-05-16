@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ $# -eq 0 ]; then
+  echo "Usage: claudedashboard <name>"
+  echo "Registers the current terminal tab in Claude Dashboard."
+  exit 1
+fi
+
+name="$1"
+tty_name=$(tty | sed 's|/dev/||')
+cwd="$(pwd)"
+file="$HOME/.claude/dashboard-terminals.json"
+mkdir -p "$(dirname "$file")"
+
+python3 -c "
+import json, os, sys, time
+f, tty, name, cwd = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+d = {}
+if os.path.exists(f):
+    with open(f) as fh:
+        d = json.load(fh)
+d[tty] = {'name': name, 'tty': tty, 'cwd': cwd, 'registeredAt': time.time()}
+with open(f, 'w') as fh:
+    json.dump(d, fh)
+" "$file" "$tty_name" "$name" "$cwd"
+
+echo "Registered '$name' ($tty_name)"

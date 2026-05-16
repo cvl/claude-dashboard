@@ -59,6 +59,43 @@ struct Session {
     let lastActive: Date
 }
 
+struct Terminal {
+    let tty: String
+    let name: String
+    let cwd: String
+    let isAlive: Bool
+}
+
+let termStoreFile = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".claude").appendingPathComponent("dashboard-terminals.json").path
+
+func loadRegisteredTerminals() -> [Terminal] {
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: termStoreFile)),
+          let dict = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]]
+    else { return [] }
+    var result: [Terminal] = []
+    for (_, entry) in dict {
+        guard let tty = entry["tty"] as? String,
+              let name = entry["name"] as? String else { continue }
+        let cwd = entry["cwd"] as? String ?? ""
+        // Check if TTY is still active
+        let pids = shell("/bin/ps", "-o", "pid=", "-t", tty)
+        let alive = !pids.isEmpty
+        result.append(Terminal(tty: tty, name: name, cwd: cwd, isAlive: alive))
+    }
+    return result.sorted { $0.name < $1.name }
+}
+
+func removeRegisteredTerminal(_ tty: String) {
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: termStoreFile)),
+          var dict = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]]
+    else { return }
+    dict.removeValue(forKey: tty)
+    if let out = try? JSONSerialization.data(withJSONObject: dict) {
+        try? out.write(to: URL(fileURLWithPath: termStoreFile))
+    }
+}
+
 // MARK: - Process helpers
 
 func shell(_ path: String, _ args: String...) -> String {
@@ -69,9 +106,10 @@ func shell(_ path: String, _ args: String...) -> String {
     proc.standardOutput = pipe
     proc.standardError = FileHandle.nullDevice
     do { try proc.run() } catch { return "" }
+    // Read before wait to avoid pipe buffer deadlock
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
     proc.waitUntilExit()
-    return (String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
-                   encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 func isWorking(_ pid: pid_t) -> Bool {
@@ -336,6 +374,53 @@ func revealSession(_ session: Session) {
     }
 }
 
+func revealTTY(_ tty: String) {
+    guard !tty.isEmpty else { return }
+    let apps = NSWorkspace.shared.runningApplications
+    let hasITerm = apps.contains { $0.bundleIdentifier == "com.googlecode.iterm2" }
+    let script: String
+    if hasITerm {
+        script = """
+        tell application "iTerm2"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    repeat with s in sessions of t
+                        if tty of s is "/dev/\(tty)" then
+                            select s
+                            tell t to select
+                            set index of w to 1
+                            activate
+                        end if
+                    end repeat
+                end repeat
+            end repeat
+        end tell
+        """
+    } else {
+        script = """
+        tell application "Terminal"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    if tty of t is "/dev/\(tty)" then
+                        set selected tab of w to t
+                        set index of w to 1
+                    end if
+                end repeat
+            end repeat
+            activate
+        end tell
+        """
+    }
+    DispatchQueue.global(qos: .userInitiated).async {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", script]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try? proc.run()
+    }
+}
+
 // MARK: - Menu bar icon
 
 func dot(_ color: NSColor) -> NSImage {
@@ -386,22 +471,34 @@ class DashboardView: NSView {
             needsDisplay = true
         }
     }
+    var terminals: [Terminal] = [] {
+        didSet {
+            rebuildTermButtons()
+            window?.invalidateCursorRects(for: self)
+            needsDisplay = true
+        }
+    }
     var onSessionClick: ((Session) -> Void)?
     var onNotesClick: ((Session) -> Void)?
     var onRemoveClick: ((Session) -> Void)?
     var onResumeClick: ((Session) -> Void)?
     var onReorder: ((Int, Int) -> Void)?  // (fromIndex, toInsertBeforeIndex)
+    var onTerminalClick: ((Terminal) -> Void)?
+    var onTerminalRemove: ((Terminal) -> Void)?
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
 
     private let cardH: CGFloat = 52
+    private let termCardH: CGFloat = 44
+    private let sectionHeaderH: CGFloat = 24
     private let gap: CGFloat = 8
     private let padX: CGFloat = 12
     private let padY: CGFloat = 10
     private var noteButtons: [NSButton] = []
     var resumeButtons: [NSButton] = []
     private var removeButtons: [NSButton] = []
+    private var termRemoveButtons: [NSButton] = []
 
     // Drag-to-reorder state
     private var dragSourceIndex: Int?
@@ -412,9 +509,17 @@ class DashboardView: NSView {
 
     override var isFlipped: Bool { true }
 
+    private var terminalsTopY: CGFloat {
+        let sessH = sessions.isEmpty ? 30 : CGFloat(sessions.count) * (cardH + gap) - gap
+        return padY + sessH + gap
+    }
+
     var idealHeight: CGFloat {
-        guard !sessions.isEmpty else { return 60 }
-        return padY + CGFloat(sessions.count) * (cardH + gap) - gap + padY
+        var h = terminalsTopY
+        if !terminals.isEmpty {
+            h += sectionHeaderH + CGFloat(terminals.count) * (termCardH + gap) - gap
+        }
+        return h + padY
     }
 
     func cardIndex(at point: NSPoint) -> Int? {
@@ -429,6 +534,21 @@ class DashboardView: NSView {
     private func cardRect(at index: Int) -> NSRect {
         let y = padY + CGFloat(index) * (cardH + gap)
         return NSRect(x: padX, y: y, width: bounds.width - padX * 2, height: cardH)
+    }
+
+    private func termCardRect(at index: Int) -> NSRect {
+        let y = terminalsTopY + sectionHeaderH + CGFloat(index) * (termCardH + gap)
+        return NSRect(x: padX, y: y, width: bounds.width - padX * 2, height: termCardH)
+    }
+
+    func termIndex(at point: NSPoint) -> Int? {
+        let baseY = terminalsTopY + sectionHeaderH
+        let y = point.y - baseY
+        guard y >= 0 else { return nil }
+        let idx = Int(y / (termCardH + gap))
+        let within = y - CGFloat(idx) * (termCardH + gap)
+        guard within <= termCardH, idx < terminals.count else { return nil }
+        return idx
     }
 
     // ── Click / Drag ──
@@ -461,6 +581,12 @@ class DashboardView: NSView {
             onReorder?(src, tgt)
         } else if let src = dragSourceIndex, !isDragging {
             onSessionClick?(sessions[src])
+        } else if !isDragging {
+            // Check terminal click
+            let loc = convert(event.locationInWindow, from: nil)
+            if let idx = termIndex(at: loc) {
+                onTerminalClick?(terminals[idx])
+            }
         }
         dragSourceIndex = nil
         dragStartPoint = nil
@@ -543,10 +669,37 @@ class DashboardView: NSView {
         }
     }
 
+    @objc func termRemoveBtnClicked(_ sender: NSButton) {
+        guard sender.tag < terminals.count else { return }
+        onTerminalRemove?(terminals[sender.tag])
+    }
+
+    func rebuildTermButtons() {
+        termRemoveButtons.forEach { $0.removeFromSuperview() }
+        termRemoveButtons.removeAll()
+        for (i, _) in terminals.enumerated() {
+            let rect = termCardRect(at: i)
+            let rb = NSButton(frame: NSRect(x: rect.maxX - 26, y: rect.minY + 6, width: 20, height: 20))
+            rb.bezelStyle = .inline
+            rb.image = NSImage(systemSymbolName: "xmark.circle",
+                               accessibilityDescription: "Remove")
+            rb.imagePosition = .imageOnly
+            rb.tag = i
+            rb.target = self
+            rb.action = #selector(termRemoveBtnClicked(_:))
+            rb.toolTip = "Remove terminal"
+            addSubview(rb)
+            termRemoveButtons.append(rb)
+        }
+    }
+
     // ── Cursor ──
     override func resetCursorRects() {
         for i in 0..<sessions.count {
             addCursorRect(cardRect(at: i), cursor: .pointingHand)
+        }
+        for i in 0..<terminals.count {
+            addCursorRect(termCardRect(at: i), cursor: .pointingHand)
         }
     }
 
@@ -565,7 +718,6 @@ class DashboardView: NSView {
                 .font: Self.fontReg12,
                 .foregroundColor: NSColor.secondaryLabelColor])
             str.draw(at: NSPoint(x: padX, y: 24))
-            return
         }
 
         for (i, s) in ss.enumerated() {
@@ -616,6 +768,51 @@ class DashboardView: NSView {
             pidAttr.draw(at: NSPoint(x: rightEdge - pidAttr.size().width, y: rect.minY + 31))
 
             // Buttons are NSButton subviews managed by rebuildButtons()
+        }
+
+        // ── Terminals section ──
+        if !terminals.isEmpty {
+            let headerY = terminalsTopY
+            let headerAttr = NSAttributedString(string: "TERMINALS", attributes: [
+                .font: Self.fontSemi9,
+                .foregroundColor: NSColor.tertiaryLabelColor])
+            headerAttr.draw(at: NSPoint(x: padX, y: headerY + 6))
+
+            for (i, t) in terminals.enumerated() {
+                let rect = termCardRect(at: i)
+                let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+                NSColor(white: 0.5, alpha: 0.05).setFill()
+                bg.fill()
+
+                // Left accent
+                let accentColor: NSColor = t.isAlive ? .systemTeal : .systemGray
+                NSGraphicsContext.saveGraphicsState()
+                bg.addClip()
+                accentColor.setFill()
+                NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: 3, height: termCardH)).fill()
+                NSGraphicsContext.restoreGraphicsState()
+
+                let tx = rect.minX + 14
+
+                // Row 1: name + status
+                let nameAttr = NSAttributedString(string: t.name, attributes: [
+                    .font: Self.fontBold12,
+                    .foregroundColor: NSColor.labelColor])
+                nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 5))
+
+                let statusLabel = t.isAlive ? "ACTIVE" : "CLOSED"
+                let statusColor: NSColor = t.isAlive ? .systemTeal : .systemGray
+                let statusAttr = NSAttributedString(string: statusLabel, attributes: [
+                    .font: Self.fontSemi9,
+                    .foregroundColor: statusColor])
+                statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 10, y: rect.minY + 7))
+
+                // Row 2: path
+                let pathAttr = NSAttributedString(string: shortPath(t.cwd), attributes: [
+                    .font: Self.fontReg10,
+                    .foregroundColor: NSColor.secondaryLabelColor])
+                pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 25))
+            }
         }
 
         // ── Drop indicator ──
@@ -795,6 +992,11 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.showToast("Resume command copied", near: btn)
             }
         }
+        dashView.onTerminalClick = { t in revealTTY(t.tty) }
+        dashView.onTerminalRemove = { [weak self] t in
+            removeRegisteredTerminal(t.tty)
+            self?.poll()
+        }
         dashView.onReorder = { [weak self] from, to in
             guard let self else { return }
             var ids = self.dashView.sessions.map(\.sessionId)
@@ -938,11 +1140,12 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func poll() {
         pollQueue.async { [weak self] in
             let ss = loadSessions()
-            DispatchQueue.main.async { self?.updateUI(ss) }
+            let terms = loadRegisteredTerminals()
+            DispatchQueue.main.async { self?.updateUI(ss, terminals: terms) }
         }
     }
 
-    func updateUI(_ ss: [Session]) {
+    func updateUI(_ ss: [Session], terminals: [Terminal] = []) {
         currentSessions = ss
         let counts = Dictionary(grouping: ss, by: \.state).mapValues(\.count)
         let w = counts[.working] ?? 0
@@ -1039,6 +1242,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // ── Window ──
         dashView.sessions = applyCustomOrder(ss)
+        dashView.terminals = terminals
         let idealH = dashView.idealHeight
         var frame = panel.frame
         let topY = frame.maxY
