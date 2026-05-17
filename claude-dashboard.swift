@@ -1112,7 +1112,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func stopPreventIdleSleep() {
-        idleSleepProc?.terminate()
+        if let p = idleSleepProc, p.isRunning { p.terminate() }
         idleSleepProc = nil
     }
 
