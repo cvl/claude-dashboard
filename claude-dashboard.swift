@@ -170,16 +170,18 @@ struct StoredSession: Codable {
     var lastActiveTs: Double?
 }
 
-func loadStore() -> [String: StoredSession] {
+/// Returns (store, didLoad). didLoad=false means file exists but failed to parse.
+func loadStore() -> (store: [String: StoredSession], ok: Bool) {
+    guard FileManager.default.fileExists(atPath: storeFile) else { return ([:], true) }
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: storeFile)),
           let list = try? JSONDecoder().decode([String: StoredSession].self, from: data)
-    else { return [:] }
-    return list
+    else { return ([:], false) }
+    return (list, true)
 }
 
 func saveStore(_ store: [String: StoredSession]) {
     guard let data = try? JSONEncoder().encode(store) else { return }
-    try? data.write(to: URL(fileURLWithPath: storeFile))
+    try? data.write(to: URL(fileURLWithPath: storeFile), options: .atomic)
 }
 
 let historyFile = "\(notesDir)/history.txt"
@@ -234,7 +236,8 @@ func loadSessions() -> [Session] {
     let fm = FileManager.default
     try? fm.createDirectory(atPath: notesDir, withIntermediateDirectories: true)
 
-    var store = loadStore()
+    let (loadedStore, storeOk) = loadStore()
+    var store = loadedStore
 
     // Seed in-memory times from store on first load; backfill history
     if !didSeedTimes {
@@ -299,7 +302,7 @@ func loadSessions() -> [Session] {
         store[sid] = stored
         appendToHistory(stored)
     }
-    saveStore(store)
+    if storeOk { saveStore(store) }
 
     // Build final list: live sessions + dead stored sessions
     var result = Array(liveBySessionId.values)
@@ -336,7 +339,7 @@ func removeSession(_ session: Session) {
     alert.addButton(withTitle: "Remove")
     alert.addButton(withTitle: "Cancel")
     guard alert.runModal() == .alertFirstButtonReturn else { return }
-    var store = loadStore()
+    var (store, _) = loadStore()
     store.removeValue(forKey: session.sessionId)
     saveStore(store)
 }
