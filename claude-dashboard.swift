@@ -185,11 +185,21 @@ func saveStore(_ store: [String: StoredSession]) {
 }
 
 let historyFile = "\(notesDir)/history.txt"
-var knownSessionIds: Set<String> = []
+var knownSessions: [String: String] = [:]  // sessionId → last known name
 
 func appendToHistory(_ session: StoredSession) {
-    guard !knownSessionIds.contains(session.sessionId) else { return }
-    knownSessionIds.insert(session.sessionId)
+    let prev = knownSessions[session.sessionId]
+    if prev == session.name { return } // no change
+    knownSessions[session.sessionId] = session.name
+
+    // Rename notes file if it exists under the old name
+    if let oldName = prev {
+        let oldPath = notesPath(name: oldName, sessionId: session.sessionId)
+        let newPath = notesPath(name: session.name, sessionId: session.sessionId)
+        if oldPath != newPath && FileManager.default.fileExists(atPath: oldPath) {
+            try? FileManager.default.moveItem(atPath: oldPath, toPath: newPath)
+        }
+    }
 
     let df = DateFormatter()
     df.dateFormat = "yyyy-MM-dd HH:mm"
@@ -197,8 +207,9 @@ func appendToHistory(_ session: StoredSession) {
     let notes = notesFileName(name: session.name, sessionId: session.sessionId)
     let resume = "cd \(session.cwd) && claude --resume \(session.sessionId) --name '\(session.name)'"
 
+    let prefix = prev != nil ? "[renamed from '\(prev!)'] " : ""
     let entry = """
-    [\(date)] \(session.name)
+    [\(date)] \(prefix)\(session.name)
       cwd:    \(session.cwd)
       notes:  \(notes)
       resume: \(resume)
@@ -252,7 +263,7 @@ func loadSessions() -> [Session] {
             if needsBackfill {
                 appendToHistory(stored)
             } else {
-                knownSessionIds.insert(sid)
+                knownSessions[sid] = stored.name
             }
         }
     }
