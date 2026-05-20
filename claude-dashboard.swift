@@ -316,9 +316,24 @@ func loadSessions() -> [Session] {
     if storeOk { saveStore(store) }
 
     // Build final list: live sessions + dead stored sessions
+    // Skip dead sessions that were resumed under a new sessionId (same name+cwd as a live one)
+    // Carry over notes file from old session to new one
+    let liveByKey: [String: Session] = Dictionary(
+        liveBySessionId.values.map { ("\($0.name)\0\($0.cwd)", $0) },
+        uniquingKeysWith: { a, _ in a })
     var result = Array(liveBySessionId.values)
     for (sid, stored) in store {
         if liveBySessionId[sid] == nil {
+            let key = "\(stored.name)\0\(stored.cwd)"
+            if let live = liveByKey[key] {
+                // Resumed — migrate notes file to new sessionId
+                let oldPath = notesPath(name: stored.name, sessionId: sid)
+                let newPath = notesPath(name: live.name, sessionId: live.sessionId)
+                if oldPath != newPath && fm.fileExists(atPath: oldPath) && !fm.fileExists(atPath: newPath) {
+                    try? fm.moveItem(atPath: oldPath, toPath: newPath)
+                }
+                continue
+            }
             let p = pid_t(stored.lastPid)
             let fallback = Date(timeIntervalSince1970: stored.startedAt / 1000)
             result.append(Session(
