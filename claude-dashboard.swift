@@ -9,6 +9,8 @@ let notesDir = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-notes").path
 let storeFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-store.json").path
+let layoutFile = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".claude").appendingPathComponent("dashboard-layout.json").path
 
 // MARK: - Model
 
@@ -449,6 +451,148 @@ func revealTTY(_ tty: String) {
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         try? proc.run()
+    }
+}
+
+// MARK: - Window layout save/restore
+
+var savedScreenCount = 0
+
+func currentScreenCount() -> Int {
+    // Must be called on main thread
+    var count = 0
+    if Thread.isMainThread {
+        count = NSScreen.screens.count
+    } else {
+        DispatchQueue.main.sync { count = NSScreen.screens.count }
+    }
+    return count
+}
+
+func saveTerminalLayout(autoSave: Bool = false) {
+    let screenCount = currentScreenCount()
+
+    // Don't auto-save if screens decreased (windows are scrambled)
+    if autoSave && savedScreenCount > 0 && screenCount < savedScreenCount { return }
+
+    let apps = NSWorkspace.shared.runningApplications
+    let hasITerm = apps.contains { $0.bundleIdentifier == "com.googlecode.iterm2" }
+
+    let script: String
+    if hasITerm {
+        script = """
+        set output to ""
+        tell application "iTerm2"
+            repeat with w in windows
+                set {x, y} to position of w
+                set {width, height} to size of w
+                repeat with t in tabs of w
+                    repeat with s in sessions of t
+                        set output to output & (tty of s) & "," & x & "," & y & "," & width & "," & height & linefeed
+                    end repeat
+                end repeat
+            end repeat
+        end tell
+        return output
+        """
+    } else {
+        script = """
+        set output to ""
+        tell application "Terminal"
+            repeat with w in windows
+                set {x, y} to position of w
+                set {width, height} to size of w
+                repeat with t in tabs of w
+                    set output to output & (tty of t) & "," & x & "," & y & "," & width & "," & height & linefeed
+                end repeat
+            end repeat
+        end tell
+        return output
+        """
+    }
+
+    let raw = shell("/usr/bin/osascript", "-e", script)
+    guard !raw.isEmpty else { return }
+
+    var windows: [[String: Any]] = []
+    for line in raw.components(separatedBy: "\n") {
+        let parts = line.split(separator: ",")
+        guard parts.count == 5 else { continue }
+        let tty = String(parts[0]).replacingOccurrences(of: "/dev/", with: "")
+        guard let x = Int(parts[1].trimmingCharacters(in: .whitespaces)),
+              let y = Int(parts[2].trimmingCharacters(in: .whitespaces)),
+              let w = Int(parts[3].trimmingCharacters(in: .whitespaces)),
+              let h = Int(parts[4].trimmingCharacters(in: .whitespaces))
+        else { continue }
+        windows.append(["tty": tty, "x": x, "y": y, "w": w, "h": h])
+    }
+
+    let payload: [String: Any] = ["screenCount": screenCount, "windows": windows]
+    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: .prettyPrinted) else { return }
+    try? data.write(to: URL(fileURLWithPath: layoutFile), options: .atomic)
+    savedScreenCount = screenCount
+}
+
+func restoreTerminalLayout() {
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: layoutFile)),
+          let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let savedCount = payload["screenCount"] as? Int,
+          let windows = payload["windows"] as? [[String: Any]]
+    else { return }
+
+    // Don't restore if monitors aren't all connected yet
+    let screenCount = currentScreenCount()
+    if screenCount < savedCount { return }
+
+    let apps = NSWorkspace.shared.runningApplications
+    let hasITerm = apps.contains { $0.bundleIdentifier == "com.googlecode.iterm2" }
+
+    for entry in windows {
+        guard let tty = entry["tty"] as? String,
+              let x = entry["x"] as? Int, let y = entry["y"] as? Int,
+              let w = entry["w"] as? Int, let h = entry["h"] as? Int
+        else { continue }
+
+        let script: String
+        if hasITerm {
+            script = """
+            tell application "iTerm2"
+                repeat with win in windows
+                    repeat with t in tabs of win
+                        repeat with s in sessions of t
+                            if tty of s is "/dev/\(tty)" then
+                                set position of win to {\(x), \(y)}
+                                set size of win to {\(w), \(h)}
+                                return
+                            end if
+                        end repeat
+                    end repeat
+                end repeat
+            end tell
+            """
+        } else {
+            script = """
+            tell application "Terminal"
+                repeat with win in windows
+                    repeat with t in tabs of win
+                        if tty of t is "/dev/\(tty)" then
+                            set position of win to {\(x), \(y)}
+                            set size of win to {\(w), \(h)}
+                            return
+                        end if
+                    end repeat
+                end repeat
+            end tell
+            """
+        }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", script]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try? proc.run()
+        proc.waitUntilExit()
     }
 }
 
@@ -978,6 +1122,8 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var workingStartTime: Date?
     var wasWorking = false
     var idleSleepProc: Process?  // caffeinate -i while sessions are working
+    var layoutSaveTimer: Timer?
+    var layoutRestoreTimer: Timer?
 
     func applicationWillTerminate(_: Notification) {
         stopPreventIdleSleep()
@@ -1058,6 +1204,33 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
             self?.poll()
         }
+
+        // Seed screen count and do initial save
+        savedScreenCount = NSScreen.screens.count
+        DispatchQueue.global(qos: .utility).async { saveTerminalLayout() }
+
+        // Auto-save terminal layout every 5 minutes
+        layoutSaveTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
+            DispatchQueue.global(qos: .utility).async { saveTerminalLayout(autoSave: true) }
+        }
+
+        // Restore layout after wake from sleep
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: nil
+        ) { [weak self] _ in self?.scheduleLayoutRestore() }
+
+        // Restore layout after display reconfiguration (monitor reconnect)
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: nil
+        ) { [weak self] _ in self?.scheduleLayoutRestore() }
+    }
+
+    func scheduleLayoutRestore() {
+        layoutRestoreTimer?.invalidate()
+        // Delay 3s — screens need time to fully reconnect
+        layoutRestoreTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { _ in
+            DispatchQueue.global(qos: .userInitiated).async { restoreTerminalLayout() }
+        }
     }
 
     func showToast(_ message: String, near button: NSView) {
@@ -1122,6 +1295,18 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func openNotesFolder() {
         NSWorkspace.shared.open(URL(fileURLWithPath: notesDir))
+    }
+
+    @objc func saveLayout() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            saveTerminalLayout()
+        }
+    }
+
+    @objc func restoreLayout() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            restoreTerminalLayout()
+        }
     }
 
     func wakeDisplay() {
@@ -1243,6 +1428,22 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             action: #selector(openNotesFolder), keyEquivalent: "")
         openNotes.target = self
         menu.addItem(openNotes)
+
+        menu.addItem(.separator())
+
+        let save = NSMenuItem(
+            title: "Save Terminal Layout",
+            action: #selector(saveLayout), keyEquivalent: "s")
+        save.keyEquivalentModifierMask = [.command, .shift]
+        save.target = self
+        menu.addItem(save)
+
+        let restore = NSMenuItem(
+            title: "Restore Terminal Layout",
+            action: #selector(restoreLayout), keyEquivalent: "r")
+        restore.keyEquivalentModifierMask = [.command, .shift]
+        restore.target = self
+        menu.addItem(restore)
 
         menu.addItem(.separator())
 
