@@ -638,18 +638,29 @@ private extension NSBezierPath {
 // MARK: - Dashboard Window View
 
 class DashboardView: NSView {
+    private var sessionsFingerprint = ""
+    private var terminalsFingerprint = ""
+
     var sessions: [Session] = [] {
         didSet {
-            rebuildButtons()
-            invalidateIntrinsicContentSize()
-            window?.invalidateCursorRects(for: self)
+            let fp = sessions.map { "\($0.sessionId)|\($0.state)|\($0.name)|\($0.hasNotes)" }.joined()
+            if fp != sessionsFingerprint {
+                sessionsFingerprint = fp
+                rebuildButtons()
+                invalidateIntrinsicContentSize()
+                window?.invalidateCursorRects(for: self)
+            }
             needsDisplay = true
         }
     }
     var terminals: [Terminal] = [] {
         didSet {
-            rebuildTermButtons()
-            window?.invalidateCursorRects(for: self)
+            let fp = terminals.map { "\($0.tty)|\($0.name)|\($0.isAlive)" }.joined()
+            if fp != terminalsFingerprint {
+                terminalsFingerprint = fp
+                rebuildTermButtons()
+                window?.invalidateCursorRects(for: self)
+            }
             needsDisplay = true
         }
     }
