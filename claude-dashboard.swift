@@ -346,7 +346,8 @@ func loadSessions() -> [Session] {
                 lastActive: lastActiveTime[p] ?? Date(timeIntervalSince1970: stored.lastActiveTs ?? fallback.timeIntervalSince1970)))
         }
     }
-    return result.sorted { $0.startedAt > $1.startedAt }
+    return result.filter { !removedSessionIds.contains($0.sessionId) }
+        .sorted { $0.startedAt > $1.startedAt }
 }
 
 // MARK: - Notes
@@ -359,14 +360,17 @@ func openNotes(for session: Session) {
     NSWorkspace.shared.open(URL(fileURLWithPath: path))
 }
 
+var removedSessionIds: Set<String> = []
+
 func removeSession(_ session: Session) {
     let alert = NSAlert()
     alert.messageText = "Remove \"\(session.name)\"?"
-    alert.informativeText = "The session will be removed from the dashboard.\n\nNotes are kept in:\n\(notesDir)"
+    alert.informativeText = "Notes are kept in:\n\(notesDir)"
     alert.alertStyle = .warning
     alert.addButton(withTitle: "Remove")
     alert.addButton(withTitle: "Cancel")
     guard alert.runModal() == .alertFirstButtonReturn else { return }
+    removedSessionIds.insert(session.sessionId)
     var (store, _) = loadStore()
     store.removeValue(forKey: session.sessionId)
     saveStore(store)
