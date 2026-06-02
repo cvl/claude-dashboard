@@ -388,6 +388,13 @@ func loadSessions() -> [Session] {
                     }
                 }
                 saveTabs(tabsData)
+
+                // Transfer session order position
+                var order = UserDefaults.standard.stringArray(forKey: "sessionOrder") ?? []
+                if let orderIdx = order.firstIndex(of: oldId) {
+                    order[orderIdx] = live.sessionId
+                    UserDefaults.standard.set(order, forKey: "sessionOrder")
+                }
             }
             store.removeValue(forKey: oldId)
         }
@@ -1756,8 +1763,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 ordered.append(remaining.remove(at: idx))
             }
         }
-        // New sessions (not in order) go at the bottom, sorted by startedAt desc
-        remaining.sort { $0.startedAt > $1.startedAt }
+        // New sessions (not in order) go at the bottom, preserving existing order
         ordered.append(contentsOf: remaining)
         return ordered
     }
