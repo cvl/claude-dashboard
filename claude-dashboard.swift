@@ -1577,9 +1577,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let tabY = mainFrame.maxY - tabH - 28 // align top with content
             tabPanel.setFrame(NSRect(x: tabX, y: tabY, width: sidebarWidth, height: tabH),
                               display: true)
-            tabPanel.orderFront(nil)
+            if !tabPanel.isVisible { tabPanel.orderFront(nil) }
         } else {
-            tabPanel.orderOut(nil)
+            if tabPanel.isVisible { tabPanel.orderOut(nil) }
         }
     }
 
