@@ -341,22 +341,23 @@ func loadSessions() -> [Session] {
     if storeOk { saveStore(store) }
 
     // Build final list: live sessions + dead stored sessions
-    // Skip dead sessions that were resumed under a new sessionId (same name+cwd as a live one)
-    // Carry over notes file from old session to new one
+    // Remove dead sessions that were resumed under a new sessionId (same name+cwd as a live one)
     let liveByKey: [String: Session] = Dictionary(
         liveBySessionId.values.map { ("\($0.name)\0\($0.cwd)", $0) },
         uniquingKeysWith: { a, _ in a })
+    var resumedOldIds: [String] = []
     var result = Array(liveBySessionId.values)
     for (sid, stored) in store {
         if liveBySessionId[sid] == nil {
             let key = "\(stored.name)\0\(stored.cwd)"
             if let live = liveByKey[key] {
-                // Resumed — migrate notes file to new sessionId
+                // Resumed under new sessionId — migrate notes, remove old entry
                 let oldPath = notesPath(name: stored.name, sessionId: sid)
                 let newPath = notesPath(name: live.name, sessionId: live.sessionId)
                 if oldPath != newPath && fm.fileExists(atPath: oldPath) && !fm.fileExists(atPath: newPath) {
                     try? fm.moveItem(atPath: oldPath, toPath: newPath)
                 }
+                resumedOldIds.append(sid)
                 continue
             }
             let p = pid_t(stored.lastPid)
@@ -368,6 +369,29 @@ func loadSessions() -> [Session] {
                 tty: "", hasNotes: hasNotesFile(name: stored.name, sessionId: sid),
                 lastActive: lastActiveTime[p] ?? Date(timeIntervalSince1970: stored.lastActiveTs ?? fallback.timeIntervalSince1970)))
         }
+    }
+    // Remove old resumed entries from store and transfer tab assignments
+    if !resumedOldIds.isEmpty {
+        for oldId in resumedOldIds {
+            // Find which live session replaced this one
+            if let stored = store[oldId],
+               let liveKey = "\(stored.name)\0\(stored.cwd)" as String?,
+               let live = liveByKey[liveKey] {
+                // Transfer tab assignment from old to new sessionId
+                var tabsData = loadTabs()
+                for i in 0..<tabsData.count {
+                    if tabsData[i].sessionIds.contains(oldId) {
+                        tabsData[i].sessionIds.removeAll { $0 == oldId }
+                        if !tabsData[i].sessionIds.contains(live.sessionId) {
+                            tabsData[i].sessionIds.append(live.sessionId)
+                        }
+                    }
+                }
+                saveTabs(tabsData)
+            }
+            store.removeValue(forKey: oldId)
+        }
+        if storeOk { saveStore(store) }
     }
     return result.filter { !removedSessionIds.contains($0.sessionId) }
         .sorted { $0.startedAt > $1.startedAt }
