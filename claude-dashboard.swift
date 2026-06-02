@@ -11,6 +11,29 @@ let storeFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-store.json").path
 let layoutFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-layout.json").path
+let tabsFile = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".claude").appendingPathComponent("dashboard-tabs.json").path
+
+// MARK: - Tabs
+
+struct TabBucket: Codable {
+    var id: String
+    var name: String
+    var sessionIds: [String]
+    var terminalTTYs: [String]
+}
+
+func loadTabs() -> [TabBucket] {
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: tabsFile)),
+          let tabs = try? JSONDecoder().decode([TabBucket].self, from: data)
+    else { return [TabBucket(id: "main", name: "main", sessionIds: [], terminalTTYs: [])] }
+    return tabs.isEmpty ? [TabBucket(id: "main", name: "main", sessionIds: [], terminalTTYs: [])] : tabs
+}
+
+func saveTabs(_ tabs: [TabBucket]) {
+    guard let data = try? JSONEncoder().encode(tabs) else { return }
+    try? data.write(to: URL(fileURLWithPath: tabsFile), options: .atomic)
+}
 
 // MARK: - Model
 
@@ -639,6 +662,149 @@ private extension NSBezierPath {
     }
 }
 
+// MARK: - Tab Sidebar View
+
+class TabSidebarView: NSView {
+    var tabs: [TabBucket] = [] { didSet { needsDisplay = true } }
+    var activeTabId: String = "main" { didSet { needsDisplay = true } }
+    var dropTargetTabId: String? { didSet { needsDisplay = true } }
+
+    var onTabSelect: ((String) -> Void)?
+    var onTabAdd: (() -> Void)?
+    var onTabRename: ((String, String) -> Void)?  // (tabId, newName)
+    var onTabDelete: ((String) -> Void)?
+
+    private let tabW: CGFloat = 56
+    private let tabH: CGFloat = 28
+    private let gap: CGFloat = 4
+    private let padY: CGFloat = 8
+
+    override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    var idealWidth: CGFloat { tabW + 8 }
+
+    private func tabRect(at index: Int) -> NSRect {
+        let y = padY + CGFloat(index) * (tabH + gap)
+        return NSRect(x: 4, y: y, width: tabW, height: tabH)
+    }
+
+    private func addBtnRect() -> NSRect {
+        let y = padY + CGFloat(tabs.count) * (tabH + gap)
+        return NSRect(x: 4, y: y, width: tabW, height: tabH)
+    }
+
+    func tabIdAt(_ point: NSPoint) -> String? {
+        for (i, tab) in tabs.enumerated() {
+            if tabRect(at: i).contains(point) { return tab.id }
+        }
+        return nil
+    }
+
+    var idealHeight: CGFloat {
+        padY + CGFloat(tabs.count + 1) * (tabH + gap)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let loc = convert(event.locationInWindow, from: nil)
+        if addBtnRect().contains(loc) {
+            onTabAdd?()
+            return
+        }
+        for (i, tab) in tabs.enumerated() {
+            if tabRect(at: i).contains(loc) {
+                onTabSelect?(tab.id)
+                return
+            }
+        }
+    }
+
+    // Double-click to rename
+    override func mouseUp(with event: NSEvent) {
+        guard event.clickCount == 2 else { return }
+        let loc = convert(event.locationInWindow, from: nil)
+        for (i, tab) in tabs.enumerated() {
+            guard tabRect(at: i).contains(loc) else { continue }
+            onTabRename?(tab.id, tab.name)
+            return
+        }
+    }
+
+    // Right-click context menu
+    override func rightMouseDown(with event: NSEvent) {
+        let loc = convert(event.locationInWindow, from: nil)
+        for (i, tab) in tabs.enumerated() {
+            guard tabRect(at: i).contains(loc) else { continue }
+            let menu = NSMenu()
+            let renameItem = NSMenuItem(title: "Rename", action: #selector(contextRename(_:)), keyEquivalent: "")
+            renameItem.target = self
+            renameItem.representedObject = tab.id
+            menu.addItem(renameItem)
+            if tab.id != "main" {
+                let deleteItem = NSMenuItem(title: "Delete", action: #selector(contextDelete(_:)), keyEquivalent: "")
+                deleteItem.target = self
+                deleteItem.representedObject = tab.id
+                menu.addItem(deleteItem)
+            }
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+            return
+        }
+    }
+
+    @objc func contextRename(_ sender: NSMenuItem) {
+        guard let tabId = sender.representedObject as? String,
+              let tab = tabs.first(where: { $0.id == tabId }) else { return }
+        onTabRename?(tab.id, tab.name)
+    }
+
+    @objc func contextDelete(_ sender: NSMenuItem) {
+        guard let tabId = sender.representedObject as? String else { return }
+        onTabDelete?(tabId)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        for (i, tab) in tabs.enumerated() {
+            let rect = tabRect(at: i)
+            let isActive = tab.id == activeTabId
+            let isDropTarget = tab.id == dropTargetTabId
+
+            // Background — only for active/drop target
+            let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+            if isDropTarget {
+                NSColor.systemBlue.withAlphaComponent(0.3).setFill()
+                bg.fill()
+            } else if isActive {
+                NSColor(white: 0.5, alpha: 0.12).setFill()
+                bg.fill()
+            }
+
+            if isActive {
+                // Left accent
+                NSColor.controlAccentColor.setFill()
+                NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY + 4, width: 3, height: rect.height - 8)).fill()
+            }
+
+            // Label
+            let font = NSFont.monospacedSystemFont(ofSize: 9, weight: isActive ? .bold : .medium)
+            let color: NSColor = isActive ? .labelColor : .secondaryLabelColor
+            let attr = NSAttributedString(string: tab.name, attributes: [
+                .font: font, .foregroundColor: color])
+            let textY = rect.midY - attr.size().height / 2
+            let textX = rect.minX + 8
+            attr.draw(at: NSPoint(x: textX, y: textY))
+        }
+
+        // + button
+        let addRect = addBtnRect()
+        let plus = NSAttributedString(string: "+", attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: 14, weight: .medium),
+            .foregroundColor: NSColor.secondaryLabelColor])
+        let px = addRect.midX - plus.size().width / 2
+        let py = addRect.midY - plus.size().height / 2
+        plus.draw(at: NSPoint(x: px, y: py))
+    }
+}
+
 // MARK: - Dashboard Window View
 
 class DashboardView: NSView {
@@ -675,6 +841,8 @@ class DashboardView: NSView {
     var onReorder: ((Int, Int) -> Void)?  // (fromIndex, toInsertBeforeIndex)
     var onTerminalClick: ((Terminal) -> Void)?
     var onTerminalRemove: ((Terminal) -> Void)?
+    var onDragToTab: ((String, String) -> Void)?  // (itemId, "session:id" or "terminal:tty")
+    var tabSidebar: TabSidebarView?
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -690,11 +858,13 @@ class DashboardView: NSView {
     private var removeButtons: [NSButton] = []
     private var termRemoveButtons: [NSButton] = []
 
-    // Drag-to-reorder state
+    // Drag state
     private var dragSourceIndex: Int?
+    private var dragSourceType: String = "session" // "session" or "terminal"
     private var dragStartPoint: NSPoint?
     private var isDragging = false
     private var dropTargetIndex: Int?
+    private var isDraggingToTab = false
     private let dragThreshold: CGFloat = 5
 
     override var isFlipped: Bool { true }
@@ -744,10 +914,17 @@ class DashboardView: NSView {
     // ── Click / Drag ──
     override func mouseDown(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
-        guard let idx = cardIndex(at: loc), idx < sessions.count else { return }
-        dragSourceIndex = idx
-        dragStartPoint = loc
-        isDragging = false
+        if let idx = cardIndex(at: loc), idx < sessions.count {
+            dragSourceIndex = idx
+            dragSourceType = "session"
+            dragStartPoint = loc
+            isDragging = false
+        } else if let idx = termIndex(at: loc) {
+            dragSourceIndex = idx
+            dragSourceType = "terminal"
+            dragStartPoint = loc
+            isDragging = false
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -758,30 +935,58 @@ class DashboardView: NSView {
             guard dist > dragThreshold else { return }
             isDragging = true
         }
-        let relY = loc.y - padY + gap / 2
-        var idx = Int(round(relY / (cardH + gap)))
-        idx = max(0, min(idx, sessions.count))
-        // Skip no-op positions (same slot)
-        dropTargetIndex = (idx == srcIdx || idx == srcIdx + 1) ? nil : idx
+
+        // Check if dragging over tab sidebar (separate window)
+        if let sidebar = tabSidebar, let sidebarWindow = sidebar.window, let myWindow = window {
+            let screenPt = myWindow.convertPoint(toScreen: event.locationInWindow)
+            let sidebarWindowPt = sidebarWindow.convertPoint(fromScreen: screenPt)
+            let tabLoc = sidebar.convert(sidebarWindowPt, from: nil)
+            if sidebar.bounds.contains(tabLoc) {
+                sidebar.dropTargetTabId = sidebar.tabIdAt(tabLoc)
+                isDraggingToTab = true
+                dropTargetIndex = nil
+                needsDisplay = true
+                return
+            }
+        }
+        isDraggingToTab = false
+        tabSidebar?.dropTargetTabId = nil
+
+        if dragSourceType == "session" {
+            let relY = loc.y - padY + gap / 2
+            var idx = Int(round(relY / (cardH + gap)))
+            idx = max(0, min(idx, sessions.count))
+            dropTargetIndex = (idx == srcIdx || idx == srcIdx + 1) ? nil : idx
+        }
         needsDisplay = true
     }
 
     override func mouseUp(with event: NSEvent) {
-        if isDragging, let src = dragSourceIndex, let tgt = dropTargetIndex {
+        if isDragging, isDraggingToTab, let src = dragSourceIndex,
+           let targetTabId = tabSidebar?.dropTargetTabId {
+            // Drop item onto tab
+            let itemId: String
+            if dragSourceType == "session" && src < sessions.count {
+                itemId = "session:\(sessions[src].sessionId)"
+            } else if dragSourceType == "terminal" && src < terminals.count {
+                itemId = "terminal:\(terminals[src].tty)"
+            } else { itemId = "" }
+            if !itemId.isEmpty { onDragToTab?(targetTabId, itemId) }
+        } else if isDragging, let src = dragSourceIndex, let tgt = dropTargetIndex, dragSourceType == "session" {
             onReorder?(src, tgt)
         } else if let src = dragSourceIndex, !isDragging {
-            onSessionClick?(sessions[src])
-        } else if !isDragging {
-            // Check terminal click
-            let loc = convert(event.locationInWindow, from: nil)
-            if let idx = termIndex(at: loc) {
-                onTerminalClick?(terminals[idx])
+            if dragSourceType == "session" && src < sessions.count {
+                onSessionClick?(sessions[src])
+            } else if dragSourceType == "terminal" && src < terminals.count {
+                onTerminalClick?(terminals[src])
             }
         }
         dragSourceIndex = nil
         dragStartPoint = nil
         isDragging = false
+        isDraggingToTab = false
         dropTargetIndex = nil
+        tabSidebar?.dropTargetTabId = nil
         needsDisplay = true
     }
 
@@ -1119,8 +1324,16 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var bar: NSStatusItem!
     var panel: NSWindow!
     var dashView: DashboardView!
+    var tabSidebar: TabSidebarView!
     var timer: Timer?
     var currentSessions: [Session] = []
+    var currentTerminals: [Terminal] = []
+    var tabs: [TabBucket] = []
+    var activeTabId: String = "main"
+    var showTabs: Bool {
+        get { UserDefaults.standard.object(forKey: "showTabs") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "showTabs"); layoutViews() }
+    }
     var wakeOnAttention: Bool {
         get { UserDefaults.standard.bool(forKey: "wakeOnAttention") }
         set { UserDefaults.standard.set(newValue, forKey: "wakeOnAttention") }
@@ -1202,7 +1415,88 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             removeSession(s)
             self?.poll()
         }
+        dashView.onDragToTab = { [weak self] tabId, itemId in
+            self?.moveItemToTab(tabId: tabId, itemId: itemId)
+        }
 
+        // Tab sidebar — separate borderless floating window
+        tabPanel = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: sidebarWidth, height: 100),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        tabPanel.isOpaque = false
+        tabPanel.backgroundColor = .clear
+        tabPanel.hasShadow = false
+        tabPanel.level = panel.level
+        tabPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        tabPanel.isMovableByWindowBackground = false
+
+        let tabVisual = NSVisualEffectView(frame: tabPanel.contentView!.bounds)
+        tabVisual.material = .hudWindow
+        tabVisual.blendingMode = .behindWindow
+        tabVisual.state = .active
+        tabVisual.autoresizingMask = [.width, .height]
+        tabVisual.wantsLayer = true
+        tabVisual.layer?.cornerRadius = 8
+        tabVisual.layer?.masksToBounds = true
+        tabPanel.contentView!.addSubview(tabVisual)
+
+        tabSidebar = TabSidebarView(frame: tabPanel.contentView!.bounds)
+        tabSidebar.autoresizingMask = [.width, .height]
+        tabPanel.contentView!.addSubview(tabSidebar)
+        dashView.tabSidebar = tabSidebar
+
+        // Keep tab panel attached to main panel
+        panel.addChildWindow(tabPanel, ordered: .below)
+
+        tabs = loadTabs()
+        tabSidebar.tabs = tabs
+        tabSidebar.activeTabId = activeTabId
+
+        tabSidebar.onTabSelect = { [weak self] id in
+            self?.activeTabId = id
+            self?.tabSidebar.activeTabId = id
+            self?.poll()
+        }
+        tabSidebar.onTabAdd = { [weak self] in
+            guard let self else { return }
+            let newId = UUID().uuidString
+            // Ask for name immediately
+            let name = self.promptTabName("New tab name", defaultValue: "new")
+            guard let name, !name.isEmpty else { return }
+            self.tabs.append(TabBucket(id: newId, name: name, sessionIds: [], terminalTTYs: []))
+            saveTabs(self.tabs)
+            self.activeTabId = newId
+            self.tabSidebar.activeTabId = newId
+            self.tabSidebar.tabs = self.tabs
+            self.poll()
+        }
+        tabSidebar.onTabRename = { [weak self] id, currentName in
+            guard let self, let idx = self.tabs.firstIndex(where: { $0.id == id }) else { return }
+            guard let newName = self.promptTabName("Rename tab", defaultValue: currentName),
+                  !newName.isEmpty else { return }
+            self.tabs[idx].name = newName
+            saveTabs(self.tabs)
+            self.tabSidebar.tabs = self.tabs
+        }
+        tabSidebar.onTabDelete = { [weak self] id in
+            guard let self,
+                  let tab = self.tabs.first(where: { $0.id == id }) else { return }
+            let alert = NSAlert()
+            alert.messageText = "Delete tab \"\(tab.name)\"?"
+            alert.informativeText = "Sessions in this tab will move back to main."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Delete")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            self.tabs.removeAll { $0.id == id }
+            saveTabs(self.tabs)
+            if self.activeTabId == id { self.activeTabId = "main" }
+            self.tabSidebar.activeTabId = self.activeTabId
+            self.tabSidebar.tabs = self.tabs
+            self.poll()
+        }
+
+        layoutViews()
         panel.center()
         panel.makeKeyAndOrderFront(nil)
 
@@ -1242,10 +1536,87 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func scheduleLayoutRestore() {
         layoutRestoreTimer?.invalidate()
-        // Delay 3s — screens need time to fully reconnect
         layoutRestoreTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { _ in
             DispatchQueue.global(qos: .userInitiated).async { restoreTerminalLayout() }
         }
+    }
+
+    let baseWidth: CGFloat = 340
+    let sidebarWidth: CGFloat = 68
+    var tabPanel: NSWindow!
+
+    func layoutViews() {
+        if showTabs {
+            let mainFrame = panel.frame
+            let tabH = tabSidebar.idealHeight + 8
+            let tabX = mainFrame.minX - sidebarWidth - 4
+            let tabY = mainFrame.maxY - tabH - 28 // align top with content
+            tabPanel.setFrame(NSRect(x: tabX, y: tabY, width: sidebarWidth, height: tabH),
+                              display: true)
+            tabPanel.orderFront(nil)
+        } else {
+            tabPanel.orderOut(nil)
+        }
+    }
+
+    func moveItemToTab(tabId: String, itemId: String) {
+        // Remove item from all tabs first
+        for i in 0..<tabs.count {
+            tabs[i].sessionIds.removeAll { "session:\($0)" == itemId }
+            tabs[i].terminalTTYs.removeAll { "terminal:\($0)" == itemId }
+        }
+        // Add to target tab (unless "main" — main shows unassigned items)
+        if tabId != "main", let idx = tabs.firstIndex(where: { $0.id == tabId }) {
+            if itemId.hasPrefix("session:") {
+                tabs[idx].sessionIds.append(String(itemId.dropFirst(8)))
+            } else if itemId.hasPrefix("terminal:") {
+                tabs[idx].terminalTTYs.append(String(itemId.dropFirst(9)))
+            }
+        }
+        saveTabs(tabs)
+        tabSidebar.tabs = tabs
+        poll()
+    }
+
+    func sessionsForActiveTab(_ all: [Session]) -> [Session] {
+        if activeTabId == "main" {
+            // Main shows items not assigned to any other tab
+            let assigned = Set(tabs.filter { $0.id != "main" }.flatMap(\.sessionIds))
+            return all.filter { !assigned.contains($0.sessionId) }
+        }
+        guard let tab = tabs.first(where: { $0.id == activeTabId }) else { return all }
+        let ids = Set(tab.sessionIds)
+        return all.filter { ids.contains($0.sessionId) }
+    }
+
+    func terminalsForActiveTab(_ all: [Terminal]) -> [Terminal] {
+        if activeTabId == "main" {
+            let assigned = Set(tabs.filter { $0.id != "main" }.flatMap(\.terminalTTYs))
+            return all.filter { !assigned.contains($0.tty) }
+        }
+        guard let tab = tabs.first(where: { $0.id == activeTabId }) else { return all }
+        let ttys = Set(tab.terminalTTYs)
+        return all.filter { ttys.contains($0.tty) }
+    }
+
+    func promptTabName(_ title: String, defaultValue: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        input.stringValue = defaultValue
+        alert.accessoryView = input
+        alert.window.initialFirstResponder = input
+        // Select all text so user can type to replace
+        input.selectText(nil)
+        input.currentEditor()?.selectAll(nil)
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return input.stringValue.trimmingCharacters(in: .whitespaces)
+    }
+
+    @objc func toggleShowTabs(_ sender: NSMenuItem) {
+        showTabs = !showTabs
     }
 
     func showToast(_ message: String, near button: NSView) {
@@ -1302,6 +1673,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func toggleAlwaysOnTop(_ sender: NSMenuItem) {
         alwaysOnTop = !alwaysOnTop
         panel.level = alwaysOnTop ? .floating : .normal
+        tabPanel.level = panel.level
     }
 
     @objc func toggleWakeOnAttention(_ sender: NSMenuItem) {
@@ -1378,6 +1750,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func updateUI(_ ss: [Session], terminals: [Terminal] = []) {
         currentSessions = ss
+        currentTerminals = terminals
         let counts = Dictionary(grouping: ss, by: \.state).mapValues(\.count)
         let w = counts[.working] ?? 0
         let n = counts[.needsInput] ?? 0
@@ -1438,6 +1811,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         awake.state = wakeOnAttention ? .on : .off
         menu.addItem(awake)
 
+        let tabsToggle = NSMenuItem(
+            title: "Show Tabs",
+            action: #selector(toggleShowTabs(_:)), keyEquivalent: "")
+        tabsToggle.target = self
+        tabsToggle.state = showTabs ? .on : .off
+        menu.addItem(tabsToggle)
+
         let openNotes = NSMenuItem(
             title: "Open Notes Folder",
             action: #selector(openNotesFolder), keyEquivalent: "")
@@ -1488,14 +1868,16 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         bar.menu = menu
 
         // ── Window ──
-        dashView.sessions = applyCustomOrder(ss)
-        dashView.terminals = terminals
+        let orderedSessions = applyCustomOrder(ss)
+        dashView.sessions = sessionsForActiveTab(orderedSessions)
+        dashView.terminals = terminalsForActiveTab(terminals)
         let idealH = dashView.idealHeight
         var frame = panel.frame
         let topY = frame.maxY
         frame.size.height = idealH + 28
         frame.origin.y = topY - frame.size.height
         panel.setFrame(frame, display: true, animate: false)
+        layoutViews()
     }
 }
 
