@@ -1837,7 +1837,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applyCustomOrder(_ sessions: [Session]) -> [Session] {
-        let order = sessionOrder
+        var order = sessionOrder
         var ordered: [Session] = []
         var remaining = sessions
         for sid in order {
@@ -1845,7 +1845,11 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 ordered.append(remaining.remove(at: idx))
             }
         }
-        // New sessions (not in order) go at the bottom, preserving existing order
+        // New sessions — append to saved order so they stay put
+        if !remaining.isEmpty {
+            for s in remaining { order.append(s.sessionId) }
+            sessionOrder = order
+        }
         ordered.append(contentsOf: remaining)
         return ordered
     }
