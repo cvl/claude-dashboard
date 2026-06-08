@@ -230,7 +230,7 @@ func appendToHistory(_ session: StoredSession) {
     df.dateFormat = "yyyy-MM-dd HH:mm"
     let date = df.string(from: Date(timeIntervalSince1970: session.startedAt / 1000))
     let notes = notesFileName(name: session.name, sessionId: session.sessionId)
-    let resume = "cd \(session.cwd) && claude --resume \(session.sessionId) --name '\(session.name)'"
+    let resume = "cd \(session.cwd) && claude --resume \(session.sessionId) --name '\(session.name)' --effort max"
 
     let prefix = prev != nil ? "[renamed from '\(prev!)'] " : ""
     let entry = """
@@ -1418,7 +1418,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView.onSessionClick = { s in revealSession(s) }
         dashView.onNotesClick = { s in openNotes(for: s) }
         dashView.onResumeClick = { [weak self] s in
-            let cmd = "cd \(s.cwd) && claude --resume \(s.sessionId) --name '\(s.name)'"
+            let cmd = "cd \(s.cwd) && claude --resume \(s.sessionId) --name '\(s.name)' --effort max"
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(cmd, forType: .string)
             if let btn = self?.dashView.resumeButtons.first(where: {
