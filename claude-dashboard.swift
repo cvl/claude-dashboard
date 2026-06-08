@@ -1073,13 +1073,15 @@ class DashboardView: NSView {
             addSubview(nb)
             noteButtons.append(nb)
 
-            // Remove button (dead sessions only) — next to DEAD label on row 1
+            // Remove button (dead sessions only) — next to state label on row 1
             if s.state == .dead {
-                let nameW = NSAttributedString(string: s.name, attributes: [
+                let maxNameW = rect.maxX - 62 - (rect.minX + 14) - 80
+                let (dispName, _) = truncate(s.name, font: Self.fontBold12, maxWidth: maxNameW)
+                let nameW = NSAttributedString(string: dispName, attributes: [
                     .font: Self.fontBold12]).size().width
-                let stateW = NSAttributedString(string: "DEAD", attributes: [
+                let stateW = NSAttributedString(string: s.state.label, attributes: [
                     .font: Self.fontSemi9]).size().width
-                let rbX = rect.minX + 14 + nameW + 10 + stateW + 6
+                let rbX = min(rect.minX + 14 + nameW + 10 + stateW + 6, rect.maxX - 90)
                 let rb = NSButton(frame: NSRect(x: rbX, y: rect.minY + 8, width: 20, height: 20))
                 rb.bezelStyle = .inline
                 rb.image = NSImage(systemSymbolName: "xmark.circle",
@@ -1119,14 +1121,86 @@ class DashboardView: NSView {
         }
     }
 
-    // ── Cursor ──
+    // ── Cursor + Hover tooltip ──
+    private var truncatedNames: [Int: String] = [:] // index → full name (only if truncated)
+    private var hoverTip: NSWindow?
+    private var trackingAreas2: [NSTrackingArea] = []
+
     override func resetCursorRects() {
+        // Remove old tracking areas
+        for ta in trackingAreas2 { removeTrackingArea(ta) }
+        trackingAreas2.removeAll()
+
         for i in 0..<sessions.count {
             addCursorRect(cardRect(at: i), cursor: .pointingHand)
+            if truncatedNames[i] != nil {
+                let ta = NSTrackingArea(rect: cardRect(at: i),
+                    options: [.mouseEnteredAndExited, .activeAlways],
+                    owner: self, userInfo: ["idx": i])
+                addTrackingArea(ta)
+                trackingAreas2.append(ta)
+            }
         }
         for i in 0..<terminals.count {
             addCursorRect(termCardRect(at: i), cursor: .pointingHand)
         }
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard let idx = event.trackingArea?.userInfo?["idx"] as? Int,
+              let fullName = truncatedNames[idx] else { return }
+        hoverTip?.orderOut(nil)
+        hoverTip = nil
+
+        let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+        let padH: CGFloat = 6, padV: CGFloat = 3
+        let textSize = (fullName as NSString).size(withAttributes: [.font: font])
+        let size = NSSize(width: textSize.width + padH * 2, height: textSize.height + padV * 2)
+
+        let tip = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                           styleMask: [.borderless], backing: .buffered, defer: false)
+        tip.isOpaque = false
+        tip.backgroundColor = NSColor(white: 0.15, alpha: 0.92)
+        tip.hasShadow = true
+        tip.level = .floating
+        tip.contentView!.wantsLayer = true
+        tip.contentView!.layer?.cornerRadius = 4
+
+        let label = NSTextField(labelWithString: fullName)
+        label.font = font
+        label.textColor = .white
+        label.isBezeled = false
+        label.drawsBackground = false
+        label.frame = NSRect(x: padH, y: padV, width: textSize.width, height: textSize.height)
+        tip.contentView!.addSubview(label)
+
+        // Position just below the card
+        let rect = cardRect(at: idx)
+        let screenPt = window!.convertPoint(toScreen:
+            convert(NSPoint(x: rect.minX, y: rect.maxY + 2), to: nil))
+        tip.setFrameOrigin(NSPoint(x: screenPt.x, y: screenPt.y - size.height))
+        tip.orderFront(nil)
+        hoverTip = tip
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hoverTip?.orderOut(nil)
+        hoverTip = nil
+    }
+
+    // ── Truncation helper ──
+    private func truncate(_ text: String, font: NSFont, maxWidth: CGFloat) -> (String, Bool) {
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        let fullWidth = (text as NSString).size(withAttributes: attrs).width
+        if fullWidth <= maxWidth { return (text, false) }
+        let ellipsis = "…"
+        var truncated = text
+        while !truncated.isEmpty {
+            truncated = String(truncated.dropLast())
+            let w = (truncated + ellipsis as NSString).size(withAttributes: attrs).width
+            if w <= maxWidth { return (truncated + ellipsis, true) }
+        }
+        return (ellipsis, true)
     }
 
     // ── Fonts (cached) ──
@@ -1146,6 +1220,7 @@ class DashboardView: NSView {
             str.draw(at: NSPoint(x: padX, y: 24))
         }
 
+        var newTruncated: [Int: String] = [:]
         for (i, s) in ss.enumerated() {
             let rect = cardRect(at: i)
 
@@ -1166,8 +1241,11 @@ class DashboardView: NSView {
             let tx = rect.minX + 14
             let rightEdge = rect.maxX - 62 // leave space for buttons
 
-            // Row 1: name + state + duration
-            let nameAttr = NSAttributedString(string: s.name, attributes: [
+            // Row 1: name (truncated if needed) + state + duration
+            let maxNameW = rightEdge - tx - 80 // room for state label + duration
+            let (displayName, wasTruncated) = truncate(s.name, font: Self.fontBold12, maxWidth: maxNameW)
+            if wasTruncated { newTruncated[i] = s.name }
+            let nameAttr = NSAttributedString(string: displayName, attributes: [
                 .font: Self.fontBold12,
                 .foregroundColor: NSColor.labelColor])
             nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
@@ -1194,6 +1272,10 @@ class DashboardView: NSView {
             pidAttr.draw(at: NSPoint(x: rightEdge - pidAttr.size().width, y: rect.minY + 31))
 
             // Buttons are NSButton subviews managed by rebuildButtons()
+        }
+        if newTruncated != truncatedNames {
+            truncatedNames = newTruncated
+            window?.invalidateCursorRects(for: self)
         }
 
         // ── Terminals section ──
