@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+echo "Compiling tests..."
+swiftc -o /tmp/claude-dashboard-tests tests/test-dashboard.swift
+
+echo ""
+/tmp/claude-dashboard-tests
+rm -f /tmp/claude-dashboard-tests
