@@ -455,6 +455,72 @@ do {
     assertEqual(order, ["a2", "b2", "c"], "both order positions transferred")
 }
 
+// ── Removed sessions persist across store saves ──
+
+func filterRemovedFromStore(_ store: inout [String: StoredSession], removed: Set<String>) {
+    for rid in removed { store.removeValue(forKey: rid) }
+}
+
+do {
+    // Removed session is purged from store before save
+    var store: [String: StoredSession] = [
+        "a": StoredSession(sessionId: "a", name: "keep", cwd: "/tmp", startedAt: 0, lastPid: 1),
+        "b": StoredSession(sessionId: "b", name: "remove", cwd: "/tmp", startedAt: 0, lastPid: 2),
+        "c": StoredSession(sessionId: "c", name: "keep2", cwd: "/tmp", startedAt: 0, lastPid: 3)
+    ]
+    let removed: Set<String> = ["b"]
+    filterRemovedFromStore(&store, removed: removed)
+    assertEqual(store.count, 2, "removed session purged from store")
+    assert(store["b"] == nil, "session b gone")
+    assert(store["a"] != nil, "session a kept")
+    assert(store["c"] != nil, "session c kept")
+}
+
+do {
+    // Removing already-absent session is no-op
+    var store: [String: StoredSession] = [
+        "a": StoredSession(sessionId: "a", name: "test", cwd: "/tmp", startedAt: 0, lastPid: 1)
+    ]
+    let removed: Set<String> = ["nonexistent"]
+    filterRemovedFromStore(&store, removed: removed)
+    assertEqual(store.count, 1, "no-op for absent session")
+}
+
+do {
+    // Multiple removals in one pass
+    var store: [String: StoredSession] = [
+        "a": StoredSession(sessionId: "a", name: "a", cwd: "/tmp", startedAt: 0, lastPid: 1),
+        "b": StoredSession(sessionId: "b", name: "b", cwd: "/tmp", startedAt: 0, lastPid: 2),
+        "c": StoredSession(sessionId: "c", name: "c", cwd: "/tmp", startedAt: 0, lastPid: 3)
+    ]
+    let removed: Set<String> = ["a", "c"]
+    filterRemovedFromStore(&store, removed: removed)
+    assertEqual(store.count, 1, "multiple removals")
+    assertEqual(store.keys.first, "b", "only b remains")
+}
+
+do {
+    // Removed session filtered from result list
+    let sessions = [makeSession("a"), makeSession("b"), makeSession("c")]
+    let removed: Set<String> = ["a", "c"]
+    let filtered = sessions.filter { !removed.contains($0.sessionId) }
+    assertEqual(filtered.count, 1, "filtered result")
+    assertEqual(filtered[0].sessionId, "b", "only b in result")
+}
+
+do {
+    // Poll re-adding a live session doesn't bring back removed session
+    var store: [String: StoredSession] = [
+        "live": StoredSession(sessionId: "live", name: "live", cwd: "/tmp", startedAt: 100, lastPid: 1)
+    ]
+    // Simulate: poll adds live session back, but removed stays removed
+    let removed: Set<String> = ["dead-removed"]
+    store["dead-removed"] = StoredSession(sessionId: "dead-removed", name: "old", cwd: "/tmp", startedAt: 50, lastPid: 2)
+    filterRemovedFromStore(&store, removed: removed)
+    assert(store["dead-removed"] == nil, "removed session not re-added by poll")
+    assert(store["live"] != nil, "live session untouched")
+}
+
 // ═══════════════════════════════════════
 print("\n\(passed) passed, \(failed) failed")
 if failed > 0 { exit(1) }

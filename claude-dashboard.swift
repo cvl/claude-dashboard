@@ -133,6 +133,8 @@ func shell(_ path: String, _ args: String...) -> String {
     do { try proc.run() } catch { return "" }
     // Read before wait to avoid pipe buffer deadlock
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    pipe.fileHandleForReading.closeFile()
+    pipe.fileHandleForWriting.closeFile()
     proc.waitUntilExit()
     return (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 }
@@ -338,6 +340,8 @@ func loadSessions() -> [Session] {
         store[sid] = stored
         appendToHistory(stored)
     }
+    // Remove explicitly deleted sessions before saving
+    for rid in removedSessionIds { store.removeValue(forKey: rid) }
     if storeOk { saveStore(store) }
 
     // Build final list: live sessions + dead stored sessions
@@ -498,6 +502,7 @@ func revealTTY(_ tty: String) {
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         try? proc.run()
+        proc.waitUntilExit()
     }
 }
 
