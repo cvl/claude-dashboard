@@ -368,6 +368,93 @@ do {
     assert(key != liveKey, "different name does not match")
 }
 
+// ── Tab transfer on resume ──
+
+func applyTabTransfers(tabs: inout [TabBucket], order: inout [String], transfers: [(oldId: String, newId: String)]) {
+    for transfer in transfers {
+        for i in 0..<tabs.count {
+            if tabs[i].sessionIds.contains(transfer.oldId) {
+                tabs[i].sessionIds.removeAll { $0 == transfer.oldId }
+                if !tabs[i].sessionIds.contains(transfer.newId) {
+                    tabs[i].sessionIds.append(transfer.newId)
+                }
+            }
+        }
+        if let idx = order.firstIndex(of: transfer.oldId) {
+            order[idx] = transfer.newId
+        }
+    }
+}
+
+do {
+    // Session in "work" tab, resumed → stays in "work" tab
+    var tabs = [
+        TabBucket(id: "main", name: "main", sessionIds: [], terminalTTYs: []),
+        TabBucket(id: "work", name: "work", sessionIds: ["old-id"], terminalTTYs: [])
+    ]
+    var order = ["old-id", "other"]
+    applyTabTransfers(tabs: &tabs, order: &order, transfers: [(oldId: "old-id", newId: "new-id")])
+    assertEqual(tabs[1].sessionIds, ["new-id"], "tab assignment transferred to new id")
+    assert(!tabs[1].sessionIds.contains("old-id"), "old id removed from tab")
+    assertEqual(order, ["new-id", "other"], "order position transferred")
+}
+
+do {
+    // Session not in any tab (in main) → stays in main after resume
+    var tabs = [
+        TabBucket(id: "main", name: "main", sessionIds: [], terminalTTYs: []),
+        TabBucket(id: "work", name: "work", sessionIds: ["something-else"], terminalTTYs: [])
+    ]
+    var order = ["old-id"]
+    applyTabTransfers(tabs: &tabs, order: &order, transfers: [(oldId: "old-id", newId: "new-id")])
+    assert(!tabs[0].sessionIds.contains("new-id"), "main tab has no explicit assignments")
+    assert(!tabs[1].sessionIds.contains("new-id"), "work tab unchanged")
+    let mainSessions = sessionsForActiveTab(
+        [makeSession("new-id"), makeSession("something-else")],
+        tabs: tabs, activeTabId: "main")
+    assertEqual(mainSessions.map(\.sessionId), ["new-id"], "resumed session visible in main")
+}
+
+do {
+    // Transfer doesn't duplicate if new id already exists
+    var tabs = [
+        TabBucket(id: "main", name: "main", sessionIds: [], terminalTTYs: []),
+        TabBucket(id: "work", name: "work", sessionIds: ["old-id", "new-id"], terminalTTYs: [])
+    ]
+    var order = ["old-id"]
+    applyTabTransfers(tabs: &tabs, order: &order, transfers: [(oldId: "old-id", newId: "new-id")])
+    assertEqual(tabs[1].sessionIds, ["new-id"], "no duplicate after transfer")
+}
+
+do {
+    // Terminal tab assignments are not affected by session transfers
+    var tabs = [
+        TabBucket(id: "main", name: "main", sessionIds: [], terminalTTYs: []),
+        TabBucket(id: "dev", name: "dev", sessionIds: ["old-id"], terminalTTYs: ["ttys001"])
+    ]
+    var order: [String] = []
+    applyTabTransfers(tabs: &tabs, order: &order, transfers: [(oldId: "old-id", newId: "new-id")])
+    assertEqual(tabs[1].terminalTTYs, ["ttys001"], "terminal assignments untouched")
+    assertEqual(tabs[1].sessionIds, ["new-id"], "session transferred")
+}
+
+do {
+    // Multiple transfers in one batch
+    var tabs = [
+        TabBucket(id: "main", name: "main", sessionIds: [], terminalTTYs: []),
+        TabBucket(id: "t1", name: "t1", sessionIds: ["a"], terminalTTYs: []),
+        TabBucket(id: "t2", name: "t2", sessionIds: ["b"], terminalTTYs: [])
+    ]
+    var order = ["a", "b", "c"]
+    applyTabTransfers(tabs: &tabs, order: &order, transfers: [
+        (oldId: "a", newId: "a2"),
+        (oldId: "b", newId: "b2")
+    ])
+    assertEqual(tabs[1].sessionIds, ["a2"], "first transfer")
+    assertEqual(tabs[2].sessionIds, ["b2"], "second transfer")
+    assertEqual(order, ["a2", "b2", "c"], "both order positions transferred")
+}
+
 // ═══════════════════════════════════════
 print("\n\(passed) passed, \(failed) failed")
 if failed > 0 { exit(1) }

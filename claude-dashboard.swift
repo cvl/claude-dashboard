@@ -370,31 +370,13 @@ func loadSessions() -> [Session] {
                 lastActive: lastActiveTime[p] ?? Date(timeIntervalSince1970: stored.lastActiveTs ?? fallback.timeIntervalSince1970)))
         }
     }
-    // Remove old resumed entries from store and transfer tab assignments
+    // Remove old resumed entries from store, queue tab transfers for main thread
     if !resumedOldIds.isEmpty {
         for oldId in resumedOldIds {
-            // Find which live session replaced this one
             if let stored = store[oldId],
                let liveKey = "\(stored.name)\0\(stored.cwd)" as String?,
                let live = liveByKey[liveKey] {
-                // Transfer tab assignment from old to new sessionId
-                var tabsData = loadTabs()
-                for i in 0..<tabsData.count {
-                    if tabsData[i].sessionIds.contains(oldId) {
-                        tabsData[i].sessionIds.removeAll { $0 == oldId }
-                        if !tabsData[i].sessionIds.contains(live.sessionId) {
-                            tabsData[i].sessionIds.append(live.sessionId)
-                        }
-                    }
-                }
-                saveTabs(tabsData)
-
-                // Transfer session order position
-                var order = UserDefaults.standard.stringArray(forKey: "sessionOrder") ?? []
-                if let orderIdx = order.firstIndex(of: oldId) {
-                    order[orderIdx] = live.sessionId
-                    UserDefaults.standard.set(order, forKey: "sessionOrder")
-                }
+                pendingTabTransfers.append(TabTransfer(oldId: oldId, newId: live.sessionId))
             }
             store.removeValue(forKey: oldId)
         }
@@ -403,6 +385,13 @@ func loadSessions() -> [Session] {
     return result.filter { !removedSessionIds.contains($0.sessionId) }
         .sorted { $0.startedAt > $1.startedAt }
 }
+
+struct TabTransfer {
+    let oldId: String
+    let newId: String
+}
+
+var pendingTabTransfers: [TabTransfer] = []
 
 // MARK: - Notes
 
@@ -1982,6 +1971,30 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApp.terminate(_:)),
                                 keyEquivalent: "q"))
         bar.menu = menu
+
+        // ── Apply pending tab/order transfers from resume detection ──
+        if !pendingTabTransfers.isEmpty {
+            for transfer in pendingTabTransfers {
+                // Transfer tab assignment
+                for i in 0..<tabs.count {
+                    if tabs[i].sessionIds.contains(transfer.oldId) {
+                        tabs[i].sessionIds.removeAll { $0 == transfer.oldId }
+                        if !tabs[i].sessionIds.contains(transfer.newId) {
+                            tabs[i].sessionIds.append(transfer.newId)
+                        }
+                    }
+                }
+                // Transfer order position
+                var order = sessionOrder
+                if let idx = order.firstIndex(of: transfer.oldId) {
+                    order[idx] = transfer.newId
+                    sessionOrder = order
+                }
+            }
+            saveTabs(tabs)
+            tabSidebar.tabs = tabs
+            pendingTabTransfers.removeAll()
+        }
 
         // ── Window ──
         let orderedSessions = applyCustomOrder(ss)
