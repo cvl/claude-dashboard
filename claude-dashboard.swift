@@ -82,6 +82,7 @@ struct Session {
     let tty: String
     let hasNotes: Bool
     let lastActive: Date
+    let hookTs: Int  // timestamp from hook state file, 0 if none
 }
 
 struct Terminal {
@@ -308,6 +309,12 @@ func loadSessions() -> [Session] {
             let sname = (j["name"] as? String) ?? "session-\(pid)"
             let startedAt = (j["startedAt"] as? Double) ?? 0
             let fallback = Date(timeIntervalSince1970: startedAt / 1000)
+            // Read hook ts BEFORE resolveState (which may delete the file)
+            var hookTs = 0
+            let stateFileUrl = URL(fileURLWithPath: "\(stateDir)/\(p).state")
+            if let sData = try? Data(contentsOf: stateFileUrl),
+               let sj = try? JSONSerialization.jsonObject(with: sData) as? [String: Any],
+               let ts = sj["ts"] as? Int { hookTs = ts }
             let s = Session(
                 pid: p, sessionId: sid,
                 name: sname,
@@ -316,7 +323,8 @@ func loadSessions() -> [Session] {
                 state: resolveState(p),
                 tty: shell("/bin/ps", "-o", "tty=", "-p", "\(pid)"),
                 hasNotes: hasNotesFile(name: sname, sessionId: sid),
-                lastActive: lastActiveTime[p] ?? fallback)
+                lastActive: lastActiveTime[p] ?? fallback,
+                hookTs: hookTs)
             if !sid.isEmpty { liveBySessionId[sid] = s }
         }
     }
@@ -371,7 +379,8 @@ func loadSessions() -> [Session] {
                 name: stored.name, cwd: stored.cwd,
                 startedAt: stored.startedAt, state: .dead,
                 tty: "", hasNotes: hasNotesFile(name: stored.name, sessionId: sid),
-                lastActive: lastActiveTime[p] ?? Date(timeIntervalSince1970: stored.lastActiveTs ?? fallback.timeIntervalSince1970)))
+                lastActive: lastActiveTime[p] ?? Date(timeIntervalSince1970: stored.lastActiveTs ?? fallback.timeIntervalSince1970),
+                hookTs: 0))
         }
     }
     // Remove old resumed entries from store, queue tab transfers for main thread
@@ -1585,7 +1594,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var notifPanel: NSWindow!
     var notifView: NotificationPanelView!
     var dashNotifications: [DashNotification] = []
-    var prevSessionStates: [String: State] = [:]
+    var lastHookTs: [String: Int] = [:]  // sessionId → last seen hook ts
     var pollCount = 0
 
     func applicationWillTerminate(_: Notification) {
@@ -2187,14 +2196,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                 keyEquivalent: "q"))
         bar.menu = menu
 
-        // ── Notifications: simple WORKING → not-WORKING transition ──
+        // ── Notifications: hook state file ts change ──
         pollCount += 1
-        for s in ss where s.state != .dead {
-            let prev = prevSessionStates[s.sessionId]
-            prevSessionStates[s.sessionId] = s.state
-            // Skip settling period
-            guard pollCount > 10 else { continue }
-            if prev == .working && s.state != .working {
+        for s in ss where s.state != .dead && s.hookTs > 0 {
+            let prev = lastHookTs[s.sessionId]
+            lastHookTs[s.sessionId] = s.hookTs
+            // Skip first discovery (app launch)
+            guard prev != nil else { continue }
+            // Hook wrote a new event (ts changed)
+            if s.hookTs != prev {
                 if !dashNotifications.contains(where: { $0.id == s.sessionId }) {
                     dashNotifications.append(DashNotification(
                         id: s.sessionId, sessionName: s.name,
