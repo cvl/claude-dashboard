@@ -164,8 +164,6 @@ func resolveState(_ pid: pid_t) -> State {
     guard kill(pid, 0) == 0 else { state = .dead; return track(pid, state) }
     let working = isWorking(pid)
     if working {
-        // Working clears any state file
-        try? FileManager.default.removeItem(atPath: "\(stateDir)/\(pid).state")
         state = .working
     } else {
         switch stateFileEvent(pid) {
