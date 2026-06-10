@@ -830,6 +830,129 @@ class TabSidebarView: NSView {
     }
 }
 
+// MARK: - Notification Panel
+
+struct DashNotification {
+    let id: String
+    let sessionName: String
+    let cwd: String
+    let tty: String
+    let time: Date
+}
+
+class NotificationPanelView: NSView {
+    var notifications: [DashNotification] = [] { didSet { needsDisplay = true } }
+    var onClickNotification: ((DashNotification) -> Void)?
+    var onDismissNotification: ((String) -> Void)?
+    var onClearAll: (() -> Void)?
+
+    private let itemH: CGFloat = 44
+    private let gap: CGFloat = 4
+    private let padX: CGFloat = 6
+    private let padY: CGFloat = 6
+    private let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+    private let smallFont = NSFont.monospacedSystemFont(ofSize: 8, weight: .regular)
+    private let clearH: CGFloat = 20
+
+    override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    var idealHeight: CGFloat {
+        guard !notifications.isEmpty else { return 0 }
+        return padY + clearH + gap + CGFloat(notifications.count) * (itemH + gap) - gap + padY
+    }
+
+    var idealWidth: CGFloat { 180 }
+
+    private func itemRect(at index: Int) -> NSRect {
+        let y = padY + clearH + gap + CGFloat(index) * (itemH + gap)
+        return NSRect(x: padX, y: y, width: bounds.width - padX * 2, height: itemH)
+    }
+
+    private func clearRect() -> NSRect {
+        NSRect(x: padX, y: padY, width: bounds.width - padX * 2, height: clearH)
+    }
+
+    private func closeRect(for itemRect: NSRect) -> NSRect {
+        NSRect(x: itemRect.maxX - 16, y: itemRect.minY + 4, width: 12, height: 12)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let loc = convert(event.locationInWindow, from: nil)
+
+        // Clear all
+        if clearRect().contains(loc) {
+            onClearAll?()
+            return
+        }
+
+        for (i, notif) in notifications.enumerated() {
+            let rect = itemRect(at: i)
+            guard rect.contains(loc) else { continue }
+            // X button
+            if closeRect(for: rect).contains(loc) {
+                onDismissNotification?(notif.id)
+            } else {
+                onClickNotification?(notif)
+            }
+            return
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard !notifications.isEmpty else { return }
+
+        // Clear all button
+        let cr = clearRect()
+        let clearAttr = NSAttributedString(string: "Clear all", attributes: [
+            .font: smallFont, .foregroundColor: NSColor.secondaryLabelColor])
+        let cx = cr.maxX - clearAttr.size().width
+        clearAttr.draw(at: NSPoint(x: cx, y: cr.minY + 4))
+
+        for (i, notif) in notifications.enumerated() {
+            let rect = itemRect(at: i)
+
+            // Background
+            let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+            NSColor(white: 0.5, alpha: 0.08).setFill()
+            bg.fill()
+
+            // Accent
+            NSGraphicsContext.saveGraphicsState()
+            bg.addClip()
+            NSColor.systemBlue.setFill()
+            NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: 3, height: itemH)).fill()
+            NSGraphicsContext.restoreGraphicsState()
+
+            let tx = rect.minX + 10
+
+            // Name
+            let nameAttr = NSAttributedString(string: notif.sessionName, attributes: [
+                .font: font, .foregroundColor: NSColor.labelColor])
+            nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 5))
+
+            // "finished" + time
+            let df = DateFormatter()
+            df.dateFormat = "HH:mm"
+            let timeStr = "finished \(df.string(from: notif.time))"
+            let timeAttr = NSAttributedString(string: timeStr, attributes: [
+                .font: smallFont, .foregroundColor: NSColor.secondaryLabelColor])
+            timeAttr.draw(at: NSPoint(x: tx, y: rect.minY + 20))
+
+            // Path
+            let pathAttr = NSAttributedString(string: shortPath(notif.cwd), attributes: [
+                .font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor])
+            pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 31))
+
+            // X button
+            let xr = closeRect(for: rect)
+            let xAttr = NSAttributedString(string: "✕", attributes: [
+                .font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.secondaryLabelColor])
+            xAttr.draw(at: NSPoint(x: xr.minX, y: xr.minY))
+        }
+    }
+}
+
 // MARK: - Dashboard Window View
 
 class DashboardView: NSView {
@@ -1459,6 +1582,11 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var idleSleepProc: Process?  // caffeinate -i while sessions are working
     var layoutSaveTimer: Timer?
     var layoutRestoreTimer: Timer?
+    var notifPanel: NSWindow!
+    var notifView: NotificationPanelView!
+    var dashNotifications: [DashNotification] = []
+    var prevSessionStates: [String: State] = [:]
+    var pollCount = 0
 
     func applicationWillTerminate(_: Notification) {
         stopPreventIdleSleep()
@@ -1555,6 +1683,44 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Keep tab panel attached to main panel
         panel.addChildWindow(tabPanel, ordered: .below)
 
+        // Notification panel — floating to the left of tabs
+        notifPanel = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 180, height: 100),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        notifPanel.isOpaque = false
+        notifPanel.backgroundColor = .clear
+        notifPanel.hasShadow = false
+        notifPanel.level = panel.level
+        notifPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+        let notifVisual = NSVisualEffectView(frame: notifPanel.contentView!.bounds)
+        notifVisual.material = .hudWindow
+        notifVisual.blendingMode = .behindWindow
+        notifVisual.state = .active
+        notifVisual.autoresizingMask = [.width, .height]
+        notifVisual.wantsLayer = true
+        notifVisual.layer?.cornerRadius = 8
+        notifVisual.layer?.masksToBounds = true
+        notifPanel.contentView!.addSubview(notifVisual)
+
+        notifView = NotificationPanelView(frame: notifPanel.contentView!.bounds)
+        notifView.autoresizingMask = [.width, .height]
+        notifPanel.contentView!.addSubview(notifView)
+        panel.addChildWindow(notifPanel, ordered: .below)
+        notifPanel.orderOut(nil)
+
+        notifView.onClickNotification = { [weak self] notif in
+            self?.dismissNotification(notif.id)
+            revealTTY(notif.tty)
+        }
+        notifView.onDismissNotification = { [weak self] id in
+            self?.dismissNotification(id)
+        }
+        notifView.onClearAll = { [weak self] in
+            self?.dashNotifications.removeAll()
+            self?.layoutNotifPanel()
+        }
+
         tabs = loadTabs()
         tabSidebar.tabs = tabs
         tabSidebar.activeTabId = activeTabId
@@ -1648,6 +1814,31 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    func dismissNotification(_ id: String) {
+        dashNotifications.removeAll { $0.id == id }
+        notifView.notifications = dashNotifications
+    }
+
+    func layoutNotifPanel() {
+        notifView.notifications = dashNotifications
+        if dashNotifications.isEmpty {
+            if notifPanel.isVisible { notifPanel.orderOut(nil) }
+            return
+        }
+        let w = notifView.idealWidth
+        let h = notifView.idealHeight
+        let anchor: NSRect
+        if showTabs && tabPanel.isVisible {
+            anchor = tabPanel.frame
+        } else {
+            anchor = panel.frame
+        }
+        let x = anchor.minX - w - 4
+        let y = anchor.maxY - h
+        notifPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+        if !notifPanel.isVisible { notifPanel.orderFront(nil) }
+    }
+
     let baseWidth: CGFloat = 340
     let sidebarWidth: CGFloat = 68
     var tabPanel: NSWindow!
@@ -1657,12 +1848,30 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let mainFrame = panel.frame
             let tabH = tabSidebar.idealHeight + 8
             let tabX = mainFrame.minX - sidebarWidth - 4
-            let tabY = mainFrame.maxY - tabH - 28 // align top with content
+            let tabY = mainFrame.maxY - tabH - 28
             tabPanel.setFrame(NSRect(x: tabX, y: tabY, width: sidebarWidth, height: tabH),
                               display: true)
             if !tabPanel.isVisible { tabPanel.orderFront(nil) }
         } else {
             if tabPanel.isVisible { tabPanel.orderOut(nil) }
+        }
+
+        // Notification panel — always reposition (same as tabs)
+        if !dashNotifications.isEmpty {
+            let w = notifView.idealWidth
+            let h = notifView.idealHeight
+            let anchor: NSRect
+            if showTabs && tabPanel.isVisible {
+                anchor = tabPanel.frame
+            } else {
+                anchor = panel.frame
+            }
+            let x = anchor.minX - w - 4
+            let y = anchor.maxY - h
+            notifPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+            if !notifPanel.isVisible { notifPanel.orderFront(nil) }
+        } else {
+            if notifPanel.isVisible { notifPanel.orderOut(nil) }
         }
     }
 
@@ -1781,6 +1990,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alwaysOnTop = !alwaysOnTop
         panel.level = alwaysOnTop ? .floating : .normal
         tabPanel.level = panel.level
+        notifPanel.level = panel.level
     }
 
     @objc func toggleWakeOnAttention(_ sender: NSMenuItem) {
@@ -1976,6 +2186,23 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApp.terminate(_:)),
                                 keyEquivalent: "q"))
         bar.menu = menu
+
+        // ── Notifications: simple WORKING → not-WORKING transition ──
+        pollCount += 1
+        for s in ss where s.state != .dead {
+            let prev = prevSessionStates[s.sessionId]
+            prevSessionStates[s.sessionId] = s.state
+            // Skip settling period
+            guard pollCount > 10 else { continue }
+            if prev == .working && s.state != .working {
+                if !dashNotifications.contains(where: { $0.id == s.sessionId }) {
+                    dashNotifications.append(DashNotification(
+                        id: s.sessionId, sessionName: s.name,
+                        cwd: s.cwd, tty: s.tty, time: Date()))
+                    layoutNotifPanel()
+                }
+            }
+        }
 
         // ── Apply pending tab/order transfers from resume detection ──
         if !pendingTabTransfers.isEmpty {
