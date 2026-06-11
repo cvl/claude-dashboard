@@ -2008,6 +2008,20 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         wakeOnAttention = !wakeOnAttention
     }
 
+    var showNotifications: Bool {
+        get { UserDefaults.standard.object(forKey: "showNotifications") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "showNotifications") }
+    }
+
+    @objc func toggleShowNotifications(_ sender: NSMenuItem) {
+        showNotifications = !showNotifications
+        if !showNotifications {
+            dashNotifications.removeAll()
+            notifView.notifications = dashNotifications
+            if notifPanel.isVisible { notifPanel.orderOut(nil) }
+        }
+    }
+
     @objc func openNotesFolder() {
         NSWorkspace.shared.open(URL(fileURLWithPath: notesDir))
     }
@@ -2142,6 +2156,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         awake.state = wakeOnAttention ? .on : .off
         menu.addItem(awake)
 
+        let notifToggle = NSMenuItem(
+            title: "Show Notifications",
+            action: #selector(toggleShowNotifications(_:)), keyEquivalent: "")
+        notifToggle.target = self
+        notifToggle.state = showNotifications ? .on : .off
+        menu.addItem(notifToggle)
+
         let tabsToggle = NSMenuItem(
             title: "Show Tabs",
             action: #selector(toggleShowTabs(_:)), keyEquivalent: "")
@@ -2200,7 +2221,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // ── Notifications ──
         pollCount += 1
-        if pollCount > 5 {
+        if pollCount > 5 && showNotifications {
             for s in ss where s.state != .dead {
                 let sid = s.sessionId
                 let prev = prevStates[sid]
