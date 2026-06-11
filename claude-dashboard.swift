@@ -1627,7 +1627,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView = DashboardView(frame: panel.contentView!.bounds)
         dashView.autoresizingMask = [.width, .height]
         panel.contentView!.addSubview(dashView)
-        dashView.onSessionClick = { s in revealSession(s) }
+        dashView.onSessionClick = { [weak self] s in
+            revealSession(s)
+            self?.dismissNotification(s.sessionId)
+        }
         dashView.onNotesClick = { s in openNotes(for: s) }
         dashView.onResumeClick = { [weak self] s in
             let cmd = "cd \(s.cwd) && claude --resume \(s.sessionId) --name '\(s.name)' --effort max"
