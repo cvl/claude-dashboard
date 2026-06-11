@@ -1488,71 +1488,43 @@ func setupDependencies() {
         try? p.run(); p.waitUntilExit()
     }
 
-    // 3. Ensure hooks are registered in settings.json
+    // 3. Ensure hooks are registered in settings.json (uses python3 to preserve formatting)
     let settingsPath = "\(home)/.claude/settings.json"
-    // Resolve symlink to get the real path
     let realPath = (try? fm.destinationOfSymbolicLink(atPath: settingsPath)) ?? settingsPath
     let targetPath = fm.fileExists(atPath: realPath) ? realPath : settingsPath
 
-    guard let data = try? Data(contentsOf: URL(fileURLWithPath: targetPath)),
-          var settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-    else { return }
-
-    var hooks = settings["hooks"] as? [String: Any] ?? [:]
-    var changed = false
-
-    // Add Notification permission_prompt hook if missing
-    let notifHooks = hooks["Notification"] as? [[String: Any]] ?? []
-    let hasDashNotif = notifHooks.contains { entry in
-        let h = entry["hooks"] as? [[String: Any]] ?? []
-        return h.contains { ($0["command"] as? String)?.contains("dash-state.sh") == true }
+    let pyScript = """
+    import json, sys
+    path = sys.argv[1]
+    hook_path = sys.argv[2]
+    with open(path) as f:
+        s = json.load(f)
+    hooks = s.setdefault('hooks', {})
+    changed = False
+    needed = {
+        'UserPromptSubmit': {'hooks': [{'type': 'command', 'command': hook_path + ' working'}]},
+        'Stop': {'hooks': [{'type': 'command', 'command': hook_path + ' stop'}]},
+        'Notification': {'matcher': 'permission_prompt', 'hooks': [{'type': 'command', 'command': hook_path + ' needs_input'}]}
     }
-    if !hasDashNotif {
-        var updated = notifHooks
-        updated.insert([
-            "matcher": "permission_prompt",
-            "hooks": [["type": "command", "command": hookPath + " needs_input"]]
-        ], at: 0)
-        hooks["Notification"] = updated
-        changed = true
-    }
-
-    // Add Stop hook if missing
-    let stopHooks = hooks["Stop"] as? [[String: Any]] ?? []
-    let hasDashStop = stopHooks.contains { entry in
-        let h = entry["hooks"] as? [[String: Any]] ?? []
-        return h.contains { ($0["command"] as? String)?.contains("dash-state.sh") == true }
-    }
-    if !hasDashStop {
-        var updated = stopHooks
-        updated.insert([
-            "hooks": [["type": "command", "command": hookPath + " stop"]]
-        ], at: 0)
-        hooks["Stop"] = updated
-        changed = true
-    }
-
-    // Add UserPromptSubmit hook if missing (marks session as working)
-    let promptHooks = hooks["UserPromptSubmit"] as? [[String: Any]] ?? []
-    let hasDashPrompt = promptHooks.contains { entry in
-        let h = entry["hooks"] as? [[String: Any]] ?? []
-        return h.contains { ($0["command"] as? String)?.contains("dash-state.sh") == true }
-    }
-    if !hasDashPrompt {
-        var updated = promptHooks
-        updated.insert([
-            "hooks": [["type": "command", "command": hookPath + " working"]]
-        ], at: 0)
-        hooks["UserPromptSubmit"] = updated
-        changed = true
-    }
-
-    if changed {
-        settings["hooks"] = hooks
-        if let out = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
-            try? out.write(to: URL(fileURLWithPath: targetPath))
-        }
-    }
+    for event, entry in needed.items():
+        existing = hooks.get(event, [])
+        has = any('dash-state.sh' in h.get('command', '') for e in existing for h in e.get('hooks', []))
+        if not has:
+            existing.insert(0, entry)
+            hooks[event] = existing
+            changed = True
+    if changed:
+        with open(path, 'w') as f:
+            json.dump(s, f, indent=2)
+            f.write('\\n')
+    """
+    let py = Process()
+    py.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+    py.arguments = ["-c", pyScript, targetPath, hookPath]
+    py.standardOutput = FileHandle.nullDevice
+    py.standardError = FileHandle.nullDevice
+    try? py.run()
+    py.waitUntilExit()
 }
 
 // MARK: - App
