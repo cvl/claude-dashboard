@@ -2228,6 +2228,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
                 guard prev != nil else { continue }
 
+                if s.state == .working {
+                    dismissNotification(sid)
+                }
+
                 if prev == .working && s.state != .working {
                     if !dashNotifications.contains(where: { $0.id == sid }) {
                         dashNotifications.append(DashNotification(
