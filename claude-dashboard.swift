@@ -82,6 +82,7 @@ struct Session {
     let tty: String
     let hasNotes: Bool
     let lastActive: Date
+    let hookTs: Int  // timestamp from hook state file, 0 if none
 }
 
 struct Terminal {
@@ -139,41 +140,29 @@ func shell(_ path: String, _ args: String...) -> String {
     return (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-func isWorking(_ pid: pid_t) -> Bool {
-    let cpu = Double(shell("/bin/ps", "-o", "%cpu=", "-p", "\(pid)")) ?? 0
-    if cpu > 2.0 { return true }
-    let kids = shell("/usr/bin/pgrep", "-P", "\(pid)")
-    return !kids.isEmpty
-}
-
 let stateDir = "/tmp/claude-dash"
 var previousState: [pid_t: State] = [:]
 var lastActiveTime: [pid_t: Date] = [:]
 
-func stateFileEvent(_ pid: pid_t) -> String? {
+func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int)? {
     let url = URL(fileURLWithPath: "\(stateDir)/\(pid).state")
     guard let data = try? Data(contentsOf: url),
           let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let event = j["event"] as? String else { return nil }
-    return event
+          let event = j["event"] as? String,
+          let ts = j["ts"] as? Int else { return nil }
+    return (event, ts)
 }
 
 func resolveState(_ pid: pid_t) -> State {
-    let state: State
-    guard kill(pid, 0) == 0 else { state = .dead; return track(pid, state) }
-    let working = isWorking(pid)
-    if working {
-        // Working clears any state file
-        try? FileManager.default.removeItem(atPath: "\(stateDir)/\(pid).state")
-        state = .working
-    } else {
-        switch stateFileEvent(pid) {
-        case "needs_input": state = .needsInput
-        case "stop":        state = .idle
-        default:            state = .idle
-        }
+    guard kill(pid, 0) == 0 else { return track(pid, .dead) }
+    // Hook-based: UserPromptSubmit writes "working", Stop writes "stop",
+    // Notification writes "needs_input"
+    switch stateFileEvent(pid)?.event {
+    case "working":     return track(pid, .working)
+    case "needs_input": return track(pid, .needsInput)
+    case "stop":        return track(pid, .idle)
+    default:            return track(pid, .idle)
     }
-    return track(pid, state)
 }
 
 func track(_ pid: pid_t, _ state: State) -> State {
@@ -308,15 +297,18 @@ func loadSessions() -> [Session] {
             let sname = (j["name"] as? String) ?? "session-\(pid)"
             let startedAt = (j["startedAt"] as? Double) ?? 0
             let fallback = Date(timeIntervalSince1970: startedAt / 1000)
+            let resolvedState = resolveState(p)
+            let hookTs = stateFileEvent(p)?.ts ?? 0
             let s = Session(
                 pid: p, sessionId: sid,
                 name: sname,
                 cwd: (j["cwd"] as? String) ?? "",
                 startedAt: startedAt,
-                state: resolveState(p),
+                state: resolvedState,
                 tty: shell("/bin/ps", "-o", "tty=", "-p", "\(pid)"),
                 hasNotes: hasNotesFile(name: sname, sessionId: sid),
-                lastActive: lastActiveTime[p] ?? fallback)
+                lastActive: lastActiveTime[p] ?? fallback,
+                hookTs: hookTs)
             if !sid.isEmpty { liveBySessionId[sid] = s }
         }
     }
@@ -371,7 +363,8 @@ func loadSessions() -> [Session] {
                 name: stored.name, cwd: stored.cwd,
                 startedAt: stored.startedAt, state: .dead,
                 tty: "", hasNotes: hasNotesFile(name: stored.name, sessionId: sid),
-                lastActive: lastActiveTime[p] ?? Date(timeIntervalSince1970: stored.lastActiveTs ?? fallback.timeIntervalSince1970)))
+                lastActive: lastActiveTime[p] ?? Date(timeIntervalSince1970: stored.lastActiveTs ?? fallback.timeIntervalSince1970),
+                hookTs: 0))
         }
     }
     // Remove old resumed entries from store, queue tab transfers for main thread
@@ -827,6 +820,129 @@ class TabSidebarView: NSView {
         let px = addRect.midX - plus.size().width / 2
         let py = addRect.midY - plus.size().height / 2
         plus.draw(at: NSPoint(x: px, y: py))
+    }
+}
+
+// MARK: - Notification Panel
+
+struct DashNotification {
+    let id: String
+    let sessionName: String
+    let cwd: String
+    let tty: String
+    let time: Date
+}
+
+class NotificationPanelView: NSView {
+    var notifications: [DashNotification] = [] { didSet { needsDisplay = true } }
+    var onClickNotification: ((DashNotification) -> Void)?
+    var onDismissNotification: ((String) -> Void)?
+    var onClearAll: (() -> Void)?
+
+    private let itemH: CGFloat = 44
+    private let gap: CGFloat = 4
+    private let padX: CGFloat = 6
+    private let padY: CGFloat = 6
+    private let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+    private let smallFont = NSFont.monospacedSystemFont(ofSize: 8, weight: .regular)
+    private let clearH: CGFloat = 20
+
+    override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    var idealHeight: CGFloat {
+        guard !notifications.isEmpty else { return 0 }
+        return padY + clearH + gap + CGFloat(notifications.count) * (itemH + gap) - gap + padY
+    }
+
+    var idealWidth: CGFloat { 180 }
+
+    private func itemRect(at index: Int) -> NSRect {
+        let y = padY + clearH + gap + CGFloat(index) * (itemH + gap)
+        return NSRect(x: padX, y: y, width: bounds.width - padX * 2, height: itemH)
+    }
+
+    private func clearRect() -> NSRect {
+        NSRect(x: padX, y: padY, width: bounds.width - padX * 2, height: clearH)
+    }
+
+    private func closeRect(for itemRect: NSRect) -> NSRect {
+        NSRect(x: itemRect.maxX - 16, y: itemRect.minY + 4, width: 12, height: 12)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let loc = convert(event.locationInWindow, from: nil)
+
+        // Clear all
+        if clearRect().contains(loc) {
+            onClearAll?()
+            return
+        }
+
+        for (i, notif) in notifications.enumerated() {
+            let rect = itemRect(at: i)
+            guard rect.contains(loc) else { continue }
+            // X button
+            if closeRect(for: rect).contains(loc) {
+                onDismissNotification?(notif.id)
+            } else {
+                onClickNotification?(notif)
+            }
+            return
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard !notifications.isEmpty else { return }
+
+        // Clear all button
+        let cr = clearRect()
+        let clearAttr = NSAttributedString(string: "Clear all", attributes: [
+            .font: smallFont, .foregroundColor: NSColor.secondaryLabelColor])
+        let cx = cr.maxX - clearAttr.size().width
+        clearAttr.draw(at: NSPoint(x: cx, y: cr.minY + 4))
+
+        for (i, notif) in notifications.enumerated() {
+            let rect = itemRect(at: i)
+
+            // Background
+            let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+            NSColor(white: 0.5, alpha: 0.08).setFill()
+            bg.fill()
+
+            // Accent
+            NSGraphicsContext.saveGraphicsState()
+            bg.addClip()
+            NSColor.systemBlue.setFill()
+            NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: 3, height: itemH)).fill()
+            NSGraphicsContext.restoreGraphicsState()
+
+            let tx = rect.minX + 10
+
+            // Name
+            let nameAttr = NSAttributedString(string: notif.sessionName, attributes: [
+                .font: font, .foregroundColor: NSColor.labelColor])
+            nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 5))
+
+            // "finished" + time
+            let df = DateFormatter()
+            df.dateFormat = "HH:mm"
+            let timeStr = "finished \(df.string(from: notif.time))"
+            let timeAttr = NSAttributedString(string: timeStr, attributes: [
+                .font: smallFont, .foregroundColor: NSColor.secondaryLabelColor])
+            timeAttr.draw(at: NSPoint(x: tx, y: rect.minY + 20))
+
+            // Path
+            let pathAttr = NSAttributedString(string: shortPath(notif.cwd), attributes: [
+                .font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor])
+            pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 31))
+
+            // X button
+            let xr = closeRect(for: rect)
+            let xAttr = NSAttributedString(string: "✕", attributes: [
+                .font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.secondaryLabelColor])
+            xAttr.draw(at: NSPoint(x: xr.minX, y: xr.minY))
+        }
     }
 }
 
@@ -1341,15 +1457,14 @@ let hookScript = """
 #!/usr/bin/env bash
 event="${1:-stop}"
 read -t 2 input || true
-sid=$(echo "$input" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null)
+# Fast: use grep+sed instead of python3 loop
+sid=$(echo "$input" | sed -n 's/.*"session_id":"\\([^"]*\\)".*/\\1/p')
 [ -z "$sid" ] && exit 0
 for f in "$HOME/.claude/sessions/"*.json; do
-  fsid=$(python3 -c "import json; print(json.load(open('$f')).get('sessionId',''))" 2>/dev/null)
-  if [ "$fsid" = "$sid" ]; then
-    pid=$(python3 -c "import json; print(json.load(open('$f')).get('pid',''))" 2>/dev/null)
-    [ -n "$pid" ] && echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${pid}.state
-    exit 0
-  fi
+  grep -q "$sid" "$f" 2>/dev/null || continue
+  pid=$(sed -n 's/.*"pid":\\([0-9]*\\).*/\\1/p' "$f")
+  [ -n "$pid" ] && mkdir -p /tmp/claude-dash && echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${pid}.state
+  exit 0
 done
 """
 
@@ -1417,6 +1532,21 @@ func setupDependencies() {
         changed = true
     }
 
+    // Add UserPromptSubmit hook if missing (marks session as working)
+    let promptHooks = hooks["UserPromptSubmit"] as? [[String: Any]] ?? []
+    let hasDashPrompt = promptHooks.contains { entry in
+        let h = entry["hooks"] as? [[String: Any]] ?? []
+        return h.contains { ($0["command"] as? String)?.contains("dash-state.sh") == true }
+    }
+    if !hasDashPrompt {
+        var updated = promptHooks
+        updated.insert([
+            "hooks": [["type": "command", "command": hookPath + " working"]]
+        ], at: 0)
+        hooks["UserPromptSubmit"] = updated
+        changed = true
+    }
+
     if changed {
         settings["hooks"] = hooks
         if let out = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
@@ -1459,6 +1589,11 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var idleSleepProc: Process?  // caffeinate -i while sessions are working
     var layoutSaveTimer: Timer?
     var layoutRestoreTimer: Timer?
+    var notifPanel: NSWindow!
+    var notifView: NotificationPanelView!
+    var dashNotifications: [DashNotification] = []
+    var prevStates: [String: State] = [:]
+    var pollCount = 0
 
     func applicationWillTerminate(_: Notification) {
         stopPreventIdleSleep()
@@ -1491,7 +1626,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView = DashboardView(frame: panel.contentView!.bounds)
         dashView.autoresizingMask = [.width, .height]
         panel.contentView!.addSubview(dashView)
-        dashView.onSessionClick = { s in revealSession(s) }
+        dashView.onSessionClick = { [weak self] s in
+            revealSession(s)
+            self?.dismissNotification(s.sessionId)
+        }
         dashView.onNotesClick = { s in openNotes(for: s) }
         dashView.onResumeClick = { [weak self] s in
             let cmd = "cd \(s.cwd) && claude --resume \(s.sessionId) --name '\(s.name)' --effort max"
@@ -1554,6 +1692,44 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Keep tab panel attached to main panel
         panel.addChildWindow(tabPanel, ordered: .below)
+
+        // Notification panel — floating to the left of tabs
+        notifPanel = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 180, height: 100),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        notifPanel.isOpaque = false
+        notifPanel.backgroundColor = .clear
+        notifPanel.hasShadow = false
+        notifPanel.level = panel.level
+        notifPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+        let notifVisual = NSVisualEffectView(frame: notifPanel.contentView!.bounds)
+        notifVisual.material = .hudWindow
+        notifVisual.blendingMode = .behindWindow
+        notifVisual.state = .active
+        notifVisual.autoresizingMask = [.width, .height]
+        notifVisual.wantsLayer = true
+        notifVisual.layer?.cornerRadius = 8
+        notifVisual.layer?.masksToBounds = true
+        notifPanel.contentView!.addSubview(notifVisual)
+
+        notifView = NotificationPanelView(frame: notifPanel.contentView!.bounds)
+        notifView.autoresizingMask = [.width, .height]
+        notifPanel.contentView!.addSubview(notifView)
+        panel.addChildWindow(notifPanel, ordered: .below)
+        notifPanel.orderOut(nil)
+
+        notifView.onClickNotification = { [weak self] notif in
+            self?.dismissNotification(notif.id)
+            revealTTY(notif.tty)
+        }
+        notifView.onDismissNotification = { [weak self] id in
+            self?.dismissNotification(id)
+        }
+        notifView.onClearAll = { [weak self] in
+            self?.dashNotifications.removeAll()
+            self?.layoutNotifPanel()
+        }
 
         tabs = loadTabs()
         tabSidebar.tabs = tabs
@@ -1648,6 +1824,31 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    func dismissNotification(_ id: String) {
+        dashNotifications.removeAll { $0.id == id }
+        notifView.notifications = dashNotifications
+    }
+
+    func layoutNotifPanel() {
+        notifView.notifications = dashNotifications
+        if dashNotifications.isEmpty {
+            if notifPanel.isVisible { notifPanel.orderOut(nil) }
+            return
+        }
+        let w = notifView.idealWidth
+        let h = notifView.idealHeight
+        let anchor: NSRect
+        if showTabs && tabPanel.isVisible {
+            anchor = tabPanel.frame
+        } else {
+            anchor = panel.frame
+        }
+        let x = anchor.minX - w - 4
+        let y = anchor.maxY - h
+        notifPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+        if !notifPanel.isVisible { notifPanel.orderFront(nil) }
+    }
+
     let baseWidth: CGFloat = 340
     let sidebarWidth: CGFloat = 68
     var tabPanel: NSWindow!
@@ -1657,12 +1858,30 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let mainFrame = panel.frame
             let tabH = tabSidebar.idealHeight + 8
             let tabX = mainFrame.minX - sidebarWidth - 4
-            let tabY = mainFrame.maxY - tabH - 28 // align top with content
+            let tabY = mainFrame.maxY - tabH - 28
             tabPanel.setFrame(NSRect(x: tabX, y: tabY, width: sidebarWidth, height: tabH),
                               display: true)
             if !tabPanel.isVisible { tabPanel.orderFront(nil) }
         } else {
             if tabPanel.isVisible { tabPanel.orderOut(nil) }
+        }
+
+        // Notification panel — always reposition (same as tabs)
+        if !dashNotifications.isEmpty {
+            let w = notifView.idealWidth
+            let h = notifView.idealHeight
+            let anchor: NSRect
+            if showTabs && tabPanel.isVisible {
+                anchor = tabPanel.frame
+            } else {
+                anchor = panel.frame
+            }
+            let x = anchor.minX - w - 4
+            let y = anchor.maxY - h
+            notifPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+            if !notifPanel.isVisible { notifPanel.orderFront(nil) }
+        } else {
+            if notifPanel.isVisible { notifPanel.orderOut(nil) }
         }
     }
 
@@ -1781,10 +2000,25 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alwaysOnTop = !alwaysOnTop
         panel.level = alwaysOnTop ? .floating : .normal
         tabPanel.level = panel.level
+        notifPanel.level = panel.level
     }
 
     @objc func toggleWakeOnAttention(_ sender: NSMenuItem) {
         wakeOnAttention = !wakeOnAttention
+    }
+
+    var showNotifications: Bool {
+        get { UserDefaults.standard.object(forKey: "showNotifications") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "showNotifications") }
+    }
+
+    @objc func toggleShowNotifications(_ sender: NSMenuItem) {
+        showNotifications = !showNotifications
+        if !showNotifications {
+            dashNotifications.removeAll()
+            notifView.notifications = dashNotifications
+            if notifPanel.isVisible { notifPanel.orderOut(nil) }
+        }
     }
 
     @objc func openNotesFolder() {
@@ -1921,6 +2155,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         awake.state = wakeOnAttention ? .on : .off
         menu.addItem(awake)
 
+        let notifToggle = NSMenuItem(
+            title: "Show Notifications",
+            action: #selector(toggleShowNotifications(_:)), keyEquivalent: "")
+        notifToggle.target = self
+        notifToggle.state = showNotifications ? .on : .off
+        menu.addItem(notifToggle)
+
         let tabsToggle = NSMenuItem(
             title: "Show Tabs",
             action: #selector(toggleShowTabs(_:)), keyEquivalent: "")
@@ -1976,6 +2217,31 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApp.terminate(_:)),
                                 keyEquivalent: "q"))
         bar.menu = menu
+
+        // ── Notifications ──
+        pollCount += 1
+        if pollCount > 5 && showNotifications {
+            for s in ss where s.state != .dead {
+                let sid = s.sessionId
+                let prev = prevStates[sid]
+                prevStates[sid] = s.state
+
+                guard prev != nil else { continue }
+
+                if s.state == .working {
+                    dismissNotification(sid)
+                }
+
+                if prev == .working && s.state != .working {
+                    if !dashNotifications.contains(where: { $0.id == sid }) {
+                        dashNotifications.append(DashNotification(
+                            id: sid, sessionName: s.name,
+                            cwd: s.cwd, tty: s.tty, time: Date()))
+                        layoutNotifPanel()
+                    }
+                }
+            }
+        }
 
         // ── Apply pending tab/order transfers from resume detection ──
         if !pendingTabTransfers.isEmpty {
