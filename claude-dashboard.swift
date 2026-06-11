@@ -1593,7 +1593,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var notifView: NotificationPanelView!
     var dashNotifications: [DashNotification] = []
     var prevStates: [String: State] = [:]
-    var workingTimer: [String: Date] = [:]
     var pollCount = 0
 
     func applicationWillTerminate(_: Notification) {
@@ -2229,24 +2228,12 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
                 guard prev != nil else { continue }
 
-                if prev != .working && s.state == .working {
-                    // idle/needsInput → working: start timer
-                    workingTimer[sid] = Date()
-                }
-
                 if prev == .working && s.state != .working {
-                    // working → idle/needsInput: check timer
-                    if let start = workingTimer[sid] {
-                        let dur = Date().timeIntervalSince(start)
-                        workingTimer.removeValue(forKey: sid)
-                        if dur >= 5 {
-                            if !dashNotifications.contains(where: { $0.id == sid }) {
-                                dashNotifications.append(DashNotification(
-                                    id: sid, sessionName: s.name,
-                                    cwd: s.cwd, tty: s.tty, time: Date()))
-                                layoutNotifPanel()
-                            }
-                        }
+                    if !dashNotifications.contains(where: { $0.id == sid }) {
+                        dashNotifications.append(DashNotification(
+                            id: sid, sessionName: s.name,
+                            cwd: s.cwd, tty: s.tty, time: Date()))
+                        layoutNotifPanel()
                     }
                 }
             }
