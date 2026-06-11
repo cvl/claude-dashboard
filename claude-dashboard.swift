@@ -142,9 +142,14 @@ func shell(_ path: String, _ args: String...) -> String {
 
 func isWorking(_ pid: pid_t) -> Bool {
     let cpu = Double(shell("/bin/ps", "-o", "%cpu=", "-p", "\(pid)")) ?? 0
-    if cpu > 2.0 { return true }
+    if cpu > 10.0 { return true }
+    // Check if any child has significant CPU
     let kids = shell("/usr/bin/pgrep", "-P", "\(pid)")
-    return !kids.isEmpty
+    for kid in kids.components(separatedBy: "\n") where !kid.isEmpty {
+        let kidCPU = Double(shell("/bin/ps", "-o", "%cpu=", "-p", kid)) ?? 0
+        if kidCPU > 5.0 { return true }
+    }
+    return false
 }
 
 let stateDir = "/tmp/claude-dash"
