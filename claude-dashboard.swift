@@ -1592,8 +1592,8 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var notifPanel: NSWindow!
     var notifView: NotificationPanelView!
     var dashNotifications: [DashNotification] = []
-    var workingSince: [String: Date] = [:]  // when first seen WORKING
-    var idleSince: [String: Date] = [:]    // when went idle after working
+    var prevStates: [String: State] = [:]
+    var workingTimer: [String: Date] = [:]
     var pollCount = 0
 
     func applicationWillTerminate(_: Notification) {
@@ -2195,36 +2195,34 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                 keyEquivalent: "q"))
         bar.menu = menu
 
-        // ── Notifications: WORKING (10s elapsed) → IDLE (3s sustained) ──
+        // ── Notifications ──
         pollCount += 1
-        if pollCount == 11 { workingSince.removeAll(); idleSince.removeAll() }
-        if pollCount > 10 {
+        if pollCount > 5 {
             for s in ss where s.state != .dead {
                 let sid = s.sessionId
-                if s.state == .working {
-                    // First WORKING → record. Don't reset on re-entry.
-                    if workingSince[sid] == nil { workingSince[sid] = Date() }
-                    // Back to working → cancel idle timer
-                    idleSince.removeValue(forKey: sid)
-                } else if workingSince[sid] != nil {
-                    // Was working, now idle → start/continue idle timer
-                    if idleSince[sid] == nil { idleSince[sid] = Date() }
-                    let idle = Date().timeIntervalSince(idleSince[sid]!)
-                    let elapsed = Date().timeIntervalSince(workingSince[sid]!)
-                    if idle >= 3 && elapsed >= 10 {
-                        // Real work finished
-                        workingSince.removeValue(forKey: sid)
-                        idleSince.removeValue(forKey: sid)
-                        if !dashNotifications.contains(where: { $0.id == sid }) {
-                            dashNotifications.append(DashNotification(
-                                id: sid, sessionName: s.name,
-                                cwd: s.cwd, tty: s.tty, time: Date()))
-                            layoutNotifPanel()
+                let prev = prevStates[sid]
+                prevStates[sid] = s.state
+
+                guard prev != nil else { continue }
+
+                if prev != .working && s.state == .working {
+                    // idle/needsInput → working: start timer
+                    workingTimer[sid] = Date()
+                }
+
+                if prev == .working && s.state != .working {
+                    // working → idle/needsInput: check timer
+                    if let start = workingTimer[sid] {
+                        let dur = Date().timeIntervalSince(start)
+                        workingTimer.removeValue(forKey: sid)
+                        if dur >= 5 {
+                            if !dashNotifications.contains(where: { $0.id == sid }) {
+                                dashNotifications.append(DashNotification(
+                                    id: sid, sessionName: s.name,
+                                    cwd: s.cwd, tty: s.tty, time: Date()))
+                                layoutNotifPanel()
+                            }
                         }
-                    } else if idle >= 30 {
-                        // Stale spike — clean up
-                        workingSince.removeValue(forKey: sid)
-                        idleSince.removeValue(forKey: sid)
                     }
                 }
             }
