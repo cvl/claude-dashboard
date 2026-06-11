@@ -140,44 +140,29 @@ func shell(_ path: String, _ args: String...) -> String {
     return (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-func isWorking(_ pid: pid_t) -> Bool {
-    let cpu = Double(shell("/bin/ps", "-o", "%cpu=", "-p", "\(pid)")) ?? 0
-    if cpu > 30.0 { return true }
-    // Check if any child has significant CPU
-    let kids = shell("/usr/bin/pgrep", "-P", "\(pid)")
-    for kid in kids.components(separatedBy: "\n") where !kid.isEmpty {
-        let kidCPU = Double(shell("/bin/ps", "-o", "%cpu=", "-p", kid)) ?? 0
-        if kidCPU > 5.0 { return true }
-    }
-    return false
-}
-
 let stateDir = "/tmp/claude-dash"
 var previousState: [pid_t: State] = [:]
 var lastActiveTime: [pid_t: Date] = [:]
 
-func stateFileEvent(_ pid: pid_t) -> String? {
+func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int)? {
     let url = URL(fileURLWithPath: "\(stateDir)/\(pid).state")
     guard let data = try? Data(contentsOf: url),
           let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let event = j["event"] as? String else { return nil }
-    return event
+          let event = j["event"] as? String,
+          let ts = j["ts"] as? Int else { return nil }
+    return (event, ts)
 }
 
 func resolveState(_ pid: pid_t) -> State {
-    let state: State
-    guard kill(pid, 0) == 0 else { state = .dead; return track(pid, state) }
-    let working = isWorking(pid)
-    if working {
-        state = .working
-    } else {
-        switch stateFileEvent(pid) {
-        case "needs_input": state = .needsInput
-        case "stop":        state = .idle
-        default:            state = .idle
-        }
+    guard kill(pid, 0) == 0 else { return track(pid, .dead) }
+    // Hook-based: UserPromptSubmit writes "working", Stop writes "stop",
+    // Notification writes "needs_input"
+    switch stateFileEvent(pid)?.event {
+    case "working":     return track(pid, .working)
+    case "needs_input": return track(pid, .needsInput)
+    case "stop":        return track(pid, .idle)
+    default:            return track(pid, .idle)
     }
-    return track(pid, state)
 }
 
 func track(_ pid: pid_t, _ state: State) -> State {
@@ -312,18 +297,14 @@ func loadSessions() -> [Session] {
             let sname = (j["name"] as? String) ?? "session-\(pid)"
             let startedAt = (j["startedAt"] as? Double) ?? 0
             let fallback = Date(timeIntervalSince1970: startedAt / 1000)
-            // Read hook ts BEFORE resolveState (which may delete the file)
-            var hookTs = 0
-            let stateFileUrl = URL(fileURLWithPath: "\(stateDir)/\(p).state")
-            if let sData = try? Data(contentsOf: stateFileUrl),
-               let sj = try? JSONSerialization.jsonObject(with: sData) as? [String: Any],
-               let ts = sj["ts"] as? Int { hookTs = ts }
+            let resolvedState = resolveState(p)
+            let hookTs = stateFileEvent(p)?.ts ?? 0
             let s = Session(
                 pid: p, sessionId: sid,
                 name: sname,
                 cwd: (j["cwd"] as? String) ?? "",
                 startedAt: startedAt,
-                state: resolveState(p),
+                state: resolvedState,
                 tty: shell("/bin/ps", "-o", "tty=", "-p", "\(pid)"),
                 hasNotes: hasNotesFile(name: sname, sessionId: sid),
                 lastActive: lastActiveTime[p] ?? fallback,
@@ -1476,15 +1457,14 @@ let hookScript = """
 #!/usr/bin/env bash
 event="${1:-stop}"
 read -t 2 input || true
-sid=$(echo "$input" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null)
+# Fast: use grep+sed instead of python3 loop
+sid=$(echo "$input" | sed -n 's/.*"session_id":"\\([^"]*\\)".*/\\1/p')
 [ -z "$sid" ] && exit 0
 for f in "$HOME/.claude/sessions/"*.json; do
-  fsid=$(python3 -c "import json; print(json.load(open('$f')).get('sessionId',''))" 2>/dev/null)
-  if [ "$fsid" = "$sid" ]; then
-    pid=$(python3 -c "import json; print(json.load(open('$f')).get('pid',''))" 2>/dev/null)
-    [ -n "$pid" ] && echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${pid}.state
-    exit 0
-  fi
+  grep -q "$sid" "$f" 2>/dev/null || continue
+  pid=$(sed -n 's/.*"pid":\\([0-9]*\\).*/\\1/p' "$f")
+  [ -n "$pid" ] && mkdir -p /tmp/claude-dash && echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${pid}.state
+  exit 0
 done
 """
 
@@ -1549,6 +1529,21 @@ func setupDependencies() {
             "hooks": [["type": "command", "command": hookPath + " stop"]]
         ], at: 0)
         hooks["Stop"] = updated
+        changed = true
+    }
+
+    // Add UserPromptSubmit hook if missing (marks session as working)
+    let promptHooks = hooks["UserPromptSubmit"] as? [[String: Any]] ?? []
+    let hasDashPrompt = promptHooks.contains { entry in
+        let h = entry["hooks"] as? [[String: Any]] ?? []
+        return h.contains { ($0["command"] as? String)?.contains("dash-state.sh") == true }
+    }
+    if !hasDashPrompt {
+        var updated = promptHooks
+        updated.insert([
+            "hooks": [["type": "command", "command": hookPath + " working"]]
+        ], at: 0)
+        hooks["UserPromptSubmit"] = updated
         changed = true
     }
 
