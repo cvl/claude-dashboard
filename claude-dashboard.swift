@@ -1693,6 +1693,16 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         notifView.onClickNotification = { [weak self] notif in
             self?.dismissNotification(notif.id)
+            // Switch to the tab containing this session
+            if let self {
+                let sid = notif.id
+                let targetTab = self.tabs.first(where: { $0.sessionIds.contains(sid) })?.id ?? "main"
+                if self.activeTabId != targetTab {
+                    self.activeTabId = targetTab
+                    self.tabSidebar.activeTabId = targetTab
+                    self.poll()
+                }
+            }
             revealTTY(notif.tty)
         }
         notifView.onDismissNotification = { [weak self] id in
