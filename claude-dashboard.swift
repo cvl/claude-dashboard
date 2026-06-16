@@ -30,8 +30,8 @@ func dashLog(_ msg: String) {
     // Rotate: keep last 1000 lines
     if let content = try? String(contentsOfFile: logFile, encoding: .utf8) {
         let lines = content.components(separatedBy: "\n")
-        if lines.count > 1200 {
-            let trimmed = lines.suffix(1000).joined(separator: "\n")
+        if lines.count > 5500 {
+            let trimmed = lines.suffix(5000).joined(separator: "\n")
             try? trimmed.write(toFile: logFile, atomically: true, encoding: .utf8)
         }
     }
