@@ -13,6 +13,29 @@ let layoutFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-layout.json").path
 let tabsFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-tabs.json").path
+let logFile = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".claude").appendingPathComponent("dashboard.log").path
+
+func dashLog(_ msg: String) {
+    let df = DateFormatter()
+    df.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    let line = "[\(df.string(from: Date()))] \(msg)\n"
+    if let fh = FileHandle(forWritingAtPath: logFile) {
+        fh.seekToEndOfFile()
+        fh.write(line.data(using: .utf8)!)
+        fh.closeFile()
+    } else {
+        try? line.write(toFile: logFile, atomically: true, encoding: .utf8)
+    }
+    // Rotate: keep last 1000 lines
+    if let content = try? String(contentsOfFile: logFile, encoding: .utf8) {
+        let lines = content.components(separatedBy: "\n")
+        if lines.count > 1200 {
+            let trimmed = lines.suffix(1000).joined(separator: "\n")
+            try? trimmed.write(toFile: logFile, atomically: true, encoding: .utf8)
+        }
+    }
+}
 
 // MARK: - Tabs
 
@@ -155,14 +178,20 @@ func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int)? {
 
 func resolveState(_ pid: pid_t) -> State {
     guard kill(pid, 0) == 0 else { return track(pid, .dead) }
-    // Hook-based: UserPromptSubmit writes "working", Stop writes "stop",
-    // Notification writes "needs_input"
-    switch stateFileEvent(pid)?.event {
-    case "working":     return track(pid, .working)
-    case "needs_input": return track(pid, .needsInput)
-    case "stop":        return track(pid, .idle)
-    default:            return track(pid, .idle)
+    let sf = stateFileEvent(pid)
+    let state: State
+    switch sf?.event {
+    case "working":     state = .working
+    case "needs_input": state = .needsInput
+    case "stop":        state = .idle
+    default:            state = .idle
     }
+    // Log state transitions
+    let prev = previousState[pid]
+    if prev != nil && prev != state {
+        dashLog("STATE pid=\(pid) \(prev!.label) → \(state.label) hook=\(sf?.event ?? "none") ts=\(sf?.ts ?? 0)")
+    }
+    return track(pid, state)
 }
 
 func track(_ pid: pid_t, _ state: State) -> State {
@@ -1479,7 +1508,12 @@ func setupDependencies() {
 
     // 2. Install hook script
     let hookPath = "\(home)/.claude/hooks/dash-state.sh"
-    if !fm.fileExists(atPath: hookPath) || (try? String(contentsOfFile: hookPath, encoding: .utf8)) != hookScript {
+    let hookExists = fm.fileExists(atPath: hookPath)
+    let hookMatches = (try? String(contentsOfFile: hookPath, encoding: .utf8)) == hookScript
+    if !hookExists || !hookMatches {
+        dashLog("HOOK INSTALL exists=\(hookExists) matches=\(hookMatches)")
+    }
+    if !hookExists || !hookMatches {
         try? hookScript.write(toFile: hookPath, atomically: true, encoding: .utf8)
         // chmod +x
         let p = Process()
@@ -1572,6 +1606,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_: Notification) {
+        dashLog("APP LAUNCH")
         setupDependencies()
         NSApp.setActivationPolicy(.regular)
 
@@ -2200,8 +2235,19 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                 keyEquivalent: "q"))
         bar.menu = menu
 
-        // ── Notifications ──
+        // ── Periodic status log (every 60s) ──
         pollCount += 1
+        if pollCount % 60 == 0 {
+            let live = ss.filter { $0.state != .dead }
+            let states = live.map { "\($0.name)=\($0.state.label)" }.joined(separator: " ")
+            let stateFiles = live.compactMap { s -> String? in
+                let sf = stateFileEvent(s.pid)
+                return sf != nil ? "\(s.name):\(sf!.event)@\(sf!.ts)" : "\(s.name):none"
+            }.joined(separator: " ")
+            dashLog("POLL#\(pollCount) sessions=\(ss.count) live=\(live.count) states=[\(states)] hooks=[\(stateFiles)]")
+        }
+
+        // ── Notifications ──
         if pollCount > 5 && showNotifications {
             for s in ss where s.state != .dead {
                 let sid = s.sessionId
@@ -2216,6 +2262,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
                 if prev == .working && s.state != .working {
                     if !dashNotifications.contains(where: { $0.id == sid }) {
+                        dashLog("NOTIFY \(s.name) \(State.working.label) → \(s.state.label)")
                         dashNotifications.append(DashNotification(
                             id: sid, sessionName: s.name,
                             cwd: s.cwd, tty: s.tty, time: Date()))
