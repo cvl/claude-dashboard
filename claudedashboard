@@ -10,19 +10,21 @@ fi
 name="$1"
 tty_name=$(tty | sed 's|/dev/||')
 cwd="$(pwd)"
+pid=$$
 file="$HOME/.claude/dashboard-terminals.json"
 mkdir -p "$(dirname "$file")"
 
 python3 -c "
 import json, os, sys, time
-f, tty, name, cwd = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+f, name, tty, cwd, pid = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
 d = {}
 if os.path.exists(f):
     with open(f) as fh:
         d = json.load(fh)
-d[tty] = {'name': name, 'tty': tty, 'cwd': cwd, 'registeredAt': time.time()}
+# Key by name, store shell PID for liveness check
+d[name] = {'name': name, 'tty': tty, 'cwd': cwd, 'pid': pid, 'registeredAt': time.time()}
 with open(f, 'w') as fh:
     json.dump(d, fh)
-" "$file" "$tty_name" "$name" "$cwd"
+" "$file" "$name" "$tty_name" "$cwd" "$pid"
 
-echo "Registered '$name' ($tty_name)"
+echo "Registered '$name' ($tty_name, pid=$pid)"

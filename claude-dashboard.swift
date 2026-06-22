@@ -124,26 +124,29 @@ func loadRegisteredTerminals() -> [Terminal] {
     else { return [] }
     var result: [Terminal] = []
     for (_, entry) in dict {
-        guard let tty = entry["tty"] as? String,
-              let name = entry["name"] as? String else { continue }
+        guard let name = entry["name"] as? String else { continue }
         let cwd = entry["cwd"] as? String ?? ""
-        // Check if TTY is still active
-        let pids = shell("/bin/ps", "-o", "pid=", "-t", tty)
-        let alive = !pids.isEmpty
+        let storedPid = entry["pid"] as? Int ?? 0
+        // Check liveness by stored shell PID
+        let alive = storedPid > 0 && kill(pid_t(storedPid), 0) == 0
+        // Look up current TTY from the shell PID (not stored TTY which may be stale)
+        let tty = alive ? shell("/bin/ps", "-o", "tty=", "-p", "\(storedPid)") : ""
         result.append(Terminal(tty: tty, name: name, cwd: cwd, isAlive: alive))
     }
     return result.sorted { $0.name < $1.name }
 }
 
-func removeRegisteredTerminal(_ tty: String) {
+func removeRegisteredTerminal(_ name: String) {
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: termStoreFile)),
           var dict = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]]
     else { return }
-    dict.removeValue(forKey: tty)
+    dict.removeValue(forKey: name)
     if let out = try? JSONSerialization.data(withJSONObject: dict) {
         try? out.write(to: URL(fileURLWithPath: termStoreFile))
     }
 }
+
+
 
 // MARK: - Process helpers
 
@@ -1139,7 +1142,7 @@ class DashboardView: NSView {
             if dragSourceType == "session" && src < sessions.count {
                 itemId = "session:\(sessions[src].sessionId)"
             } else if dragSourceType == "terminal" && src < terminals.count {
-                itemId = "terminal:\(terminals[src].tty)"
+                itemId = "terminal:\(terminals[src].name)"
             } else { itemId = "" }
             if !itemId.isEmpty { onDragToTab?(targetTabId, itemId) }
         } else if isDragging, let src = dragSourceIndex, let tgt = dropTargetIndex, dragSourceType == "session" {
@@ -1651,7 +1654,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         dashView.onTerminalClick = { t in revealTTY(t.tty) }
         dashView.onTerminalRemove = { [weak self] t in
-            removeRegisteredTerminal(t.tty)
+            removeRegisteredTerminal(t.name)
             self?.poll()
         }
         dashView.onReorder = { [weak self] from, to in
@@ -1933,13 +1936,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func terminalsForActiveTab(_ all: [Terminal]) -> [Terminal] {
+        // terminalTTYs stores terminal names (not TTYs) despite the field name
         if activeTabId == "main" {
             let assigned = Set(tabs.filter { $0.id != "main" }.flatMap(\.terminalTTYs))
-            return all.filter { !assigned.contains($0.tty) }
+            return all.filter { !assigned.contains($0.name) }
         }
         guard let tab = tabs.first(where: { $0.id == activeTabId }) else { return all }
-        let ttys = Set(tab.terminalTTYs)
-        return all.filter { ttys.contains($0.tty) }
+        let names = Set(tab.terminalTTYs)
+        return all.filter { names.contains($0.name) }
     }
 
     func promptTabName(_ title: String, defaultValue: String) -> String? {
