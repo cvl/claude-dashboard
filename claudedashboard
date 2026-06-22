@@ -10,7 +10,9 @@ fi
 name="$1"
 tty_name=$(tty | sed 's|/dev/||')
 cwd="$(pwd)"
-pid=$$
+# Find the long-lived shell PID (walk up from script to terminal shell)
+# The script's $$ dies immediately, so store the parent shell's PID
+pid=$PPID
 file="$HOME/.claude/dashboard-terminals.json"
 mkdir -p "$(dirname "$file")"
 
