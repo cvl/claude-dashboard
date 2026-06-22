@@ -13,6 +13,29 @@ let layoutFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-layout.json").path
 let tabsFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-tabs.json").path
+let logFile = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".claude").appendingPathComponent("dashboard.log").path
+
+func dashLog(_ msg: String) {
+    let df = DateFormatter()
+    df.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    let line = "[\(df.string(from: Date()))] \(msg)\n"
+    if let fh = FileHandle(forWritingAtPath: logFile) {
+        fh.seekToEndOfFile()
+        fh.write(line.data(using: .utf8)!)
+        fh.closeFile()
+    } else {
+        try? line.write(toFile: logFile, atomically: true, encoding: .utf8)
+    }
+    // Rotate: keep last 1000 lines
+    if let content = try? String(contentsOfFile: logFile, encoding: .utf8) {
+        let lines = content.components(separatedBy: "\n")
+        if lines.count > 5500 {
+            let trimmed = lines.suffix(5000).joined(separator: "\n")
+            try? trimmed.write(toFile: logFile, atomically: true, encoding: .utf8)
+        }
+    }
+}
 
 // MARK: - Tabs
 
@@ -101,26 +124,29 @@ func loadRegisteredTerminals() -> [Terminal] {
     else { return [] }
     var result: [Terminal] = []
     for (_, entry) in dict {
-        guard let tty = entry["tty"] as? String,
-              let name = entry["name"] as? String else { continue }
+        guard let name = entry["name"] as? String else { continue }
         let cwd = entry["cwd"] as? String ?? ""
-        // Check if TTY is still active
-        let pids = shell("/bin/ps", "-o", "pid=", "-t", tty)
-        let alive = !pids.isEmpty
+        let storedPid = entry["pid"] as? Int ?? 0
+        // Check liveness by stored shell PID
+        let alive = storedPid > 0 && kill(pid_t(storedPid), 0) == 0
+        // Look up current TTY from the shell PID (not stored TTY which may be stale)
+        let tty = alive ? shell("/bin/ps", "-o", "tty=", "-p", "\(storedPid)") : ""
         result.append(Terminal(tty: tty, name: name, cwd: cwd, isAlive: alive))
     }
     return result.sorted { $0.name < $1.name }
 }
 
-func removeRegisteredTerminal(_ tty: String) {
+func removeRegisteredTerminal(_ name: String) {
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: termStoreFile)),
           var dict = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]]
     else { return }
-    dict.removeValue(forKey: tty)
+    dict.removeValue(forKey: name)
     if let out = try? JSONSerialization.data(withJSONObject: dict) {
         try? out.write(to: URL(fileURLWithPath: termStoreFile))
     }
 }
+
+
 
 // MARK: - Process helpers
 
@@ -155,14 +181,20 @@ func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int)? {
 
 func resolveState(_ pid: pid_t) -> State {
     guard kill(pid, 0) == 0 else { return track(pid, .dead) }
-    // Hook-based: UserPromptSubmit writes "working", Stop writes "stop",
-    // Notification writes "needs_input"
-    switch stateFileEvent(pid)?.event {
-    case "working":     return track(pid, .working)
-    case "needs_input": return track(pid, .needsInput)
-    case "stop":        return track(pid, .idle)
-    default:            return track(pid, .idle)
+    let sf = stateFileEvent(pid)
+    let state: State
+    switch sf?.event {
+    case "working":     state = .working
+    case "needs_input": state = .needsInput
+    case "stop":        state = .idle
+    default:            state = .idle
     }
+    // Log state transitions
+    let prev = previousState[pid]
+    if prev != nil && prev != state {
+        dashLog("STATE pid=\(pid) \(prev!.label) → \(state.label) hook=\(sf?.event ?? "none") ts=\(sf?.ts ?? 0)")
+    }
+    return track(pid, state)
 }
 
 func track(_ pid: pid_t, _ state: State) -> State {
@@ -1110,7 +1142,7 @@ class DashboardView: NSView {
             if dragSourceType == "session" && src < sessions.count {
                 itemId = "session:\(sessions[src].sessionId)"
             } else if dragSourceType == "terminal" && src < terminals.count {
-                itemId = "terminal:\(terminals[src].tty)"
+                itemId = "terminal:\(terminals[src].name)"
             } else { itemId = "" }
             if !itemId.isEmpty { onDragToTab?(targetTabId, itemId) }
         } else if isDragging, let src = dragSourceIndex, let tgt = dropTargetIndex, dragSourceType == "session" {
@@ -1479,7 +1511,12 @@ func setupDependencies() {
 
     // 2. Install hook script
     let hookPath = "\(home)/.claude/hooks/dash-state.sh"
-    if !fm.fileExists(atPath: hookPath) || (try? String(contentsOfFile: hookPath, encoding: .utf8)) != hookScript {
+    let hookExists = fm.fileExists(atPath: hookPath)
+    let hookMatches = (try? String(contentsOfFile: hookPath, encoding: .utf8)) == hookScript
+    if !hookExists || !hookMatches {
+        dashLog("HOOK INSTALL exists=\(hookExists) matches=\(hookMatches)")
+    }
+    if !hookExists || !hookMatches {
         try? hookScript.write(toFile: hookPath, atomically: true, encoding: .utf8)
         // chmod +x
         let p = Process()
@@ -1572,6 +1609,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_: Notification) {
+        dashLog("APP LAUNCH")
         setupDependencies()
         NSApp.setActivationPolicy(.regular)
 
@@ -1616,7 +1654,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         dashView.onTerminalClick = { t in revealTTY(t.tty) }
         dashView.onTerminalRemove = { [weak self] t in
-            removeRegisteredTerminal(t.tty)
+            removeRegisteredTerminal(t.name)
             self?.poll()
         }
         dashView.onReorder = { [weak self] from, to in
@@ -1898,13 +1936,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func terminalsForActiveTab(_ all: [Terminal]) -> [Terminal] {
+        // terminalTTYs stores terminal names (not TTYs) despite the field name
         if activeTabId == "main" {
             let assigned = Set(tabs.filter { $0.id != "main" }.flatMap(\.terminalTTYs))
-            return all.filter { !assigned.contains($0.tty) }
+            return all.filter { !assigned.contains($0.name) }
         }
         guard let tab = tabs.first(where: { $0.id == activeTabId }) else { return all }
-        let ttys = Set(tab.terminalTTYs)
-        return all.filter { ttys.contains($0.tty) }
+        let names = Set(tab.terminalTTYs)
+        return all.filter { names.contains($0.name) }
     }
 
     func promptTabName(_ title: String, defaultValue: String) -> String? {
@@ -2200,8 +2239,19 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                 keyEquivalent: "q"))
         bar.menu = menu
 
-        // ── Notifications ──
+        // ── Periodic status log (every 60s) ──
         pollCount += 1
+        if pollCount % 60 == 0 {
+            let live = ss.filter { $0.state != .dead }
+            let states = live.map { "\($0.name)=\($0.state.label)" }.joined(separator: " ")
+            let stateFiles = live.compactMap { s -> String? in
+                let sf = stateFileEvent(s.pid)
+                return sf != nil ? "\(s.name):\(sf!.event)@\(sf!.ts)" : "\(s.name):none"
+            }.joined(separator: " ")
+            dashLog("POLL#\(pollCount) sessions=\(ss.count) live=\(live.count) states=[\(states)] hooks=[\(stateFiles)]")
+        }
+
+        // ── Notifications ──
         if pollCount > 5 && showNotifications {
             for s in ss where s.state != .dead {
                 let sid = s.sessionId
@@ -2216,6 +2266,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
                 if prev == .working && s.state != .working {
                     if !dashNotifications.contains(where: { $0.id == sid }) {
+                        dashLog("NOTIFY \(s.name) \(State.working.label) → \(s.state.label)")
                         dashNotifications.append(DashNotification(
                             id: sid, sessionName: s.name,
                             cwd: s.cwd, tty: s.tty, time: Date()))
