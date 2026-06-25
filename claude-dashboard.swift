@@ -1454,8 +1454,19 @@ class DashboardView: NSView {
         for (i, item) in pinnedItems.enumerated() {
             let rect = pinnedCardRect(at: i)
 
-            // Pin toggle (unpin)
-            let pb = makeIconButton(frame: NSRect(x: rect.maxX - 50, y: rect.minY + 8, width: 20, height: 20),
+            // Pin toggle — positioned after name + status label
+            let nameW = NSAttributedString(string: item.name, attributes: [
+                .font: Self.fontBold12]).size().width
+            let stateLabel: String
+            if item.type == "session" {
+                stateLabel = (allSessions.first(where: { $0.sessionId == item.id })?.state ?? .dead).label
+            } else {
+                stateLabel = (allTerminals.first(where: { $0.name == item.id })?.isAlive ?? false) ? "ACTIVE" : "CLOSED"
+            }
+            let stateW = NSAttributedString(string: stateLabel, attributes: [
+                .font: Self.fontSemi9]).size().width
+            let pinX = min(rect.minX + 14 + nameW + 8 + stateW + 6, rect.maxX - 50)
+            let pb = makeIconButton(frame: NSRect(x: pinX, y: rect.minY + 2, width: 20, height: 20),
                 icon: "pin.fill", tint: .systemBlue, tooltip: "Unpin")
             pb.tag = i; pb.target = self; pb.action = #selector(pinnedPinBtnClicked(_:))
             addSubview(pb); pinnedPinButtons.append(pb)
