@@ -1050,8 +1050,14 @@ class DashboardView: NSView {
     var onPinnedClick: ((PinnedItem) -> Void)?
     var tabSidebar: TabSidebarView?
     var pinnedItems: [PinnedItem] = [] {
-        didSet { needsDisplay = true }
+        didSet {
+            rebuildPinnedButtons()
+            window?.invalidateCursorRects(for: self)
+            needsDisplay = true
+        }
     }
+    var allSessions: [Session] = []  // unfiltered, for pinned state lookup
+    var allTerminals: [Terminal] = []
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -1066,6 +1072,8 @@ class DashboardView: NSView {
     var resumeButtons: [NSButton] = []
     private var pinButtons: [NSButton] = []
     private var termPinButtons: [NSButton] = []
+    private var pinnedNoteButtons: [NSButton] = []
+    private var pinnedPinButtons: [NSButton] = []
 
     // Drag state
     private var dragSourceIndex: Int?
@@ -1192,7 +1200,7 @@ class DashboardView: NSView {
             unpinItem.target = self
             unpinItem.tag = idx
             menu.addItem(unpinItem)
-            let closeItem = NSMenuItem(title: "Unpin and Close",
+            let closeItem = NSMenuItem(title: "Close",
                 action: #selector(contextUnpinAndClose(_:)), keyEquivalent: "")
             closeItem.target = self
             closeItem.tag = idx
@@ -1380,13 +1388,21 @@ class DashboardView: NSView {
         for (i, s) in sessions.enumerated() {
             let rect = cardRect(at: i)
 
-            // Pin button
+            // Pin button — positioned after state label (where close button used to be)
             let isPinned = pinnedItems.contains { $0.id == s.sessionId }
-            let pb = NSButton(frame: NSRect(x: rect.maxX - 82, y: rect.minY + 14, width: 24, height: 24))
+            let maxNameW = rect.maxX - 88 - (rect.minX + 14) - 80
+            let (dispName, _) = truncate(s.name, font: Self.fontBold12, maxWidth: maxNameW)
+            let nameW = NSAttributedString(string: dispName, attributes: [
+                .font: Self.fontBold12]).size().width
+            let stateW = NSAttributedString(string: s.state.label, attributes: [
+                .font: Self.fontSemi9]).size().width
+            let pinX = min(rect.minX + 14 + nameW + 10 + stateW + 6, rect.maxX - 90)
+            let pb = NSButton(frame: NSRect(x: pinX, y: rect.minY + 8, width: 20, height: 20))
             pb.bezelStyle = .inline
             pb.image = NSImage(systemSymbolName: isPinned ? "pin.fill" : "pin",
                                accessibilityDescription: "Pin")
             pb.imagePosition = .imageOnly
+            pb.contentTintColor = isPinned ? .systemBlue : nil
             pb.tag = i
             pb.target = self
             pb.action = #selector(pinBtnClicked(_:))
@@ -1396,6 +1412,7 @@ class DashboardView: NSView {
 
             // Resume button
             let rb = NSButton(frame: NSRect(x: rect.maxX - 56, y: rect.minY + 14, width: 24, height: 24))
+
             rb.bezelStyle = .inline
             rb.image = NSImage(systemSymbolName: "play.fill",
                                accessibilityDescription: "Copy resume command")
@@ -1433,12 +1450,65 @@ class DashboardView: NSView {
             pb.image = NSImage(systemSymbolName: isPinned ? "pin.fill" : "pin",
                                accessibilityDescription: "Pin")
             pb.imagePosition = .imageOnly
+            pb.contentTintColor = isPinned ? .systemBlue : nil
             pb.tag = i
             pb.target = self
             pb.action = #selector(termPinBtnClicked(_:))
             pb.toolTip = isPinned ? "Unpin" : "Pin"
             addSubview(pb)
             termPinButtons.append(pb)
+        }
+    }
+
+    @objc func pinnedNoteBtnClicked(_ sender: NSButton) {
+        guard sender.tag < pinnedItems.count else { return }
+        let item = pinnedItems[sender.tag]
+        if item.type == "session" {
+            if let s = allSessions.first(where: { $0.sessionId == item.id }) { onNotesClick?(s) }
+        }
+    }
+
+    @objc func pinnedPinBtnClicked(_ sender: NSButton) {
+        guard sender.tag < pinnedItems.count else { return }
+        onUnpin?(pinnedItems[sender.tag].id)
+    }
+
+    func rebuildPinnedButtons() {
+        pinnedNoteButtons.forEach { $0.removeFromSuperview() }
+        pinnedPinButtons.forEach { $0.removeFromSuperview() }
+        pinnedNoteButtons.removeAll()
+        pinnedPinButtons.removeAll()
+        for (i, item) in pinnedItems.enumerated() {
+            let rect = pinnedCardRect(at: i)
+
+            // Pin toggle (unpin)
+            let pb = NSButton(frame: NSRect(x: rect.maxX - 50, y: rect.minY + 8, width: 20, height: 20))
+            pb.bezelStyle = .inline
+            pb.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: "Unpin")
+            pb.imagePosition = .imageOnly
+            pb.contentTintColor = .systemBlue
+            pb.tag = i
+            pb.target = self
+            pb.action = #selector(pinnedPinBtnClicked(_:))
+            pb.toolTip = "Unpin"
+            addSubview(pb)
+            pinnedPinButtons.append(pb)
+
+            // Notes button (sessions only)
+            if item.type == "session" {
+                let hasNotes = allSessions.first(where: { $0.sessionId == item.id })?.hasNotes ?? false
+                let nb = NSButton(frame: NSRect(x: rect.maxX - 26, y: rect.minY + 8, width: 20, height: 20))
+                nb.bezelStyle = .inline
+                nb.image = NSImage(systemSymbolName: hasNotes ? "doc.text.fill" : "doc.text",
+                                   accessibilityDescription: "Notes")
+                nb.imagePosition = .imageOnly
+                nb.tag = i
+                nb.target = self
+                nb.action = #selector(pinnedNoteBtnClicked(_:))
+                nb.toolTip = "Open notes"
+                addSubview(nb)
+                pinnedNoteButtons.append(nb)
+            }
         }
     }
 
@@ -1562,10 +1632,10 @@ class DashboardView: NSView {
             NSGraphicsContext.restoreGraphicsState()
 
             let tx = rect.minX + 14
-            let rightEdge = rect.maxX - 88 // leave space for pin + resume + notes buttons
+            let rightEdge = rect.maxX - 62 // leave space for resume + notes buttons
 
             // Row 1: name (truncated if needed) + state + duration
-            let maxNameW = rightEdge - tx - 80 // room for state label + duration
+            let maxNameW = rightEdge - tx - 60 // room for state label + pin + duration
             let (displayName, wasTruncated) = truncate(s.name, font: Self.fontBold12, maxWidth: maxNameW)
             if wasTruncated { newTruncated[i] = s.name }
             let nameAttr = NSAttributedString(string: displayName, attributes: [
@@ -1660,13 +1730,17 @@ class DashboardView: NSView {
                 NSColor(white: 0.5, alpha: 0.05).setFill()
                 bg.fill()
 
-                // Left accent — use session state color if available
+                // Left accent — use allSessions for state lookup (not tab-filtered)
                 let accentColor: NSColor
+                let stateLabel: String
                 if item.type == "session" {
-                    let state = sessions.first(where: { $0.sessionId == item.id })?.state ?? .dead
+                    let state = allSessions.first(where: { $0.sessionId == item.id })?.state ?? .dead
                     accentColor = state.color
+                    stateLabel = state.label
                 } else {
-                    accentColor = .systemTeal
+                    let alive = allTerminals.first(where: { $0.name == item.id })?.isAlive ?? false
+                    accentColor = alive ? .systemTeal : .systemGray
+                    stateLabel = alive ? "ACTIVE" : "CLOSED"
                 }
                 NSGraphicsContext.saveGraphicsState()
                 bg.addClip()
@@ -1675,18 +1749,18 @@ class DashboardView: NSView {
                 NSGraphicsContext.restoreGraphicsState()
 
                 let tx = rect.minX + 14
-                // Name
+                // Name + status
                 let nameAttr = NSAttributedString(string: item.name, attributes: [
                     .font: Self.fontBold12, .foregroundColor: NSColor.labelColor])
                 nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 3))
+                let statusAttr = NSAttributedString(string: stateLabel, attributes: [
+                    .font: Self.fontSemi9, .foregroundColor: accentColor])
+                statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 8, y: rect.minY + 5))
                 // Path
                 let pathAttr = NSAttributedString(string: shortPath(item.cwd), attributes: [
                     .font: Self.fontReg9, .foregroundColor: NSColor.secondaryLabelColor])
                 pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 20))
-                // Notes icon on right
-                let notesIcon = NSAttributedString(string: "📝", attributes: [
-                    .font: NSFont.systemFont(ofSize: 10)])
-                notesIcon.draw(at: NSPoint(x: rect.maxX - 22, y: rect.minY + 10))
+                // Buttons are added in rebuildPinnedButtons
             }
         }
 
@@ -2571,6 +2645,8 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let orderedSessions = applyCustomOrder(ss)
         dashView.sessions = sessionsForActiveTab(orderedSessions)
         dashView.terminals = terminalsForActiveTab(terminals)
+        dashView.allSessions = orderedSessions
+        dashView.allTerminals = terminals
         dashView.pinnedItems = loadPinned()
 
         // Compute which tabs have working sessions
