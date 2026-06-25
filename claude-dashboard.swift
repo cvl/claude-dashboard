@@ -1979,6 +1979,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView.onTerminalClick = { t in revealTTY(t.tty) }
         dashView.onTerminalRemove = { [weak self] t in
             removeRegisteredTerminal(t.name)
+            var pinned = loadPinned()
+            pinned.removeAll { $0.id == t.name }
+            savePinned(pinned)
             self?.poll()
         }
         dashView.onReorder = { [weak self] from, to in
@@ -1992,6 +1995,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         dashView.onRemoveClick = { [weak self] s in
             removeSession(s)
+            // Also remove from pinned
+            var pinned = loadPinned()
+            pinned.removeAll { $0.id == s.sessionId }
+            savePinned(pinned)
             self?.poll()
         }
         dashView.onPinSession = { [weak self] s in
@@ -2019,16 +2026,24 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView.onPinnedClick = { [weak self] item in
             guard let self else { return }
             // Switch to the tab containing this item
+            let targetTab: String
             if item.type == "session" {
-                let targetTab = self.tabs.first(where: { $0.sessionIds.contains(item.id) })?.id ?? "main"
-                if self.activeTabId != targetTab {
-                    self.activeTabId = targetTab
-                    self.tabSidebar.activeTabId = targetTab
-                    try? targetTab.write(toFile: activeTabFile, atomically: true, encoding: .utf8)
-                }
+                targetTab = self.tabs.first(where: { $0.sessionIds.contains(item.id) })?.id ?? "main"
+            } else {
+                targetTab = self.tabs.first(where: { $0.terminalTTYs.contains(item.id) })?.id ?? "main"
+            }
+            if self.activeTabId != targetTab {
+                self.activeTabId = targetTab
+                self.tabSidebar.activeTabId = targetTab
+                try? targetTab.write(toFile: activeTabFile, atomically: true, encoding: .utf8)
             }
             // Reveal terminal
-            let tty = item.tty.isEmpty ? self.currentSessions.first(where: { $0.sessionId == item.id })?.tty ?? "" : item.tty
+            let tty: String
+            if item.type == "terminal" {
+                tty = self.currentTerminals.first(where: { $0.name == item.id })?.tty ?? item.tty
+            } else {
+                tty = self.currentSessions.first(where: { $0.sessionId == item.id })?.tty ?? item.tty
+            }
             if !tty.isEmpty { revealTTY(tty) }
             self.poll()
         }
