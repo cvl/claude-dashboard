@@ -1397,45 +1397,24 @@ class DashboardView: NSView {
             let stateW = NSAttributedString(string: s.state.label, attributes: [
                 .font: Self.fontSemi9]).size().width
             let pinX = min(rect.minX + 14 + nameW + 10 + stateW + 6, rect.maxX - 90)
-            let pb = NSButton(frame: NSRect(x: pinX, y: rect.minY + 8, width: 20, height: 20))
-            pb.bezelStyle = .inline
-            pb.image = NSImage(systemSymbolName: isPinned ? "pin.fill" : "pin",
-                               accessibilityDescription: "Pin")
-            pb.imagePosition = .imageOnly
-            pb.contentTintColor = isPinned ? .systemBlue : nil
-            pb.tag = i
-            pb.target = self
-            pb.action = #selector(pinBtnClicked(_:))
-            pb.toolTip = isPinned ? "Unpin" : "Pin"
-            addSubview(pb)
-            pinButtons.append(pb)
+            let pb = makeIconButton(frame: NSRect(x: pinX, y: rect.minY + 8, width: 20, height: 20),
+                icon: isPinned ? "pin.fill" : "pin",
+                tint: isPinned ? .systemBlue : .secondaryLabelColor,
+                tooltip: isPinned ? "Unpin" : "Pin")
+            pb.tag = i; pb.target = self; pb.action = #selector(pinBtnClicked(_:))
+            addSubview(pb); pinButtons.append(pb)
 
             // Resume button
-            let rb = NSButton(frame: NSRect(x: rect.maxX - 56, y: rect.minY + 14, width: 24, height: 24))
-
-            rb.bezelStyle = .inline
-            rb.image = NSImage(systemSymbolName: "play.fill",
-                               accessibilityDescription: "Copy resume command")
-            rb.imagePosition = .imageOnly
-            rb.tag = i
-            rb.target = self
-            rb.action = #selector(resumeBtnClicked(_:))
-            rb.toolTip = "Copy resume command"
-            addSubview(rb)
-            resumeButtons.append(rb)
+            let rb = makeIconButton(frame: NSRect(x: rect.maxX - 56, y: rect.minY + 14, width: 24, height: 24),
+                icon: "play.fill", tooltip: "Copy resume command")
+            rb.tag = i; rb.target = self; rb.action = #selector(resumeBtnClicked(_:))
+            addSubview(rb); resumeButtons.append(rb)
 
             // Notes button
-            let nb = NSButton(frame: NSRect(x: rect.maxX - 30, y: rect.minY + 14, width: 24, height: 24))
-            nb.bezelStyle = .inline
-            nb.image = NSImage(systemSymbolName: s.hasNotes ? "doc.text.fill" : "doc.text",
-                               accessibilityDescription: "Notes")
-            nb.imagePosition = .imageOnly
-            nb.tag = i
-            nb.target = self
-            nb.action = #selector(notesBtnClicked(_:))
-            nb.toolTip = "Open notes"
-            addSubview(nb)
-            noteButtons.append(nb)
+            let nb = makeIconButton(frame: NSRect(x: rect.maxX - 30, y: rect.minY + 14, width: 24, height: 24),
+                icon: s.hasNotes ? "doc.text.fill" : "doc.text", tooltip: "Open notes")
+            nb.tag = i; nb.target = self; nb.action = #selector(notesBtnClicked(_:))
+            addSubview(nb); noteButtons.append(nb)
         }
     }
 
@@ -1445,18 +1424,12 @@ class DashboardView: NSView {
         for (i, t) in terminals.enumerated() {
             let rect = termCardRect(at: i)
             let isPinned = pinnedItems.contains { $0.id == t.name }
-            let pb = NSButton(frame: NSRect(x: rect.maxX - 26, y: rect.minY + 6, width: 20, height: 20))
-            pb.bezelStyle = .inline
-            pb.image = NSImage(systemSymbolName: isPinned ? "pin.fill" : "pin",
-                               accessibilityDescription: "Pin")
-            pb.imagePosition = .imageOnly
-            pb.contentTintColor = isPinned ? .systemBlue : nil
-            pb.tag = i
-            pb.target = self
-            pb.action = #selector(termPinBtnClicked(_:))
-            pb.toolTip = isPinned ? "Unpin" : "Pin"
-            addSubview(pb)
-            termPinButtons.append(pb)
+            let pb = makeIconButton(frame: NSRect(x: rect.maxX - 26, y: rect.minY + 6, width: 20, height: 20),
+                icon: isPinned ? "pin.fill" : "pin",
+                tint: isPinned ? .systemBlue : .secondaryLabelColor,
+                tooltip: isPinned ? "Unpin" : "Pin")
+            pb.tag = i; pb.target = self; pb.action = #selector(termPinBtnClicked(_:))
+            addSubview(pb); termPinButtons.append(pb)
         }
     }
 
@@ -1482,32 +1455,18 @@ class DashboardView: NSView {
             let rect = pinnedCardRect(at: i)
 
             // Pin toggle (unpin)
-            let pb = NSButton(frame: NSRect(x: rect.maxX - 50, y: rect.minY + 8, width: 20, height: 20))
-            pb.bezelStyle = .inline
-            pb.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: "Unpin")
-            pb.imagePosition = .imageOnly
-            pb.contentTintColor = .systemBlue
-            pb.tag = i
-            pb.target = self
-            pb.action = #selector(pinnedPinBtnClicked(_:))
-            pb.toolTip = "Unpin"
-            addSubview(pb)
-            pinnedPinButtons.append(pb)
+            let pb = makeIconButton(frame: NSRect(x: rect.maxX - 50, y: rect.minY + 8, width: 20, height: 20),
+                icon: "pin.fill", tint: .systemBlue, tooltip: "Unpin")
+            pb.tag = i; pb.target = self; pb.action = #selector(pinnedPinBtnClicked(_:))
+            addSubview(pb); pinnedPinButtons.append(pb)
 
             // Notes button (sessions only)
             if item.type == "session" {
                 let hasNotes = allSessions.first(where: { $0.sessionId == item.id })?.hasNotes ?? false
-                let nb = NSButton(frame: NSRect(x: rect.maxX - 26, y: rect.minY + 8, width: 20, height: 20))
-                nb.bezelStyle = .inline
-                nb.image = NSImage(systemSymbolName: hasNotes ? "doc.text.fill" : "doc.text",
-                                   accessibilityDescription: "Notes")
-                nb.imagePosition = .imageOnly
-                nb.tag = i
-                nb.target = self
-                nb.action = #selector(pinnedNoteBtnClicked(_:))
-                nb.toolTip = "Open notes"
-                addSubview(nb)
-                pinnedNoteButtons.append(nb)
+                let nb = makeIconButton(frame: NSRect(x: rect.maxX - 26, y: rect.minY + 8, width: 20, height: 20),
+                    icon: hasNotes ? "doc.text.fill" : "doc.text", tooltip: "Open notes")
+                nb.tag = i; nb.target = self; nb.action = #selector(pinnedNoteBtnClicked(_:))
+                addSubview(nb); pinnedNoteButtons.append(nb)
             }
         }
     }
@@ -1579,6 +1538,21 @@ class DashboardView: NSView {
     override func mouseExited(with event: NSEvent) {
         hoverTip?.orderOut(nil)
         hoverTip = nil
+    }
+
+    // ── Button helper ──
+    private func makeIconButton(frame: NSRect, icon: String, tint: NSColor? = .secondaryLabelColor, tooltip: String) -> NSButton {
+        let btn = NSButton(frame: frame)
+        btn.bezelStyle = .recessed
+        btn.isBordered = false
+        btn.image = NSImage(systemSymbolName: icon, accessibilityDescription: tooltip)
+        btn.imagePosition = .imageOnly
+        btn.contentTintColor = tint
+        btn.toolTip = tooltip
+        // Hover: show background
+        btn.showsBorderOnlyWhileMouseInside = true
+        btn.isBordered = true
+        return btn
     }
 
     // ── Truncation helper ──
