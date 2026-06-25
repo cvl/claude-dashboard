@@ -13,6 +13,8 @@ let layoutFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-layout.json").path
 let tabsFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-tabs.json").path
+let activeTabFile = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".claude").appendingPathComponent("dashboard-active-tab").path
 let logFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard.log").path
 
@@ -1755,9 +1757,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         tabSidebar.tabs = tabs
         tabSidebar.activeTabId = activeTabId
 
+        // Write initial active tab
+        try? activeTabId.write(toFile: activeTabFile, atomically: true, encoding: .utf8)
+
         tabSidebar.onTabSelect = { [weak self] id in
             self?.activeTabId = id
             self?.tabSidebar.activeTabId = id
+            try? id.write(toFile: activeTabFile, atomically: true, encoding: .utf8)
             self?.poll()
         }
         tabSidebar.onTabAdd = { [weak self] in

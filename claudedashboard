@@ -16,6 +16,9 @@ pid=$PPID
 file="$HOME/.claude/dashboard-terminals.json"
 mkdir -p "$(dirname "$file")"
 
+active_tab_file="$HOME/.claude/dashboard-active-tab"
+active_tab=$(cat "$active_tab_file" 2>/dev/null || echo "main")
+
 python3 -c "
 import json, os, sys, time
 f, name, tty, cwd, pid = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
@@ -29,4 +32,26 @@ with open(f, 'w') as fh:
     json.dump(d, fh)
 " "$file" "$name" "$tty_name" "$cwd" "$pid"
 
-echo "Registered '$name' ($tty_name, pid=$pid)"
+# Assign to active tab if not main
+if [ "$active_tab" != "main" ]; then
+  tabs_file="$HOME/.claude/dashboard-tabs.json"
+  python3 -c "
+import json, os, sys
+tabs_file, name, tab_id = sys.argv[1], sys.argv[2], sys.argv[3]
+if not os.path.exists(tabs_file): sys.exit(0)
+with open(tabs_file) as f:
+    tabs = json.load(f)
+# Remove from all tabs first
+for t in tabs:
+    if name in t.get('terminalTTYs', []):
+        t['terminalTTYs'].remove(name)
+# Add to active tab
+for t in tabs:
+    if t['id'] == tab_id and name not in t.get('terminalTTYs', []):
+        t.setdefault('terminalTTYs', []).append(name)
+with open(tabs_file, 'w') as f:
+    json.dump(tabs, f)
+" "$tabs_file" "$name" "$active_tab"
+fi
+
+echo "Registered '$name' ($tty_name) in tab '$active_tab'"
