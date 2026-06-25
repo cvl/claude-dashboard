@@ -1979,6 +1979,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView.onTerminalClick = { t in revealTTY(t.tty) }
         dashView.onTerminalRemove = { [weak self] t in
             removeRegisteredTerminal(t.name)
+            var pinned = loadPinned()
+            pinned.removeAll { $0.id == t.name }
+            savePinned(pinned)
             self?.poll()
         }
         dashView.onReorder = { [weak self] from, to in
@@ -1992,6 +1995,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         dashView.onRemoveClick = { [weak self] s in
             removeSession(s)
+            // Also remove from pinned
+            var pinned = loadPinned()
+            pinned.removeAll { $0.id == s.sessionId }
+            savePinned(pinned)
             self?.poll()
         }
         dashView.onPinSession = { [weak self] s in
