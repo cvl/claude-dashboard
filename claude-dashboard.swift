@@ -117,6 +117,29 @@ struct Terminal {
     let isAlive: Bool
 }
 
+let pinnedFile = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".claude").appendingPathComponent("dashboard-pinned.json").path
+
+struct PinnedItem: Codable {
+    let id: String       // sessionId or terminal name
+    let type: String     // "session" or "terminal"
+    let name: String
+    let cwd: String
+    let tty: String
+}
+
+func loadPinned() -> [PinnedItem] {
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: pinnedFile)),
+          let list = try? JSONDecoder().decode([PinnedItem].self, from: data)
+    else { return [] }
+    return list
+}
+
+func savePinned(_ items: [PinnedItem]) {
+    guard let data = try? JSONEncoder().encode(items) else { return }
+    try? data.write(to: URL(fileURLWithPath: pinnedFile), options: .atomic)
+}
+
 let termStoreFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-terminals.json").path
 
@@ -990,7 +1013,8 @@ class DashboardView: NSView {
 
     var sessions: [Session] = [] {
         didSet {
-            let fp = sessions.map { "\($0.sessionId)|\($0.state)|\($0.name)|\($0.hasNotes)" }.joined()
+            let pinnedIds = pinnedItems.map(\.id).joined(separator: ",")
+            let fp = sessions.map { "\($0.sessionId)|\($0.state)|\($0.name)|\($0.hasNotes)" }.joined() + "P:\(pinnedIds)"
             if fp != sessionsFingerprint {
                 sessionsFingerprint = fp
                 rebuildButtons()
@@ -1002,7 +1026,8 @@ class DashboardView: NSView {
     }
     var terminals: [Terminal] = [] {
         didSet {
-            let fp = terminals.map { "\($0.tty)|\($0.name)|\($0.isAlive)" }.joined()
+            let pinnedIds = pinnedItems.map(\.id).joined(separator: ",")
+            let fp = terminals.map { "\($0.tty)|\($0.name)|\($0.isAlive)" }.joined() + "P:\(pinnedIds)"
             if fp != terminalsFingerprint {
                 terminalsFingerprint = fp
                 rebuildTermButtons()
@@ -1018,8 +1043,15 @@ class DashboardView: NSView {
     var onReorder: ((Int, Int) -> Void)?  // (fromIndex, toInsertBeforeIndex)
     var onTerminalClick: ((Terminal) -> Void)?
     var onTerminalRemove: ((Terminal) -> Void)?
-    var onDragToTab: ((String, String) -> Void)?  // (itemId, "session:id" or "terminal:tty")
+    var onDragToTab: ((String, String) -> Void)?
+    var onPinSession: ((Session) -> Void)?
+    var onPinTerminal: ((Terminal) -> Void)?
+    var onUnpin: ((String) -> Void)?  // pinned item id
+    var onPinnedClick: ((PinnedItem) -> Void)?
     var tabSidebar: TabSidebarView?
+    var pinnedItems: [PinnedItem] = [] {
+        didSet { needsDisplay = true }
+    }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -1032,8 +1064,8 @@ class DashboardView: NSView {
     private let padY: CGFloat = 10
     private var noteButtons: [NSButton] = []
     var resumeButtons: [NSButton] = []
-    private var removeButtons: [NSButton] = []
-    private var termRemoveButtons: [NSButton] = []
+    private var pinButtons: [NSButton] = []
+    private var termPinButtons: [NSButton] = []
 
     // Drag state
     private var dragSourceIndex: Int?
@@ -1051,12 +1083,37 @@ class DashboardView: NSView {
         return padY + sessH + gap
     }
 
-    var idealHeight: CGFloat {
+    private let pinnedCardH: CGFloat = 36
+
+    private var pinnedTopY: CGFloat {
         var h = terminalsTopY
         if !terminals.isEmpty {
-            h += sectionHeaderH + CGFloat(terminals.count) * (termCardH + gap) - gap
+            h += sectionHeaderH + CGFloat(terminals.count) * (termCardH + gap) - gap + gap
+        }
+        return h
+    }
+
+    var idealHeight: CGFloat {
+        var h = pinnedTopY
+        if !pinnedItems.isEmpty {
+            h += sectionHeaderH + CGFloat(pinnedItems.count) * (pinnedCardH + gap) - gap
         }
         return h + padY
+    }
+
+    private func pinnedCardRect(at index: Int) -> NSRect {
+        let y = pinnedTopY + sectionHeaderH + CGFloat(index) * (pinnedCardH + gap)
+        return NSRect(x: padX, y: y, width: bounds.width - padX * 2, height: pinnedCardH)
+    }
+
+    func pinnedIndex(at point: NSPoint) -> Int? {
+        let baseY = pinnedTopY + sectionHeaderH
+        let y = point.y - baseY
+        guard y >= 0 else { return nil }
+        let idx = Int(y / (pinnedCardH + gap))
+        let within = y - CGFloat(idx) * (pinnedCardH + gap)
+        guard within <= pinnedCardH, idx < pinnedItems.count else { return nil }
+        return idx
     }
 
     func cardIndex(at point: NSPoint) -> Int? {
@@ -1086,6 +1143,110 @@ class DashboardView: NSView {
         let within = y - CGFloat(idx) * (termCardH + gap)
         guard within <= termCardH, idx < terminals.count else { return nil }
         return idx
+    }
+
+    // ── Right-click context menu ──
+    override func rightMouseDown(with event: NSEvent) {
+        let loc = convert(event.locationInWindow, from: nil)
+        // Session context menu
+        if let idx = cardIndex(at: loc), idx < sessions.count {
+            let s = sessions[idx]
+            let menu = NSMenu()
+            let pinned = pinnedItems.contains { $0.id == s.sessionId }
+            let pinItem = NSMenuItem(title: pinned ? "Unpin" : "Pin",
+                action: #selector(contextPinSession(_:)), keyEquivalent: "")
+            pinItem.target = self
+            pinItem.tag = idx
+            menu.addItem(pinItem)
+            let closeItem = NSMenuItem(title: "Close",
+                action: #selector(contextCloseSession(_:)), keyEquivalent: "")
+            closeItem.target = self
+            closeItem.tag = idx
+            menu.addItem(closeItem)
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+            return
+        }
+        // Terminal context menu
+        if let idx = termIndex(at: loc), idx < terminals.count {
+            let t = terminals[idx]
+            let menu = NSMenu()
+            let pinned = pinnedItems.contains { $0.id == t.name }
+            let pinItem = NSMenuItem(title: pinned ? "Unpin" : "Pin",
+                action: #selector(contextPinTerminal(_:)), keyEquivalent: "")
+            pinItem.target = self
+            pinItem.tag = idx
+            menu.addItem(pinItem)
+            let closeItem = NSMenuItem(title: "Close",
+                action: #selector(contextCloseTerminal(_:)), keyEquivalent: "")
+            closeItem.target = self
+            closeItem.tag = idx
+            menu.addItem(closeItem)
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+            return
+        }
+        // Pinned context menu
+        if let idx = pinnedIndex(at: loc), idx < pinnedItems.count {
+            let menu = NSMenu()
+            let unpinItem = NSMenuItem(title: "Unpin",
+                action: #selector(contextUnpin(_:)), keyEquivalent: "")
+            unpinItem.target = self
+            unpinItem.tag = idx
+            menu.addItem(unpinItem)
+            let closeItem = NSMenuItem(title: "Unpin and Close",
+                action: #selector(contextUnpinAndClose(_:)), keyEquivalent: "")
+            closeItem.target = self
+            closeItem.tag = idx
+            menu.addItem(closeItem)
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+            return
+        }
+    }
+
+    @objc func contextPinSession(_ sender: NSMenuItem) {
+        guard sender.tag < sessions.count else { return }
+        let s = sessions[sender.tag]
+        if pinnedItems.contains(where: { $0.id == s.sessionId }) {
+            onUnpin?(s.sessionId)
+        } else {
+            onPinSession?(s)
+        }
+    }
+
+    @objc func contextCloseSession(_ sender: NSMenuItem) {
+        guard sender.tag < sessions.count else { return }
+        onRemoveClick?(sessions[sender.tag])
+    }
+
+    @objc func contextPinTerminal(_ sender: NSMenuItem) {
+        guard sender.tag < terminals.count else { return }
+        let t = terminals[sender.tag]
+        if pinnedItems.contains(where: { $0.id == t.name }) {
+            onUnpin?(t.name)
+        } else {
+            onPinTerminal?(t)
+        }
+    }
+
+    @objc func contextCloseTerminal(_ sender: NSMenuItem) {
+        guard sender.tag < terminals.count else { return }
+        onTerminalRemove?(terminals[sender.tag])
+    }
+
+    @objc func contextUnpin(_ sender: NSMenuItem) {
+        guard sender.tag < pinnedItems.count else { return }
+        onUnpin?(pinnedItems[sender.tag].id)
+    }
+
+    @objc func contextUnpinAndClose(_ sender: NSMenuItem) {
+        guard sender.tag < pinnedItems.count else { return }
+        let item = pinnedItems[sender.tag]
+        onUnpin?(item.id)
+        // Close the underlying session/terminal
+        if item.type == "session" {
+            if let s = sessions.first(where: { $0.sessionId == item.id }) { onRemoveClick?(s) }
+        } else {
+            if let t = terminals.first(where: { $0.name == item.id }) { onTerminalRemove?(t) }
+        }
     }
 
     // ── Click / Drag ──
@@ -1157,6 +1318,12 @@ class DashboardView: NSView {
             } else if dragSourceType == "terminal" && src < terminals.count {
                 onTerminalClick?(terminals[src])
             }
+        } else if !isDragging {
+            // Check pinned click
+            let loc = convert(event.locationInWindow, from: nil)
+            if let idx = pinnedIndex(at: loc), idx < pinnedItems.count {
+                onPinnedClick?(pinnedItems[idx])
+            }
         }
         dragSourceIndex = nil
         dragStartPoint = nil
@@ -1182,18 +1349,52 @@ class DashboardView: NSView {
         onRemoveClick?(sessions[sender.tag])
     }
 
+    @objc func pinBtnClicked(_ sender: NSButton) {
+        guard sender.tag < sessions.count else { return }
+        let s = sessions[sender.tag]
+        if pinnedItems.contains(where: { $0.id == s.sessionId }) {
+            onUnpin?(s.sessionId)
+        } else {
+            onPinSession?(s)
+        }
+    }
+
+    @objc func termPinBtnClicked(_ sender: NSButton) {
+        guard sender.tag < terminals.count else { return }
+        let t = terminals[sender.tag]
+        if pinnedItems.contains(where: { $0.id == t.name }) {
+            onUnpin?(t.name)
+        } else {
+            onPinTerminal?(t)
+        }
+    }
+
     func rebuildButtons() {
         noteButtons.forEach { $0.removeFromSuperview() }
         resumeButtons.forEach { $0.removeFromSuperview() }
-        removeButtons.forEach { $0.removeFromSuperview() }
+        pinButtons.forEach { $0.removeFromSuperview() }
         noteButtons.removeAll()
         resumeButtons.removeAll()
-        removeButtons.removeAll()
+        pinButtons.removeAll()
 
         for (i, s) in sessions.enumerated() {
             let rect = cardRect(at: i)
 
-            // Resume button (copy command to clipboard)
+            // Pin button
+            let isPinned = pinnedItems.contains { $0.id == s.sessionId }
+            let pb = NSButton(frame: NSRect(x: rect.maxX - 82, y: rect.minY + 14, width: 24, height: 24))
+            pb.bezelStyle = .inline
+            pb.image = NSImage(systemSymbolName: isPinned ? "pin.fill" : "pin",
+                               accessibilityDescription: "Pin")
+            pb.imagePosition = .imageOnly
+            pb.tag = i
+            pb.target = self
+            pb.action = #selector(pinBtnClicked(_:))
+            pb.toolTip = isPinned ? "Unpin" : "Pin"
+            addSubview(pb)
+            pinButtons.append(pb)
+
+            // Resume button
             let rb = NSButton(frame: NSRect(x: rect.maxX - 56, y: rect.minY + 14, width: 24, height: 24))
             rb.bezelStyle = .inline
             rb.image = NSImage(systemSymbolName: "play.fill",
@@ -1218,52 +1419,26 @@ class DashboardView: NSView {
             nb.toolTip = "Open notes"
             addSubview(nb)
             noteButtons.append(nb)
-
-            // Remove button (dead sessions only) — next to state label on row 1
-            if s.state == .dead {
-                let maxNameW = rect.maxX - 62 - (rect.minX + 14) - 80
-                let (dispName, _) = truncate(s.name, font: Self.fontBold12, maxWidth: maxNameW)
-                let nameW = NSAttributedString(string: dispName, attributes: [
-                    .font: Self.fontBold12]).size().width
-                let stateW = NSAttributedString(string: s.state.label, attributes: [
-                    .font: Self.fontSemi9]).size().width
-                let rbX = min(rect.minX + 14 + nameW + 10 + stateW + 6, rect.maxX - 90)
-                let rb = NSButton(frame: NSRect(x: rbX, y: rect.minY + 8, width: 20, height: 20))
-                rb.bezelStyle = .inline
-                rb.image = NSImage(systemSymbolName: "xmark.circle",
-                                   accessibilityDescription: "Remove")
-                rb.imagePosition = .imageOnly
-                rb.tag = i
-                rb.target = self
-                rb.action = #selector(removeBtnClicked(_:))
-                rb.toolTip = "Remove session"
-                addSubview(rb)
-                removeButtons.append(rb)
-            }
         }
     }
 
-    @objc func termRemoveBtnClicked(_ sender: NSButton) {
-        guard sender.tag < terminals.count else { return }
-        onTerminalRemove?(terminals[sender.tag])
-    }
-
     func rebuildTermButtons() {
-        termRemoveButtons.forEach { $0.removeFromSuperview() }
-        termRemoveButtons.removeAll()
-        for (i, _) in terminals.enumerated() {
+        termPinButtons.forEach { $0.removeFromSuperview() }
+        termPinButtons.removeAll()
+        for (i, t) in terminals.enumerated() {
             let rect = termCardRect(at: i)
-            let rb = NSButton(frame: NSRect(x: rect.maxX - 26, y: rect.minY + 6, width: 20, height: 20))
-            rb.bezelStyle = .inline
-            rb.image = NSImage(systemSymbolName: "xmark.circle",
-                               accessibilityDescription: "Remove")
-            rb.imagePosition = .imageOnly
-            rb.tag = i
-            rb.target = self
-            rb.action = #selector(termRemoveBtnClicked(_:))
-            rb.toolTip = "Remove terminal"
-            addSubview(rb)
-            termRemoveButtons.append(rb)
+            let isPinned = pinnedItems.contains { $0.id == t.name }
+            let pb = NSButton(frame: NSRect(x: rect.maxX - 26, y: rect.minY + 6, width: 20, height: 20))
+            pb.bezelStyle = .inline
+            pb.image = NSImage(systemSymbolName: isPinned ? "pin.fill" : "pin",
+                               accessibilityDescription: "Pin")
+            pb.imagePosition = .imageOnly
+            pb.tag = i
+            pb.target = self
+            pb.action = #selector(termPinBtnClicked(_:))
+            pb.toolTip = isPinned ? "Unpin" : "Pin"
+            addSubview(pb)
+            termPinButtons.append(pb)
         }
     }
 
@@ -1273,7 +1448,6 @@ class DashboardView: NSView {
     private var trackingAreas2: [NSTrackingArea] = []
 
     override func resetCursorRects() {
-        // Remove old tracking areas
         for ta in trackingAreas2 { removeTrackingArea(ta) }
         trackingAreas2.removeAll()
 
@@ -1289,6 +1463,9 @@ class DashboardView: NSView {
         }
         for i in 0..<terminals.count {
             addCursorRect(termCardRect(at: i), cursor: .pointingHand)
+        }
+        for i in 0..<pinnedItems.count {
+            addCursorRect(pinnedCardRect(at: i), cursor: .pointingHand)
         }
     }
 
@@ -1385,7 +1562,7 @@ class DashboardView: NSView {
             NSGraphicsContext.restoreGraphicsState()
 
             let tx = rect.minX + 14
-            let rightEdge = rect.maxX - 62 // leave space for buttons
+            let rightEdge = rect.maxX - 88 // leave space for pin + resume + notes buttons
 
             // Row 1: name (truncated if needed) + state + duration
             let maxNameW = rightEdge - tx - 80 // room for state label + duration
@@ -1466,6 +1643,50 @@ class DashboardView: NSView {
                     .font: Self.fontReg10,
                     .foregroundColor: NSColor.secondaryLabelColor])
                 pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 25))
+            }
+        }
+
+        // ── Pinned section ──
+        if !pinnedItems.isEmpty {
+            let headerY = pinnedTopY
+            let headerAttr = NSAttributedString(string: "PINNED", attributes: [
+                .font: Self.fontSemi9,
+                .foregroundColor: NSColor.tertiaryLabelColor])
+            headerAttr.draw(at: NSPoint(x: padX, y: headerY + 6))
+
+            for (i, item) in pinnedItems.enumerated() {
+                let rect = pinnedCardRect(at: i)
+                let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+                NSColor(white: 0.5, alpha: 0.05).setFill()
+                bg.fill()
+
+                // Left accent — use session state color if available
+                let accentColor: NSColor
+                if item.type == "session" {
+                    let state = sessions.first(where: { $0.sessionId == item.id })?.state ?? .dead
+                    accentColor = state.color
+                } else {
+                    accentColor = .systemTeal
+                }
+                NSGraphicsContext.saveGraphicsState()
+                bg.addClip()
+                accentColor.setFill()
+                NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: 3, height: pinnedCardH)).fill()
+                NSGraphicsContext.restoreGraphicsState()
+
+                let tx = rect.minX + 14
+                // Name
+                let nameAttr = NSAttributedString(string: item.name, attributes: [
+                    .font: Self.fontBold12, .foregroundColor: NSColor.labelColor])
+                nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 3))
+                // Path
+                let pathAttr = NSAttributedString(string: shortPath(item.cwd), attributes: [
+                    .font: Self.fontReg9, .foregroundColor: NSColor.secondaryLabelColor])
+                pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 20))
+                // Notes icon on right
+                let notesIcon = NSAttributedString(string: "📝", attributes: [
+                    .font: NSFont.systemFont(ofSize: 10)])
+                notesIcon.draw(at: NSPoint(x: rect.maxX - 22, y: rect.minY + 10))
             }
         }
 
@@ -1673,6 +1894,44 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView.onRemoveClick = { [weak self] s in
             removeSession(s)
             self?.poll()
+        }
+        dashView.onPinSession = { [weak self] s in
+            guard let self else { return }
+            var pinned = loadPinned()
+            guard !pinned.contains(where: { $0.id == s.sessionId }) else { return }
+            pinned.append(PinnedItem(id: s.sessionId, type: "session", name: s.name, cwd: s.cwd, tty: s.tty))
+            savePinned(pinned)
+            self.poll()
+        }
+        dashView.onPinTerminal = { [weak self] t in
+            guard let self else { return }
+            var pinned = loadPinned()
+            guard !pinned.contains(where: { $0.id == t.name }) else { return }
+            pinned.append(PinnedItem(id: t.name, type: "terminal", name: t.name, cwd: t.cwd, tty: t.tty))
+            savePinned(pinned)
+            self.poll()
+        }
+        dashView.onUnpin = { [weak self] id in
+            var pinned = loadPinned()
+            pinned.removeAll { $0.id == id }
+            savePinned(pinned)
+            self?.poll()
+        }
+        dashView.onPinnedClick = { [weak self] item in
+            guard let self else { return }
+            // Switch to the tab containing this item
+            if item.type == "session" {
+                let targetTab = self.tabs.first(where: { $0.sessionIds.contains(item.id) })?.id ?? "main"
+                if self.activeTabId != targetTab {
+                    self.activeTabId = targetTab
+                    self.tabSidebar.activeTabId = targetTab
+                    try? targetTab.write(toFile: activeTabFile, atomically: true, encoding: .utf8)
+                }
+            }
+            // Reveal terminal
+            let tty = item.tty.isEmpty ? self.currentSessions.first(where: { $0.sessionId == item.id })?.tty ?? "" : item.tty
+            if !tty.isEmpty { revealTTY(tty) }
+            self.poll()
         }
         dashView.onDragToTab = { [weak self] tabId, itemId in
             self?.moveItemToTab(tabId: tabId, itemId: itemId)
@@ -2312,6 +2571,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let orderedSessions = applyCustomOrder(ss)
         dashView.sessions = sessionsForActiveTab(orderedSessions)
         dashView.terminals = terminalsForActiveTab(terminals)
+        dashView.pinnedItems = loadPinned()
 
         // Compute which tabs have working sessions
         let workingSessions = Set(orderedSessions.filter { $0.state == .working }.map(\.sessionId))
