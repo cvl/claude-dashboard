@@ -720,6 +720,7 @@ class TabSidebarView: NSView {
     var tabs: [TabBucket] = [] { didSet { needsDisplay = true } }
     var activeTabId: String = "main" { didSet { needsDisplay = true } }
     var dropTargetTabId: String? { didSet { needsDisplay = true } }
+    var workingTabIds: Set<String> = [] { didSet { needsDisplay = true } }
 
     var onTabSelect: ((String) -> Void)?
     var onTabAdd: (() -> Void)?
@@ -830,9 +831,10 @@ class TabSidebarView: NSView {
                 bg.fill()
             }
 
-            if isActive {
-                // Left accent
-                NSColor.controlAccentColor.setFill()
+            let hasWorking = workingTabIds.contains(tab.id)
+            if hasWorking {
+                // Green accent for tabs with working sessions
+                NSColor.systemGreen.setFill()
                 NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY + 4, width: 3, height: rect.height - 8)).fill()
             }
 
@@ -2310,6 +2312,17 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let orderedSessions = applyCustomOrder(ss)
         dashView.sessions = sessionsForActiveTab(orderedSessions)
         dashView.terminals = terminalsForActiveTab(terminals)
+
+        // Compute which tabs have working sessions
+        let workingSessions = Set(orderedSessions.filter { $0.state == .working }.map(\.sessionId))
+        var wTabIds = Set<String>()
+        // Check "main" — sessions not assigned to any tab
+        let allAssigned = Set(tabs.filter { $0.id != "main" }.flatMap(\.sessionIds))
+        if workingSessions.contains(where: { !allAssigned.contains($0) }) { wTabIds.insert("main") }
+        for tab in tabs where tab.id != "main" {
+            if tab.sessionIds.contains(where: { workingSessions.contains($0) }) { wTabIds.insert(tab.id) }
+        }
+        tabSidebar.workingTabIds = wTabIds
         let idealH = dashView.idealHeight
         var frame = panel.frame
         let topY = frame.maxY
