@@ -1075,6 +1075,11 @@ class DashboardView: NSView {
     private var pinnedNoteButtons: [NSButton] = []
     private var pinnedPinButtons: [NSButton] = []
 
+    // Hover state
+    private var hoveredCardType: String = ""  // "session", "terminal", "pinned", ""
+    private var hoveredCardIndex: Int = -1
+    private var hoverTracker: NSTrackingArea?
+
     // Drag state
     private var dragSourceIndex: Int?
     private var dragSourceType: String = "session" // "session" or "terminal"
@@ -1151,6 +1156,41 @@ class DashboardView: NSView {
         let within = y - CGFloat(idx) * (termCardH + gap)
         guard within <= termCardH, idx < terminals.count else { return nil }
         return idx
+    }
+
+    // ── Hover tracking ──
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = hoverTracker { removeTrackingArea(t) }
+        hoverTracker = NSTrackingArea(rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways],
+            owner: self, userInfo: nil)
+        addTrackingArea(hoverTracker!)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let loc = convert(event.locationInWindow, from: nil)
+        var newType = ""; var newIdx = -1
+        if let idx = cardIndex(at: loc), idx < sessions.count {
+            newType = "session"; newIdx = idx
+        } else if let idx = termIndex(at: loc), idx < terminals.count {
+            newType = "terminal"; newIdx = idx
+        } else if let idx = pinnedIndex(at: loc), idx < pinnedItems.count {
+            newType = "pinned"; newIdx = idx
+        }
+        if newType != hoveredCardType || newIdx != hoveredCardIndex {
+            hoveredCardType = newType; hoveredCardIndex = newIdx
+            needsDisplay = true
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if event.trackingArea === hoverTracker {
+            hoveredCardType = ""; hoveredCardIndex = -1
+            needsDisplay = true
+        }
+        hoverTip?.orderOut(nil)
+        hoverTip = nil
     }
 
     // ── Right-click context menu ──
@@ -1546,10 +1586,7 @@ class DashboardView: NSView {
         hoverTip = tip
     }
 
-    override func mouseExited(with event: NSEvent) {
-        hoverTip?.orderOut(nil)
-        hoverTip = nil
-    }
+    // mouseExited is in the hover tracking section above
 
     // ── Button helper ──
     private func makeIconButton(frame: NSRect, icon: String, tint: NSColor? = .secondaryLabelColor, tooltip: String) -> NSButton {
@@ -1603,7 +1640,8 @@ class DashboardView: NSView {
             let rect = cardRect(at: i)
 
             // Card background
-            let bgAlpha: CGFloat = 0.08
+            let isHovered = hoveredCardType == "session" && hoveredCardIndex == i
+            let bgAlpha: CGFloat = isHovered ? 0.15 : 0.08
             let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
             NSColor(white: 0.5, alpha: bgAlpha).setFill()
             bg.fill()
@@ -1666,8 +1704,9 @@ class DashboardView: NSView {
 
             for (i, t) in terminals.enumerated() {
                 let rect = termCardRect(at: i)
+                let isHovered = hoveredCardType == "terminal" && hoveredCardIndex == i
                 let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-                NSColor(white: 0.5, alpha: 0.05).setFill()
+                NSColor(white: 0.5, alpha: isHovered ? 0.12 : 0.05).setFill()
                 bg.fill()
 
                 // Left accent
@@ -1711,8 +1750,9 @@ class DashboardView: NSView {
 
             for (i, item) in pinnedItems.enumerated() {
                 let rect = pinnedCardRect(at: i)
+                let isHovered = hoveredCardType == "pinned" && hoveredCardIndex == i
                 let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-                NSColor(white: 0.5, alpha: 0.05).setFill()
+                NSColor(white: 0.5, alpha: isHovered ? 0.12 : 0.05).setFill()
                 bg.fill()
 
                 // Left accent — use allSessions for state lookup (not tab-filtered)
