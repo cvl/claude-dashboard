@@ -1464,7 +1464,14 @@ class DashboardView: NSView {
         for (i, t) in terminals.enumerated() {
             let rect = termCardRect(at: i)
             let isPinned = pinnedItems.contains { $0.id == t.name }
-            let pb = makeIconButton(frame: NSRect(x: rect.maxX - 26, y: rect.minY + 6, width: 20, height: 20),
+            // Position after name + status label
+            let nameW = NSAttributedString(string: t.name, attributes: [
+                .font: Self.fontBold12]).size().width
+            let statusLabel = t.isAlive ? "ACTIVE" : "CLOSED"
+            let statusW = NSAttributedString(string: statusLabel, attributes: [
+                .font: Self.fontSemi9]).size().width
+            let pinX = min(rect.minX + 14 + nameW + 10 + statusW + 6, rect.maxX - 30)
+            let pb = makeIconButton(frame: NSRect(x: pinX, y: rect.minY + 4, width: 20, height: 20),
                 icon: isPinned ? "pin.fill" : "pin",
                 tint: isPinned ? .systemBlue : .secondaryLabelColor,
                 tooltip: isPinned ? "Unpin" : "Pin")
