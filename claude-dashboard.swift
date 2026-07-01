@@ -2694,7 +2694,22 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView.terminals = terminalsForActiveTab(terminals)
         dashView.allSessions = orderedSessions
         dashView.allTerminals = terminals
-        dashView.pinnedItems = loadPinned()
+        // Refresh pinned items with current names from live data
+        var pinned = loadPinned()
+        var pinChanged = false
+        for i in 0..<pinned.count {
+            if pinned[i].type == "session" {
+                if let s = orderedSessions.first(where: { $0.sessionId == pinned[i].id }), s.name != pinned[i].name {
+                    pinned[i] = PinnedItem(id: pinned[i].id, type: "session", name: s.name, cwd: s.cwd, tty: s.tty)
+                    pinChanged = true
+                }
+            } else if let t = terminals.first(where: { $0.name == pinned[i].id }), t.cwd != pinned[i].cwd {
+                pinned[i] = PinnedItem(id: pinned[i].id, type: "terminal", name: t.name, cwd: t.cwd, tty: t.tty)
+                pinChanged = true
+            }
+        }
+        if pinChanged { savePinned(pinned) }
+        dashView.pinnedItems = pinned
 
         // Compute which tabs have working sessions
         let workingSessions = Set(orderedSessions.filter { $0.state == .working }.map(\.sessionId))
