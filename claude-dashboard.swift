@@ -366,6 +366,8 @@ func loadSessions() -> [Session] {
                 hasNotes: hasNotesFile(name: sname, sessionId: sid),
                 lastActive: lastActiveTime[p] ?? fallback,
                 hookTs: hookTs)
+            // Skip agent-looper sessions (names like "xxx-rev-f1-ab" or "xxx-fix-f2-cd")
+            if sname.range(of: #"-(?:rev|fix)-f\d+-[a-z]{2}$"#, options: .regularExpression) != nil { continue }
             if !sid.isEmpty { liveBySessionId[sid] = s }
         }
     }
