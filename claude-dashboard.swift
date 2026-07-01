@@ -1050,6 +1050,7 @@ class DashboardView: NSView {
     var onPinTerminal: ((Terminal) -> Void)?
     var onUnpin: ((String) -> Void)?  // pinned item id
     var onPinnedClick: ((PinnedItem) -> Void)?
+    var onPinnedReorder: ((Int, Int) -> Void)?
     var tabSidebar: TabSidebarView?
     var pinnedItems: [PinnedItem] = [] {
         didSet {
@@ -1312,6 +1313,11 @@ class DashboardView: NSView {
             dragSourceType = "terminal"
             dragStartPoint = loc
             isDragging = false
+        } else if let idx = pinnedIndex(at: loc), idx < pinnedItems.count {
+            dragSourceIndex = idx
+            dragSourceType = "pinned"
+            dragStartPoint = loc
+            isDragging = false
         }
     }
 
@@ -1345,6 +1351,12 @@ class DashboardView: NSView {
             var idx = Int(round(relY / (cardH + gap)))
             idx = max(0, min(idx, sessions.count))
             dropTargetIndex = (idx == srcIdx || idx == srcIdx + 1) ? nil : idx
+        } else if dragSourceType == "pinned" {
+            let baseY = pinnedTopY + sectionHeaderH
+            let relY = loc.y - baseY + gap / 2
+            var idx = Int(round(relY / (pinnedCardH + gap)))
+            idx = max(0, min(idx, pinnedItems.count))
+            dropTargetIndex = (idx == srcIdx || idx == srcIdx + 1) ? nil : idx
         }
         needsDisplay = true
     }
@@ -1362,17 +1374,15 @@ class DashboardView: NSView {
             if !itemId.isEmpty { onDragToTab?(targetTabId, itemId) }
         } else if isDragging, let src = dragSourceIndex, let tgt = dropTargetIndex, dragSourceType == "session" {
             onReorder?(src, tgt)
+        } else if isDragging, let src = dragSourceIndex, let tgt = dropTargetIndex, dragSourceType == "pinned" {
+            onPinnedReorder?(src, tgt)
         } else if let src = dragSourceIndex, !isDragging {
             if dragSourceType == "session" && src < sessions.count {
                 onSessionClick?(sessions[src])
             } else if dragSourceType == "terminal" && src < terminals.count {
                 onTerminalClick?(terminals[src])
-            }
-        } else if !isDragging {
-            // Check pinned click
-            let loc = convert(event.locationInWindow, from: nil)
-            if let idx = pinnedIndex(at: loc), idx < pinnedItems.count {
-                onPinnedClick?(pinnedItems[idx])
+            } else if dragSourceType == "pinned" && src < pinnedItems.count {
+                onPinnedClick?(pinnedItems[src])
             }
         }
         dragSourceIndex = nil
@@ -1800,14 +1810,18 @@ class DashboardView: NSView {
 
         // ── Drop indicator ──
         if isDragging, let tgt = dropTargetIndex {
-            let lineY = padY + CGFloat(tgt) * (cardH + gap) - gap / 2
+            let lineY: CGFloat
+            if dragSourceType == "pinned" {
+                lineY = pinnedTopY + sectionHeaderH + CGFloat(tgt) * (pinnedCardH + gap) - gap / 2
+            } else {
+                lineY = padY + CGFloat(tgt) * (cardH + gap) - gap / 2
+            }
             let line = NSBezierPath()
             line.move(to: NSPoint(x: padX, y: lineY))
             line.line(to: NSPoint(x: bounds.width - padX, y: lineY))
             line.lineWidth = 2
             NSColor.systemBlue.setStroke()
             line.stroke()
-            // Small circles at ends
             for x in [padX, bounds.width - padX] {
                 NSColor.systemBlue.setFill()
                 NSBezierPath(ovalIn: NSRect(x: x - 3, y: lineY - 3, width: 6, height: 6)).fill()
@@ -2055,6 +2069,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             if !tty.isEmpty { revealTTY(tty) }
             self.poll()
+        }
+        dashView.onPinnedReorder = { [weak self] from, to in
+            var pinned = loadPinned()
+            guard from < pinned.count else { return }
+            let item = pinned.remove(at: from)
+            let insertAt = to > from ? to - 1 : to
+            pinned.insert(item, at: insertAt)
+            savePinned(pinned)
+            self?.poll()
         }
         dashView.onDragToTab = { [weak self] tabId, itemId in
             self?.moveItemToTab(tabId: tabId, itemId: itemId)
