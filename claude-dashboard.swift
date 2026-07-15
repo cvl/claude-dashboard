@@ -1729,7 +1729,7 @@ class DashboardView: NSView {
                 bg.fill()
 
                 // Left accent
-                let accentColor: NSColor = t.isAlive ? .systemTeal : .systemGray
+                let accentColor: NSColor = t.isAlive ? .systemTeal : .systemRed
                 NSGraphicsContext.saveGraphicsState()
                 bg.addClip()
                 accentColor.setFill()
@@ -1745,7 +1745,7 @@ class DashboardView: NSView {
                 nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 5))
 
                 let statusLabel = t.isAlive ? "ACTIVE" : "CLOSED"
-                let statusColor: NSColor = t.isAlive ? .systemTeal : .systemGray
+                let statusColor: NSColor = t.isAlive ? .systemTeal : .systemRed
                 let statusAttr = NSAttributedString(string: statusLabel, attributes: [
                     .font: Self.fontSemi9,
                     .foregroundColor: statusColor])
