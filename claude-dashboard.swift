@@ -1302,6 +1302,11 @@ class DashboardView: NSView {
 
     // ── Click / Drag ──
     override func mouseDown(with event: NSEvent) {
+        // Control+click = right-click on trackpad
+        if event.modifierFlags.contains(.control) {
+            rightMouseDown(with: event)
+            return
+        }
         let loc = convert(event.locationInWindow, from: nil)
         if let idx = cardIndex(at: loc), idx < sessions.count {
             dragSourceIndex = idx
@@ -1729,7 +1734,7 @@ class DashboardView: NSView {
                 bg.fill()
 
                 // Left accent
-                let accentColor: NSColor = t.isAlive ? .systemTeal : .systemGray
+                let accentColor: NSColor = t.isAlive ? .systemTeal : .systemRed
                 NSGraphicsContext.saveGraphicsState()
                 bg.addClip()
                 accentColor.setFill()
@@ -1745,7 +1750,7 @@ class DashboardView: NSView {
                 nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 5))
 
                 let statusLabel = t.isAlive ? "ACTIVE" : "CLOSED"
-                let statusColor: NSColor = t.isAlive ? .systemTeal : .systemGray
+                let statusColor: NSColor = t.isAlive ? .systemTeal : .systemRed
                 let statusAttr = NSAttributedString(string: statusLabel, attributes: [
                     .font: Self.fontSemi9,
                     .foregroundColor: statusColor])
@@ -1783,7 +1788,7 @@ class DashboardView: NSView {
                     stateLabel = state.label
                 } else {
                     let alive = allTerminals.first(where: { $0.name == item.id })?.isAlive ?? false
-                    accentColor = alive ? .systemTeal : .systemGray
+                    accentColor = alive ? .systemTeal : .systemRed
                     stateLabel = alive ? "ACTIVE" : "CLOSED"
                 }
                 NSGraphicsContext.saveGraphicsState()
