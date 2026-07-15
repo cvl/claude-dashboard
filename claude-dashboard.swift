@@ -2292,7 +2292,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var tabPanel: NSWindow!
 
     func layoutViews() {
-        if showTabs {
+        // Don't show child windows if main panel is minimized or hidden
+        let mainHidden = !panel.isVisible || panel.isMiniaturized
+
+        if showTabs && !mainHidden {
             let mainFrame = panel.frame
             let tabH = tabSidebar.idealHeight + 8
             let tabX = mainFrame.minX - sidebarWidth - 4
@@ -2304,8 +2307,8 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if tabPanel.isVisible { tabPanel.orderOut(nil) }
         }
 
-        // Notification panel — always reposition (same as tabs)
-        if !dashNotifications.isEmpty {
+        // Notification panel
+        if !dashNotifications.isEmpty && !mainHidden {
             let w = notifView.idealWidth
             let h = notifView.idealHeight
             let anchor: NSRect
