@@ -2417,7 +2417,18 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil)
+        tabPanel.orderOut(nil)
+        notifPanel.orderOut(nil)
         return false
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        tabPanel.orderOut(nil)
+        notifPanel.orderOut(nil)
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        layoutViews()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
