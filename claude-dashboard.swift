@@ -2440,13 +2440,22 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { panel.makeKeyAndOrderFront(nil) }
+        if !flag {
+            panel.makeKeyAndOrderFront(nil)
+            layoutViews()
+        }
         return true
     }
 
     @objc func togglePanel() {
-        if panel.isVisible { panel.orderOut(nil) }
-        else { panel.makeKeyAndOrderFront(nil) }
+        if panel.isVisible {
+            panel.orderOut(nil)
+            tabPanel.orderOut(nil)
+            notifPanel.orderOut(nil)
+        } else {
+            panel.makeKeyAndOrderFront(nil)
+            layoutViews()
+        }
     }
 
     @objc func toggleAlwaysOnTop(_ sender: NSMenuItem) {
