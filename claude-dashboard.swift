@@ -1783,7 +1783,7 @@ class DashboardView: NSView {
                     stateLabel = state.label
                 } else {
                     let alive = allTerminals.first(where: { $0.name == item.id })?.isAlive ?? false
-                    accentColor = alive ? .systemTeal : .systemGray
+                    accentColor = alive ? .systemTeal : .systemRed
                     stateLabel = alive ? "ACTIVE" : "CLOSED"
                 }
                 NSGraphicsContext.saveGraphicsState()
