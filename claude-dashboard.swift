@@ -1302,6 +1302,11 @@ class DashboardView: NSView {
 
     // ── Click / Drag ──
     override func mouseDown(with event: NSEvent) {
+        // Control+click = right-click on trackpad
+        if event.modifierFlags.contains(.control) {
+            rightMouseDown(with: event)
+            return
+        }
         let loc = convert(event.locationInWindow, from: nil)
         if let idx = cardIndex(at: loc), idx < sessions.count {
             dragSourceIndex = idx
