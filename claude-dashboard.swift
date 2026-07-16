@@ -2439,6 +2439,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         layoutViews()
     }
 
+    func windowDidBecomeKey(_ notification: Notification) {
+        layoutViews()
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
             panel.makeKeyAndOrderFront(nil)
