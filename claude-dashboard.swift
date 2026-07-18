@@ -2292,8 +2292,8 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var tabPanel: NSWindow!
 
     func layoutViews() {
-        // Don't show child windows if main panel is minimized, hidden, or not key
-        let mainHidden = !panel.isVisible || panel.isMiniaturized || !panel.isKeyWindow
+        // Don't show child windows if main panel is minimized or hidden
+        let mainHidden = !panel.isVisible || panel.isMiniaturized
 
         if showTabs && !mainHidden {
             let mainFrame = panel.frame
