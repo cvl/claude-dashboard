@@ -2443,11 +2443,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         layoutViews()
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if panel.isVisible { layoutViews() }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
             panel.makeKeyAndOrderFront(nil)
-            layoutViews()
         }
+        layoutViews()
         return true
     }
 
