@@ -2444,7 +2444,12 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        if panel.isVisible { layoutViews() }
+        if panel.isVisible && !panel.isMiniaturized {
+            // Force child windows to front — they may be behind other apps
+            if showTabs { tabPanel.orderFront(nil) }
+            if !dashNotifications.isEmpty { notifPanel.orderFront(nil) }
+            layoutViews()
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
