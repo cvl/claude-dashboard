@@ -2292,8 +2292,8 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var tabPanel: NSWindow!
 
     func layoutViews() {
-        // Don't show child windows if main panel is minimized, hidden, or not key
-        let mainHidden = !panel.isVisible || panel.isMiniaturized || !panel.isKeyWindow
+        // Don't show child windows if main panel is minimized or hidden
+        let mainHidden = !panel.isVisible || panel.isMiniaturized
 
         if showTabs && !mainHidden {
             let mainFrame = panel.frame
@@ -2443,11 +2443,20 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         layoutViews()
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if panel.isVisible && !panel.isMiniaturized {
+            // Force child windows to front — they may be behind other apps
+            if showTabs { tabPanel.orderFront(nil) }
+            if !dashNotifications.isEmpty { notifPanel.orderFront(nil) }
+            layoutViews()
+        }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
             panel.makeKeyAndOrderFront(nil)
-            layoutViews()
         }
+        layoutViews()
         return true
     }
 
