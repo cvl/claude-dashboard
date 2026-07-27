@@ -503,7 +503,7 @@ func loadCodexSessions() -> [Session] {
                               uniquingKeysWith: { a, _ in a })
     // Sort by mtime desc for fallback matching
     let byMtime = jsonlEntries.sorted { $0.mtime > $1.mtime }
-    let claimedIds = Set(codexProcs.compactMap { $0.sessionId.isEmpty ? nil : $0.sessionId })
+
 
     var result: [Session] = []
     var usedIds = Set<String>()
@@ -522,10 +522,14 @@ func loadCodexSessions() -> [Session] {
         if !sid.isEmpty, let info = jsonlMap[sid] {
             cwd = info.cwd; startedAt = info.startedAt
         } else {
-            // Match by cwd first (most reliable), then by most recent unclaimed
-            if let match = byMtime.first(where: { $0.cwd == procCwd && !usedIds.contains($0.id) }) {
-                sid = match.id; cwd = match.cwd; startedAt = match.startedAt
-            } else if let match = byMtime.first(where: { !claimedIds.contains($0.id) && !usedIds.contains($0.id) }) {
+            // Query db for most recently updated thread matching this cwd
+            let dbPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/state_5.sqlite").path
+            let dbSid = shell("/usr/bin/sqlite3", dbPath,
+                "SELECT id FROM threads WHERE cwd='\(procCwd)' AND archived=0 ORDER BY updated_at DESC LIMIT 1")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !dbSid.isEmpty, let info = jsonlMap[dbSid] {
+                sid = dbSid; cwd = info.cwd; startedAt = info.startedAt
+            } else if let match = byMtime.first(where: { $0.cwd == procCwd && !usedIds.contains($0.id) }) {
                 sid = match.id; cwd = match.cwd; startedAt = match.startedAt
             }
         }
