@@ -455,70 +455,79 @@ func loadCodexSessions() -> [Session] {
     let fm = FileManager.default
     guard fm.fileExists(atPath: codexSessionsDir.path) else { return [] }
 
-    // Find running codex processes (native binary, not node wrapper or host)
+    // Find running codex processes — match only the node wrapper (one per session)
     let psOutput = shell("/bin/ps", "-eo", "pid=,tty=,args=")
     var codexProcs: [(pid: pid_t, tty: String, sessionId: String)] = []
     for line in psOutput.components(separatedBy: "\n") {
         let cols = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
         guard cols.count >= 3 else { continue }
         let args = String(cols[2])
-        guard args.contains("/bin/codex") && !args.contains("codex-code-mode-host") && !args.contains("node ") else { continue }
+        // Match "node .../codex" wrapper only — one per session, has TTY
+        guard args.hasPrefix("node ") && args.contains("/codex") && !args.contains("codex-code-mode") else { continue }
         guard let pid = pid_t(cols[0].trimmingCharacters(in: .whitespaces)) else { continue }
         let tty = String(cols[1])
-        // Extract session ID from "codex resume <uuid>" args
+        guard tty != "??" else { continue }
         var sid = ""
         if let range = args.range(of: "resume ") {
             let after = String(args[range.upperBound...]).trimmingCharacters(in: .whitespaces)
             let parts = after.split(separator: " ")
             if let first = parts.first, first.count > 8 { sid = String(first) }
         }
-        codexProcs.append((pid: pid, tty: tty == "??" ? "" : tty, sessionId: sid))
+        codexProcs.append((pid: pid, tty: tty, sessionId: sid))
     }
     guard !codexProcs.isEmpty else { return [] }
 
-    // Build session ID → JSONL file map from recent files
-    var jsonlMap: [String: (cwd: String, startedAt: Double)] = [:]
+    // Build session ID → metadata map from JSONL headers
+    // Only scan recent files (last 30 days) to avoid slow enumeration
+    var jsonlEntries: [(id: String, cwd: String, startedAt: Double, mtime: Date)] = []
+    let cutoff = Date(timeIntervalSinceNow: -30 * 86400)
     if let enumerator = fm.enumerator(at: codexSessionsDir, includingPropertiesForKeys: [.contentModificationDateKey]) {
         while let url = enumerator.nextObject() as? URL {
             guard url.pathExtension == "jsonl" else { continue }
-            guard let data = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            guard let firstLine = data.components(separatedBy: "\n").first, !firstLine.isEmpty else { continue }
-            guard let json = try? JSONSerialization.jsonObject(with: firstLine.data(using: .utf8)!) as? [String: Any],
+            if let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+               let mtime = vals.contentModificationDate, mtime < cutoff { continue }
+            guard let handle = FileHandle(forReadingAtPath: url.path) else { continue }
+            let headerData = handle.readData(ofLength: 4096)
+            handle.closeFile()
+            guard let firstLine = String(data: headerData, encoding: .utf8)?.components(separatedBy: "\n").first,
+                  let json = try? JSONSerialization.jsonObject(with: firstLine.data(using: .utf8)!) as? [String: Any],
                   let payload = json["payload"] as? [String: Any],
                   let sessionId = payload["session_id"] as? String else { continue }
             let cwd = payload["cwd"] as? String ?? ""
             let timestamp = payload["timestamp"] as? String ?? ""
-            // Parse ISO timestamp to epoch ms
             let df = ISO8601DateFormatter()
             df.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             let date = df.date(from: timestamp) ?? Date()
-            jsonlMap[sessionId] = (cwd: cwd, startedAt: date.timeIntervalSince1970 * 1000)
+            let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
+            jsonlEntries.append((id: sessionId, cwd: cwd, startedAt: date.timeIntervalSince1970 * 1000, mtime: mtime))
         }
     }
+    let jsonlMap = Dictionary(jsonlEntries.map { ($0.id, (cwd: $0.cwd, startedAt: $0.startedAt)) },
+                              uniquingKeysWith: { a, _ in a })
+    // Sort by mtime desc for fallback matching
+    let byMtime = jsonlEntries.sorted { $0.mtime > $1.mtime }
+    let claimedIds = Set(codexProcs.compactMap { $0.sessionId.isEmpty ? nil : $0.sessionId })
 
-    // For procs without session ID, find by matching most recently modified JSONL
     var result: [Session] = []
+    var usedIds = Set<String>()
     for proc in codexProcs {
         var sid = proc.sessionId
         var cwd = ""
         var startedAt: Double = 0
 
         if !sid.isEmpty, let info = jsonlMap[sid] {
-            cwd = info.cwd
-            startedAt = info.startedAt
+            cwd = info.cwd; startedAt = info.startedAt
         } else if sid.isEmpty {
-            // Find the JSONL being written to by this process (most recent mtime)
-            // Use the proc's TTY to narrow down — but just use the most recent as fallback
-            for (id, info) in jsonlMap {
-                if !codexProcs.contains(where: { $0.sessionId == id && $0.pid != proc.pid }) {
-                    sid = id; cwd = info.cwd; startedAt = info.startedAt
-                    break
-                }
+            // Match to the most recently modified unclaimed JSONL
+            if let match = byMtime.first(where: { !claimedIds.contains($0.id) && !usedIds.contains($0.id) }) {
+                sid = match.id; cwd = match.cwd; startedAt = match.startedAt
             }
         }
 
-        guard !sid.isEmpty else { continue }
-        let sname = shortPath(cwd).components(separatedBy: "/").last ?? "codex-\(proc.pid)"
+        guard !sid.isEmpty, !usedIds.contains(sid) else { continue }
+        usedIds.insert(sid)
+
+        let sname = (cwd as NSString).lastPathComponent
         let resolvedState = resolveState(proc.pid)
         let hookTs = stateFileEvent(proc.pid)?.ts ?? 0
 
