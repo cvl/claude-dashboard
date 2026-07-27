@@ -17,6 +17,10 @@ let activeTabFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-active-tab").path
 let logFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard.log").path
+let codexSessionsDir = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".codex").appendingPathComponent("sessions")
+let codexHooksFile = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".codex").appendingPathComponent("hooks.json").path
 
 func dashLog(_ msg: String) {
     let df = DateFormatter()
@@ -108,6 +112,7 @@ struct Session {
     let hasNotes: Bool
     let lastActive: Date
     let hookTs: Int  // timestamp from hook state file, 0 if none
+    let source: String  // "claude" or "codex"
 }
 
 struct Terminal {
@@ -241,6 +246,7 @@ struct StoredSession: Codable {
     let startedAt: Double
     var lastPid: Int
     var lastActiveTs: Double?
+    var source: String?  // "claude" or "codex", nil = claude (backward compat)
 }
 
 /// Returns (store, didLoad). didLoad=false means file exists but failed to parse.
@@ -365,7 +371,8 @@ func loadSessions() -> [Session] {
                 tty: shell("/bin/ps", "-o", "tty=", "-p", "\(pid)"),
                 hasNotes: hasNotesFile(name: sname, sessionId: sid),
                 lastActive: lastActiveTime[p] ?? fallback,
-                hookTs: hookTs)
+                hookTs: hookTs,
+                source: "claude")
             // Skip agent-looper sessions (names like "xxx-rev-f1-ab" or "xxx-fix-f2-cd")
             if sname.range(of: #"-(?:rev|fix)-f\d+-[a-z]{2}$"#, options: .regularExpression) != nil { continue }
             if !sid.isEmpty { liveBySessionId[sid] = s }
@@ -403,6 +410,8 @@ func loadSessions() -> [Session] {
     var resumedOldIds: [String] = []
     var result = Array(liveBySessionId.values)
     for (sid, stored) in store {
+        // Skip codex sessions — handled by loadCodexSessions
+        if stored.source == "codex" { continue }
         if liveBySessionId[sid] == nil {
             let key = "\(stored.name)\0\(stored.cwd)"
             if let live = liveByKey[key] {
@@ -423,7 +432,8 @@ func loadSessions() -> [Session] {
                 startedAt: stored.startedAt, state: .dead,
                 tty: "", hasNotes: hasNotesFile(name: stored.name, sessionId: sid),
                 lastActive: lastActiveTime[p] ?? Date(timeIntervalSince1970: stored.lastActiveTs ?? fallback.timeIntervalSince1970),
-                hookTs: 0))
+                hookTs: 0,
+                source: "claude"))
         }
     }
     // Remove old resumed entries from store, queue tab transfers for main thread
@@ -440,6 +450,173 @@ func loadSessions() -> [Session] {
     }
     return result.filter { !removedSessionIds.contains($0.sessionId) }
         .sorted { $0.startedAt > $1.startedAt }
+}
+
+// MARK: - Codex Sessions
+
+func loadCodexSessions() -> [Session] {
+    let fm = FileManager.default
+    guard fm.fileExists(atPath: codexSessionsDir.path) else { return [] }
+
+    // Find running codex processes — use pgrep to find node codex wrappers
+    let pids = shell("/usr/bin/pgrep", "-f", "node.*codex")
+    var codexProcs: [(pid: pid_t, tty: String, sessionId: String)] = []
+    for pidStr in pids.components(separatedBy: "\n") {
+        guard let pid = pid_t(pidStr.trimmingCharacters(in: .whitespaces)), pid > 0 else { continue }
+        let args = shell("/bin/ps", "-o", "args=", "-p", "\(pid)")
+        guard args.hasPrefix("node ") && args.contains("/codex") else { continue }
+        let tty = shell("/bin/ps", "-o", "tty=", "-p", "\(pid)")
+        guard !tty.isEmpty && tty != "??" else { continue }
+        var sid = ""
+        if let range = args.range(of: "resume ") {
+            let after = String(args[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+            let parts = after.split(separator: " ")
+            if let first = parts.first, first.count > 8 { sid = String(first) }
+        }
+        codexProcs.append((pid: pid, tty: tty, sessionId: sid))
+    }
+    guard !codexProcs.isEmpty else { return [] }
+
+    // Build session ID → metadata map from JSONL headers
+    // Only scan recent files (last 30 days) to avoid slow enumeration
+    var jsonlEntries: [(id: String, cwd: String, startedAt: Double, mtime: Date)] = []
+    let cutoff = Date(timeIntervalSinceNow: -30 * 86400)
+    if let enumerator = fm.enumerator(at: codexSessionsDir, includingPropertiesForKeys: [.contentModificationDateKey]) {
+        while let url = enumerator.nextObject() as? URL {
+            guard url.pathExtension == "jsonl" else { continue }
+            if let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+               let mtime = vals.contentModificationDate, mtime < cutoff { continue }
+            guard let handle = FileHandle(forReadingAtPath: url.path) else { continue }
+            let headerData = handle.readData(ofLength: 512)
+            handle.closeFile()
+            guard let header = String(data: headerData, encoding: .utf8) else { continue }
+            // Extract fields — header can be 18KB+, only read first 512 bytes
+            func extractField(_ key: String, from str: String) -> String? {
+                guard let range = str.range(of: "\"\(key)\":\"") else { return nil }
+                let after = str[range.upperBound...]
+                guard let end = after.firstIndex(of: "\"") else { return nil }
+                return String(after[..<end])
+            }
+            guard let sessionId = extractField("session_id", from: header) else { continue }
+            let cwd = extractField("cwd", from: header) ?? ""
+            let timestamp = extractField("timestamp", from: header) ?? ""
+            let df = ISO8601DateFormatter()
+            df.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let date = df.date(from: timestamp) ?? Date()
+            let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
+            jsonlEntries.append((id: sessionId, cwd: cwd, startedAt: date.timeIntervalSince1970 * 1000, mtime: mtime))
+        }
+    }
+    let jsonlMap = Dictionary(jsonlEntries.map { ($0.id, (cwd: $0.cwd, startedAt: $0.startedAt)) },
+                              uniquingKeysWith: { a, _ in a })
+
+    var result: [Session] = []
+    var usedIds = Set<String>()
+    for proc in codexProcs {
+        var sid = proc.sessionId
+        var cwd = ""
+        var startedAt: Double = 0
+
+        // Get process cwd via lsof (always needed for matching)
+        let lsofOut = shell("/usr/sbin/lsof", "-a", "-p", "\(proc.pid)", "-d", "cwd", "-F", "n")
+        var procCwd = ""
+        for line in lsofOut.components(separatedBy: "\n") {
+            if line.hasPrefix("n/") { procCwd = String(line.dropFirst(1)); break }
+        }
+
+        if !sid.isEmpty, let info = jsonlMap[sid] {
+            cwd = info.cwd; startedAt = info.startedAt
+        } else {
+            // Find real session ID from the JSONL file the process tree has open
+            // Check both node wrapper and its child (native binary)
+            var pidsToCheck = ["\(proc.pid)"]
+            let childPids = shell("/usr/bin/pgrep", "-P", "\(proc.pid)")
+            pidsToCheck += childPids.components(separatedBy: "\n").filter { !$0.isEmpty }
+            let lsofFiles = shell("/usr/sbin/lsof", "-p", pidsToCheck.joined(separator: ","))
+            for line in lsofFiles.components(separatedBy: "\n") {
+                guard line.contains(".jsonl") else { continue }
+                // Extract session ID from filename: rollout-...-<uuid>.jsonl
+                let parts = line.components(separatedBy: "/")
+                if let filename = parts.last, filename.hasSuffix(".jsonl") {
+                    // UUID is the last 36 chars before .jsonl
+                    let base = filename.replacingOccurrences(of: ".jsonl", with: "")
+                    if base.count >= 36 {
+                        let uuid = String(base.suffix(36))
+                        if uuid.contains("-") && uuid.count == 36 {
+                            sid = uuid
+                            if let info = jsonlMap[sid] { cwd = info.cwd; startedAt = info.startedAt }
+                            break
+                        }
+                    }
+                }
+            }
+        }
+
+        // No JSONL yet — use PID as temporary ID
+        if sid.isEmpty {
+            sid = "codex-\(proc.pid)"
+            cwd = procCwd
+            startedAt = Date().timeIntervalSince1970 * 1000
+        }
+
+        guard !usedIds.contains(sid) else { continue }
+        usedIds.insert(sid)
+
+        // Get name from Codex state database
+        // /rename updates the "title" column. "name" is always empty.
+        var sname = ""
+        let dbPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/state_5.sqlite").path
+        if !sid.hasPrefix("codex-"), sid.count > 10 {
+            // Try name first, then title (but only if short — long titles are first prompt text)
+            let dbOut = shell("/usr/bin/sqlite3", dbPath,
+                "SELECT COALESCE(NULLIF(name,''), title) FROM threads WHERE id='\(sid)' LIMIT 1")
+            let candidate = dbOut.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !candidate.isEmpty && candidate.count <= 40 { sname = candidate }
+        }
+        if sname.isEmpty {
+            sname = (cwd as NSString).lastPathComponent.isEmpty ? "codex-\(proc.pid)" : (cwd as NSString).lastPathComponent
+        }
+        let resolvedState = resolveState(proc.pid)
+        let hookTs = stateFileEvent(proc.pid)?.ts ?? 0
+
+        result.append(Session(
+            pid: proc.pid, sessionId: sid, name: sname, cwd: cwd,
+            startedAt: startedAt, state: resolvedState,
+            tty: proc.tty, hasNotes: hasNotesFile(name: sname, sessionId: sid),
+            lastActive: lastActiveTime[proc.pid] ?? Date(timeIntervalSince1970: startedAt / 1000),
+            hookTs: hookTs, source: "codex"))
+
+    }
+
+    // Persist live codex sessions + load dead ones — single store read/write
+    let liveIds = Set(result.map(\.sessionId))
+    var (store, storeOk) = loadStore()
+    // Save live sessions (skip temp IDs — can't be resumed)
+    for s in result where !s.sessionId.hasPrefix("codex-") {
+        store[s.sessionId] = StoredSession(sessionId: s.sessionId, name: s.name, cwd: s.cwd,
+                                            startedAt: s.startedAt, lastPid: Int(s.pid),
+                                            lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970,
+                                            source: "codex")
+    }
+    // Filter removed
+    for rid in removedSessionIds { store.removeValue(forKey: rid) }
+    if storeOk { saveStore(store) }
+    // Load dead
+    for (sid, stored) in store {
+        guard stored.source == "codex" else { continue }
+        guard !liveIds.contains(sid) else { continue }
+        guard !removedSessionIds.contains(sid) else { continue }
+        let p = pid_t(stored.lastPid)
+        let fallback = Date(timeIntervalSince1970: stored.startedAt / 1000)
+        result.append(Session(
+            pid: p, sessionId: sid, name: stored.name, cwd: stored.cwd,
+            startedAt: stored.startedAt, state: .dead,
+            tty: "", hasNotes: hasNotesFile(name: stored.name, sessionId: sid),
+            lastActive: lastActiveTime[p] ?? Date(timeIntervalSince1970: stored.lastActiveTs ?? fallback.timeIntervalSince1970),
+            hookTs: 0, source: "codex"))
+    }
+
+    return result
 }
 
 struct TabTransfer {
@@ -1914,6 +2091,43 @@ func setupDependencies() {
     py.standardError = FileHandle.nullDevice
     try? py.run()
     py.waitUntilExit()
+
+    // 4. Ensure Codex hooks are registered in hooks.json
+    if FileManager.default.fileExists(atPath: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path) {
+        let codexPyScript = """
+        import json, os, sys
+        path = sys.argv[1]
+        hook_path = sys.argv[2]
+        d = {'hooks': {}}
+        if os.path.exists(path):
+            with open(path) as f:
+                d = json.load(f)
+        hooks = d.setdefault('hooks', {})
+        changed = False
+        needed = {
+            'UserPromptSubmit': {'hooks': [{'type': 'command', 'command': hook_path + ' working'}]},
+            'Stop': {'hooks': [{'type': 'command', 'command': hook_path + ' stop'}]}
+        }
+        for event, entry in needed.items():
+            existing = hooks.get(event, [])
+            has = any('dash-state.sh' in h.get('command', '') for e in existing for h in e.get('hooks', []))
+            if not has:
+                existing.insert(0, entry)
+                hooks[event] = existing
+                changed = True
+        if changed:
+            with open(path, 'w') as f:
+                json.dump(d, f, indent=2)
+                f.write('\\n')
+        """
+        let codexPy = Process()
+        codexPy.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        codexPy.arguments = ["-c", codexPyScript, codexHooksFile, hookPath]
+        codexPy.standardOutput = FileHandle.nullDevice
+        codexPy.standardError = FileHandle.nullDevice
+        try? codexPy.run()
+        codexPy.waitUntilExit()
+    }
 }
 
 // MARK: - App
@@ -1994,7 +2208,12 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         dashView.onNotesClick = { s in openNotes(for: s) }
         dashView.onResumeClick = { [weak self] s in
-            let cmd = "cd \(s.cwd) && claude --resume \(s.sessionId) --name '\(s.name)' --effort max"
+            let cmd: String
+            if s.source == "codex" {
+                cmd = "cd \(s.cwd) && codex resume \(s.sessionId)"
+            } else {
+                cmd = "cd \(s.cwd) && claude --resume \(s.sessionId) --name '\(s.name)' --effort max"
+            }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(cmd, forType: .string)
             if let btn = self?.dashView.resumeButtons.first(where: {
@@ -2561,7 +2780,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func poll() {
         pollQueue.async { [weak self] in
-            let ss = loadSessions()
+            let claudeSessions = loadSessions()
+            let codexSessions = loadCodexSessions()
+            let ss = claudeSessions + codexSessions
             let terms = loadRegisteredTerminals()
             DispatchQueue.main.async { self?.updateUI(ss, terminals: terms) }
         }
