@@ -534,13 +534,16 @@ func loadCodexSessions() -> [Session] {
         guard !usedIds.contains(sid) else { continue }
         usedIds.insert(sid)
 
-        // Get name from Codex state database (only the explicit name field)
+        // Get name from Codex state database
+        // /rename updates the "title" column. "name" is always empty.
         var sname = ""
         let dbPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/state_5.sqlite").path
         if !sid.hasPrefix("codex-") {
+            // Try name first, then title (but only if short — long titles are first prompt text)
             let dbOut = shell("/usr/bin/sqlite3", dbPath,
-                "SELECT name FROM threads WHERE id='\(sid)' AND name IS NOT NULL AND name != '' LIMIT 1")
-            sname = dbOut.trimmingCharacters(in: .whitespacesAndNewlines)
+                "SELECT COALESCE(NULLIF(name,''), title) FROM threads WHERE id='\(sid)' LIMIT 1")
+            let candidate = dbOut.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !candidate.isEmpty && candidate.count <= 40 { sname = candidate }
         }
         if sname.isEmpty {
             sname = (cwd as NSString).lastPathComponent.isEmpty ? "codex-\(proc.pid)" : (cwd as NSString).lastPathComponent
