@@ -531,9 +531,11 @@ func loadCodexSessions() -> [Session] {
             cwd = info.cwd; startedAt = info.startedAt
         } else {
             // Query db for most recently updated thread matching this cwd
+            // Only match if updated in the last 5 minutes (avoids picking up old sessions in same dir)
             let dbPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/state_5.sqlite").path
+            let fiveMinAgo = Int(Date().timeIntervalSince1970) - 300
             let dbSid = shell("/usr/bin/sqlite3", dbPath,
-                "SELECT id FROM threads WHERE cwd='\(procCwd)' AND archived=0 ORDER BY updated_at DESC LIMIT 1")
+                "SELECT id FROM threads WHERE cwd='\(procCwd)' AND archived=0 AND updated_at > \(fiveMinAgo) ORDER BY updated_at DESC LIMIT 1")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !dbSid.isEmpty, let info = jsonlMap[dbSid] {
                 sid = dbSid; cwd = info.cwd; startedAt = info.startedAt
