@@ -246,6 +246,7 @@ struct StoredSession: Codable {
     let startedAt: Double
     var lastPid: Int
     var lastActiveTs: Double?
+    var source: String?  // "claude" or "codex", nil = claude (backward compat)
 }
 
 /// Returns (store, didLoad). didLoad=false means file exists but failed to parse.
@@ -572,7 +573,36 @@ func loadCodexSessions() -> [Session] {
             tty: proc.tty, hasNotes: hasNotesFile(name: sname, sessionId: sid),
             lastActive: lastActiveTime[proc.pid] ?? Date(timeIntervalSince1970: startedAt / 1000),
             hookTs: hookTs, source: "codex"))
+
+        // Persist to store
+        if !sid.hasPrefix("codex-") {
+            let stored = StoredSession(sessionId: sid, name: sname, cwd: cwd,
+                                       startedAt: startedAt, lastPid: Int(proc.pid),
+                                       lastActiveTs: lastActiveTime[proc.pid]?.timeIntervalSince1970,
+                                       source: "codex")
+            var (store, storeOk) = loadStore()
+            store[sid] = stored
+            if storeOk { saveStore(store) }
+        }
     }
+
+    // Add dead codex sessions from store
+    let liveIds = Set(result.map(\.sessionId))
+    let (store, _) = loadStore()
+    for (sid, stored) in store {
+        guard stored.source == "codex" else { continue }
+        guard !liveIds.contains(sid) else { continue }
+        guard !removedSessionIds.contains(sid) else { continue }
+        let p = pid_t(stored.lastPid)
+        let fallback = Date(timeIntervalSince1970: stored.startedAt / 1000)
+        result.append(Session(
+            pid: p, sessionId: sid, name: stored.name, cwd: stored.cwd,
+            startedAt: stored.startedAt, state: .dead,
+            tty: "", hasNotes: hasNotesFile(name: stored.name, sessionId: sid),
+            lastActive: lastActiveTime[p] ?? Date(timeIntervalSince1970: stored.lastActiveTs ?? fallback.timeIntervalSince1970),
+            hookTs: 0, source: "codex"))
+    }
+
     return result
 }
 
