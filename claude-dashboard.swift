@@ -455,18 +455,15 @@ func loadCodexSessions() -> [Session] {
     let fm = FileManager.default
     guard fm.fileExists(atPath: codexSessionsDir.path) else { return [] }
 
-    // Find running codex processes — match only the node wrapper (one per session)
-    let psOutput = shell("/bin/ps", "-eo", "pid=,tty=,args=")
+    // Find running codex processes — use pgrep to find node codex wrappers
+    let pids = shell("/usr/bin/pgrep", "-f", "node.*codex")
     var codexProcs: [(pid: pid_t, tty: String, sessionId: String)] = []
-    for line in psOutput.components(separatedBy: "\n") {
-        let cols = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
-        guard cols.count >= 3 else { continue }
-        let args = String(cols[2])
-        // Match "node .../codex" wrapper only — one per session, has TTY
-        guard args.hasPrefix("node ") && args.contains("/codex") && !args.contains("codex-code-mode") else { continue }
-        guard let pid = pid_t(cols[0].trimmingCharacters(in: .whitespaces)) else { continue }
-        let tty = String(cols[1])
-        guard tty != "??" else { continue }
+    for pidStr in pids.components(separatedBy: "\n") {
+        guard let pid = pid_t(pidStr.trimmingCharacters(in: .whitespaces)), pid > 0 else { continue }
+        let args = shell("/bin/ps", "-o", "args=", "-p", "\(pid)")
+        guard args.hasPrefix("node ") && args.contains("/codex") else { continue }
+        let tty = shell("/bin/ps", "-o", "tty=", "-p", "\(pid)")
+        guard !tty.isEmpty && tty != "??" else { continue }
         var sid = ""
         if let range = args.range(of: "resume ") {
             let after = String(args[range.upperBound...]).trimmingCharacters(in: .whitespaces)
@@ -527,7 +524,7 @@ func loadCodexSessions() -> [Session] {
         guard !sid.isEmpty, !usedIds.contains(sid) else { continue }
         usedIds.insert(sid)
 
-        let sname = (cwd as NSString).lastPathComponent
+        let sname = (cwd as NSString).lastPathComponent.isEmpty ? "codex-\(proc.pid)" : (cwd as NSString).lastPathComponent
         let resolvedState = resolveState(proc.pid)
         let hookTs = stateFileEvent(proc.pid)?.ts ?? 0
 
