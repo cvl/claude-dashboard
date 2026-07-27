@@ -526,9 +526,31 @@ func loadCodexSessions() -> [Session] {
 
         if !sid.isEmpty, let info = jsonlMap[sid] {
             cwd = info.cwd; startedAt = info.startedAt
+        } else {
+            // Find real session ID from the JSONL file the process tree has open
+            // Check both node wrapper and its child (native binary)
+            var pidsToCheck = ["\(proc.pid)"]
+            let childPids = shell("/usr/bin/pgrep", "-P", "\(proc.pid)")
+            pidsToCheck += childPids.components(separatedBy: "\n").filter { !$0.isEmpty }
+            let lsofFiles = shell("/usr/sbin/lsof", "-p", pidsToCheck.joined(separator: ","))
+            for line in lsofFiles.components(separatedBy: "\n") {
+                guard line.contains(".jsonl") else { continue }
+                // Extract session ID from filename: rollout-...-<uuid>.jsonl
+                let parts = line.components(separatedBy: "/")
+                if let filename = parts.last, filename.hasSuffix(".jsonl") {
+                    // UUID is the last 36 chars before .jsonl
+                    let base = filename.replacingOccurrences(of: ".jsonl", with: "")
+                    if base.count >= 36 {
+                        let uuid = String(base.suffix(36))
+                        if uuid.contains("-") && uuid.count == 36 {
+                            sid = uuid
+                            if let info = jsonlMap[sid] { cwd = info.cwd; startedAt = info.startedAt }
+                            break
+                        }
+                    }
+                }
+            }
         }
-        // Sessions without resume ID: use folder name + temp ID
-        // Don't match old JONLs — they belong to previous sessions
 
         // No JSONL yet — use PID as temporary ID
         if sid.isEmpty {
