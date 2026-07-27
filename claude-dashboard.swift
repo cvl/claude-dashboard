@@ -521,7 +521,17 @@ func loadCodexSessions() -> [Session] {
             }
         }
 
-        guard !sid.isEmpty, !usedIds.contains(sid) else { continue }
+        // No JSONL yet (new session before first prompt) — use PID as ID, get cwd from lsof
+        if sid.isEmpty {
+            sid = "codex-\(proc.pid)"
+            let lsofOut = shell("/usr/sbin/lsof", "-a", "-p", "\(proc.pid)", "-d", "cwd", "-F", "n")
+            for line in lsofOut.components(separatedBy: "\n") {
+                if line.hasPrefix("n/") { cwd = String(line.dropFirst(1)); break }
+            }
+            startedAt = Date().timeIntervalSince1970 * 1000
+        }
+
+        guard !usedIds.contains(sid) else { continue }
         usedIds.insert(sid)
 
         let sname = (cwd as NSString).lastPathComponent.isEmpty ? "codex-\(proc.pid)" : (cwd as NSString).lastPathComponent
