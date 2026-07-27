@@ -509,9 +509,6 @@ func loadCodexSessions() -> [Session] {
     }
     let jsonlMap = Dictionary(jsonlEntries.map { ($0.id, (cwd: $0.cwd, startedAt: $0.startedAt)) },
                               uniquingKeysWith: { a, _ in a })
-    // Sort by mtime desc for fallback matching
-    let byMtime = jsonlEntries.sorted { $0.mtime > $1.mtime }
-
 
     var result: [Session] = []
     var usedIds = Set<String>()
@@ -529,16 +526,9 @@ func loadCodexSessions() -> [Session] {
 
         if !sid.isEmpty, let info = jsonlMap[sid] {
             cwd = info.cwd; startedAt = info.startedAt
-        } else {
-            // Match to JSONL by cwd
-            let dbSid = ""  // Don't use db cwd match — picks up old sessions in same dir
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !dbSid.isEmpty, let info = jsonlMap[dbSid] {
-                sid = dbSid; cwd = info.cwd; startedAt = info.startedAt
-            } else if let match = byMtime.first(where: { $0.cwd == procCwd && !usedIds.contains($0.id) }) {
-                sid = match.id; cwd = match.cwd; startedAt = match.startedAt
-            }
         }
+        // Sessions without resume ID: use folder name + temp ID
+        // Don't match old JONLs — they belong to previous sessions
 
         // No JSONL yet — use PID as temporary ID
         if sid.isEmpty {
