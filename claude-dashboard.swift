@@ -484,14 +484,19 @@ func loadCodexSessions() -> [Session] {
             if let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
                let mtime = vals.contentModificationDate, mtime < cutoff { continue }
             guard let handle = FileHandle(forReadingAtPath: url.path) else { continue }
-            let headerData = handle.readData(ofLength: 4096)
+            let headerData = handle.readData(ofLength: 512)
             handle.closeFile()
-            guard let firstLine = String(data: headerData, encoding: .utf8)?.components(separatedBy: "\n").first,
-                  let json = try? JSONSerialization.jsonObject(with: firstLine.data(using: .utf8)!) as? [String: Any],
-                  let payload = json["payload"] as? [String: Any],
-                  let sessionId = payload["session_id"] as? String else { continue }
-            let cwd = payload["cwd"] as? String ?? ""
-            let timestamp = payload["timestamp"] as? String ?? ""
+            guard let header = String(data: headerData, encoding: .utf8) else { continue }
+            // Extract fields — header can be 18KB+, only read first 512 bytes
+            func extractField(_ key: String, from str: String) -> String? {
+                guard let range = str.range(of: "\"\(key)\":\"") else { return nil }
+                let after = str[range.upperBound...]
+                guard let end = after.firstIndex(of: "\"") else { return nil }
+                return String(after[..<end])
+            }
+            guard let sessionId = extractField("session_id", from: header) else { continue }
+            let cwd = extractField("cwd", from: header) ?? ""
+            let timestamp = extractField("timestamp", from: header) ?? ""
             let df = ISO8601DateFormatter()
             df.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             let date = df.date(from: timestamp) ?? Date()
