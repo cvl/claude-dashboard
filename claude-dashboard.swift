@@ -512,22 +512,28 @@ func loadCodexSessions() -> [Session] {
         var cwd = ""
         var startedAt: Double = 0
 
+        // Get process cwd via lsof (always needed for matching)
+        let lsofOut = shell("/usr/sbin/lsof", "-a", "-p", "\(proc.pid)", "-d", "cwd", "-F", "n")
+        var procCwd = ""
+        for line in lsofOut.components(separatedBy: "\n") {
+            if line.hasPrefix("n/") { procCwd = String(line.dropFirst(1)); break }
+        }
+
         if !sid.isEmpty, let info = jsonlMap[sid] {
             cwd = info.cwd; startedAt = info.startedAt
-        } else if sid.isEmpty {
-            // Match to the most recently modified unclaimed JSONL
-            if let match = byMtime.first(where: { !claimedIds.contains($0.id) && !usedIds.contains($0.id) }) {
+        } else {
+            // Match by cwd first (most reliable), then by most recent unclaimed
+            if let match = byMtime.first(where: { $0.cwd == procCwd && !usedIds.contains($0.id) }) {
+                sid = match.id; cwd = match.cwd; startedAt = match.startedAt
+            } else if let match = byMtime.first(where: { !claimedIds.contains($0.id) && !usedIds.contains($0.id) }) {
                 sid = match.id; cwd = match.cwd; startedAt = match.startedAt
             }
         }
 
-        // No JSONL yet (new session before first prompt) — use PID as ID, get cwd from lsof
+        // No JSONL yet — use PID as temporary ID
         if sid.isEmpty {
             sid = "codex-\(proc.pid)"
-            let lsofOut = shell("/usr/sbin/lsof", "-a", "-p", "\(proc.pid)", "-d", "cwd", "-F", "n")
-            for line in lsofOut.components(separatedBy: "\n") {
-                if line.hasPrefix("n/") { cwd = String(line.dropFirst(1)); break }
-            }
+            cwd = procCwd
             startedAt = Date().timeIntervalSince1970 * 1000
         }
 
@@ -538,7 +544,7 @@ func loadCodexSessions() -> [Session] {
         // /rename updates the "title" column. "name" is always empty.
         var sname = ""
         let dbPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/state_5.sqlite").path
-        if !sid.hasPrefix("codex-") {
+        if !sid.hasPrefix("codex-"), sid.count > 10 {
             // Try name first, then title (but only if short — long titles are first prompt text)
             let dbOut = shell("/usr/bin/sqlite3", dbPath,
                 "SELECT COALESCE(NULLIF(name,''), title) FROM threads WHERE id='\(sid)' LIMIT 1")
