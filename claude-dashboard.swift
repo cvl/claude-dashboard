@@ -578,21 +578,22 @@ func loadCodexSessions() -> [Session] {
             lastActive: lastActiveTime[proc.pid] ?? Date(timeIntervalSince1970: startedAt / 1000),
             hookTs: hookTs, source: "codex"))
 
-        // Persist to store
-        if !sid.hasPrefix("codex-") {
-            let stored = StoredSession(sessionId: sid, name: sname, cwd: cwd,
-                                       startedAt: startedAt, lastPid: Int(proc.pid),
-                                       lastActiveTs: lastActiveTime[proc.pid]?.timeIntervalSince1970,
-                                       source: "codex")
-            var (store, storeOk) = loadStore()
-            store[sid] = stored
-            if storeOk { saveStore(store) }
-        }
     }
 
-    // Add dead codex sessions from store
+    // Persist live codex sessions + load dead ones — single store read/write
     let liveIds = Set(result.map(\.sessionId))
-    let (store, _) = loadStore()
+    var (store, storeOk) = loadStore()
+    // Save live sessions
+    for s in result where !s.sessionId.hasPrefix("codex-") {
+        store[s.sessionId] = StoredSession(sessionId: s.sessionId, name: s.name, cwd: s.cwd,
+                                            startedAt: s.startedAt, lastPid: Int(s.pid),
+                                            lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970,
+                                            source: "codex")
+    }
+    // Filter removed
+    for rid in removedSessionIds { store.removeValue(forKey: rid) }
+    if storeOk { saveStore(store) }
+    // Load dead
     for (sid, stored) in store {
         guard stored.source == "codex" else { continue }
         guard !liveIds.contains(sid) else { continue }
