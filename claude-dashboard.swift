@@ -570,7 +570,7 @@ func loadCodexSessions() -> [Session] {
     let liveIds = Set(result.map(\.sessionId))
     var (store, storeOk) = loadStore()
     // Save live sessions
-    for s in result where !s.sessionId.hasPrefix("codex-") {
+    for s in result {
         store[s.sessionId] = StoredSession(sessionId: s.sessionId, name: s.name, cwd: s.cwd,
                                             startedAt: s.startedAt, lastPid: Int(s.pid),
                                             lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970,
