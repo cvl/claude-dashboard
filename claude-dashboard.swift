@@ -534,15 +534,13 @@ func loadCodexSessions() -> [Session] {
         guard !usedIds.contains(sid) else { continue }
         usedIds.insert(sid)
 
-        // Get name from Codex state database
+        // Get name from Codex state database (only the explicit name field)
         var sname = ""
         let dbPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/state_5.sqlite").path
         if !sid.hasPrefix("codex-") {
             let dbOut = shell("/usr/bin/sqlite3", dbPath,
-                "SELECT COALESCE(NULLIF(name,''), NULLIF(title,'')) FROM threads WHERE id='\(sid)' LIMIT 1")
+                "SELECT name FROM threads WHERE id='\(sid)' AND name IS NOT NULL AND name != '' LIMIT 1")
             sname = dbOut.trimmingCharacters(in: .whitespacesAndNewlines)
-            // Truncate long titles (first prompt text)
-            if sname.count > 30 { sname = String(sname.prefix(27)) + "..." }
         }
         if sname.isEmpty {
             sname = (cwd as NSString).lastPathComponent.isEmpty ? "codex-\(proc.pid)" : (cwd as NSString).lastPathComponent
