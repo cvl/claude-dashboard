@@ -410,6 +410,8 @@ func loadSessions() -> [Session] {
     var resumedOldIds: [String] = []
     var result = Array(liveBySessionId.values)
     for (sid, stored) in store {
+        // Skip codex sessions — handled by loadCodexSessions
+        if stored.source == "codex" { continue }
         if liveBySessionId[sid] == nil {
             let key = "\(stored.name)\0\(stored.cwd)"
             if let live = liveByKey[key] {
