@@ -2016,14 +2016,17 @@ class DashboardView: NSView {
                 let statusAttr = NSAttributedString(string: stateLabel, attributes: [
                     .font: Self.fontSemi9, .foregroundColor: accentColor])
                 statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 8, y: rect.minY + 5))
-                // Time — from hook ts (same style as main view)
+                // Time — hook ts or lastActive
                 let pinnedSession = allSessions.first(where: { $0.sessionId == item.id })
-                let pinnedTs = pinnedSession?.hookTs ?? 0
-                if pinnedTs > 0 {
-                    let timeAttr = NSAttributedString(string: timeAgo(Date(timeIntervalSince1970: Double(pinnedTs))), attributes: [
-                        .font: Self.fontReg10, .foregroundColor: NSColor.secondaryLabelColor])
-                    timeAttr.draw(at: NSPoint(x: rect.maxX - 56 - timeAttr.size().width, y: rect.minY + 5))
+                let pinnedTime: Date
+                if let ps = pinnedSession {
+                    pinnedTime = ps.hookTs > 0 ? Date(timeIntervalSince1970: Double(ps.hookTs)) : ps.lastActive
+                } else {
+                    pinnedTime = Date() // no session found
                 }
+                let timeAttr = NSAttributedString(string: timeAgo(pinnedTime), attributes: [
+                    .font: Self.fontReg10, .foregroundColor: NSColor.secondaryLabelColor])
+                timeAttr.draw(at: NSPoint(x: rect.maxX - 56 - timeAttr.size().width, y: rect.minY + 5))
                 // Path
                 let pathAttr = NSAttributedString(string: shortPath(item.cwd), attributes: [
                     .font: Self.fontReg9, .foregroundColor: NSColor.secondaryLabelColor])
