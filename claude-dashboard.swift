@@ -1872,21 +1872,35 @@ class DashboardView: NSView {
                 .foregroundColor: s.state.color])
             stateAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 10, y: rect.minY + 10))
 
-            let durAttr = NSAttributedString(string: timeAgo(s.lastActive), attributes: [
+            // Time — use hook ts if available, fall back to lastActive
+            let timeDate = s.hookTs > 0 ? Date(timeIntervalSince1970: Double(s.hookTs)) : s.lastActive
+            let durAttr = NSAttributedString(string: timeAgo(timeDate), attributes: [
                 .font: Self.fontReg10,
                 .foregroundColor: NSColor.secondaryLabelColor])
             durAttr.draw(at: NSPoint(x: rightEdge - durAttr.size().width, y: rect.minY + 9))
 
-            // Row 2: path + pid
+            // Row 2: path + source tag
             let pathAttr = NSAttributedString(string: shortPath(s.cwd), attributes: [
                 .font: Self.fontReg10,
                 .foregroundColor: NSColor.secondaryLabelColor])
             pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 30))
 
-            let pidAttr = NSAttributedString(string: "pid:\(s.pid)", attributes: [
+            let tagColor: NSColor = s.source == "codex" ? .systemPurple : .systemBlue
+            let tagText = s.source == "codex" ? "codex" : "claude"
+            let tagAttr = NSAttributedString(string: tagText, attributes: [
                 .font: Self.fontReg9,
-                .foregroundColor: NSColor.secondaryLabelColor])
-            pidAttr.draw(at: NSPoint(x: rightEdge - pidAttr.size().width, y: rect.minY + 31))
+                .foregroundColor: tagColor])
+            // Draw tag with rounded background
+            let tagSize = tagAttr.size()
+            let tagPad: CGFloat = 4
+            let tagRect = NSRect(x: rightEdge - tagSize.width - tagPad * 2,
+                                 y: rect.minY + 30,
+                                 width: tagSize.width + tagPad * 2,
+                                 height: tagSize.height + 2)
+            let tagBg = NSBezierPath(roundedRect: tagRect, xRadius: 3, yRadius: 3)
+            tagColor.withAlphaComponent(0.15).setFill()
+            tagBg.fill()
+            tagAttr.draw(at: NSPoint(x: tagRect.minX + tagPad, y: tagRect.minY + 1))
 
             // Buttons are NSButton subviews managed by rebuildButtons()
         }
@@ -1982,6 +1996,14 @@ class DashboardView: NSView {
                 let statusAttr = NSAttributedString(string: stateLabel, attributes: [
                     .font: Self.fontSemi9, .foregroundColor: accentColor])
                 statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 8, y: rect.minY + 5))
+                // Time — from hook ts
+                let pinnedSession = allSessions.first(where: { $0.sessionId == item.id })
+                let pinnedTs = pinnedSession?.hookTs ?? 0
+                if pinnedTs > 0 {
+                    let timeAttr = NSAttributedString(string: timeAgo(Date(timeIntervalSince1970: Double(pinnedTs))), attributes: [
+                        .font: Self.fontReg9, .foregroundColor: NSColor.tertiaryLabelColor])
+                    timeAttr.draw(at: NSPoint(x: rect.maxX - 56 - timeAttr.size().width, y: rect.minY + 5))
+                }
                 // Path
                 let pathAttr = NSAttributedString(string: shortPath(item.cwd), attributes: [
                     .font: Self.fontReg9, .foregroundColor: NSColor.secondaryLabelColor])
