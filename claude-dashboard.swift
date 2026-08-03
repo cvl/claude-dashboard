@@ -159,9 +159,16 @@ func loadRegisteredTerminals() -> [Terminal] {
         let storedPid = entry["pid"] as? Int ?? 0
         // Check liveness by stored shell PID
         let alive = storedPid > 0 && kill(pid_t(storedPid), 0) == 0
-        // Look up current TTY from the shell PID (not stored TTY which may be stale)
+        // Look up current TTY and cwd from the shell PID
         let tty = alive ? shell("/bin/ps", "-o", "tty=", "-p", "\(storedPid)") : ""
-        result.append(Terminal(tty: tty, name: name, cwd: cwd, isAlive: alive))
+        var liveCwd = cwd
+        if alive {
+            let lsofOut = shell("/usr/sbin/lsof", "-a", "-p", "\(storedPid)", "-d", "cwd", "-F", "n")
+            for line in lsofOut.components(separatedBy: "\n") {
+                if line.hasPrefix("n/") { liveCwd = String(line.dropFirst(1)); break }
+            }
+        }
+        result.append(Terminal(tty: tty, name: name, cwd: liveCwd, isAlive: alive))
     }
     return result.sorted { $0.name < $1.name }
 }
@@ -1947,11 +1954,24 @@ class DashboardView: NSView {
                     .foregroundColor: statusColor])
                 statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 10, y: rect.minY + 7))
 
-                // Row 2: path
+                // Row 2: path + terminal tag
                 let pathAttr = NSAttributedString(string: shortPath(t.cwd), attributes: [
                     .font: Self.fontReg10,
                     .foregroundColor: NSColor.secondaryLabelColor])
                 pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 25))
+
+                let tTagColor: NSColor = .systemTeal
+                let tTagAttr = NSAttributedString(string: "terminal", attributes: [
+                    .font: Self.fontReg9, .foregroundColor: tTagColor])
+                let tTagSize = tTagAttr.size()
+                let tTagPad: CGFloat = 4
+                let tTagRect = NSRect(x: rect.maxX - 32 - tTagSize.width - tTagPad * 2,
+                                      y: rect.minY + 25, width: tTagSize.width + tTagPad * 2,
+                                      height: tTagSize.height + 2)
+                let tTagBg = NSBezierPath(roundedRect: tTagRect, xRadius: 3, yRadius: 3)
+                tTagColor.withAlphaComponent(0.15).setFill()
+                tTagBg.fill()
+                tTagAttr.draw(at: NSPoint(x: tTagRect.minX + tTagPad, y: tTagRect.minY + 1))
             }
         }
 
@@ -1996,18 +2016,39 @@ class DashboardView: NSView {
                 let statusAttr = NSAttributedString(string: stateLabel, attributes: [
                     .font: Self.fontSemi9, .foregroundColor: accentColor])
                 statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 8, y: rect.minY + 5))
-                // Time — from hook ts
+                // Time — from hook ts (same style as main view)
                 let pinnedSession = allSessions.first(where: { $0.sessionId == item.id })
                 let pinnedTs = pinnedSession?.hookTs ?? 0
                 if pinnedTs > 0 {
                     let timeAttr = NSAttributedString(string: timeAgo(Date(timeIntervalSince1970: Double(pinnedTs))), attributes: [
-                        .font: Self.fontReg9, .foregroundColor: NSColor.tertiaryLabelColor])
+                        .font: Self.fontReg10, .foregroundColor: NSColor.secondaryLabelColor])
                     timeAttr.draw(at: NSPoint(x: rect.maxX - 56 - timeAttr.size().width, y: rect.minY + 5))
                 }
                 // Path
                 let pathAttr = NSAttributedString(string: shortPath(item.cwd), attributes: [
                     .font: Self.fontReg9, .foregroundColor: NSColor.secondaryLabelColor])
                 pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 20))
+                // Source tag
+                let pTagColor: NSColor
+                let pTagText: String
+                if item.type == "terminal" {
+                    pTagColor = .systemTeal; pTagText = "terminal"
+                } else {
+                    let src = pinnedSession?.source ?? "claude"
+                    pTagColor = src == "codex" ? .systemPurple : .systemBlue
+                    pTagText = src == "codex" ? "codex" : "claude"
+                }
+                let pTagAttr = NSAttributedString(string: pTagText, attributes: [
+                    .font: Self.fontReg9, .foregroundColor: pTagColor])
+                let pTagSize = pTagAttr.size()
+                let pTagPad: CGFloat = 4
+                let pTagRect = NSRect(x: rect.maxX - 56 - pTagSize.width - pTagPad * 2,
+                                      y: rect.minY + 20, width: pTagSize.width + pTagPad * 2,
+                                      height: pTagSize.height + 2)
+                let pTagBg = NSBezierPath(roundedRect: pTagRect, xRadius: 3, yRadius: 3)
+                pTagColor.withAlphaComponent(0.15).setFill()
+                pTagBg.fill()
+                pTagAttr.draw(at: NSPoint(x: pTagRect.minX + pTagPad, y: pTagRect.minY + 1))
                 // Buttons are added in rebuildPinnedButtons
             }
         }
