@@ -2084,15 +2084,19 @@ let hookScript = """
 #!/usr/bin/env bash
 event="${1:-stop}"
 read -t 2 input || true
-# Fast: use grep+sed instead of python3 loop
 sid=$(echo "$input" | sed -n 's/.*"session_id":"\\([^"]*\\)".*/\\1/p')
 [ -z "$sid" ] && exit 0
+mkdir -p /tmp/claude-dash
+# Claude: look up PID from session files
 for f in "$HOME/.claude/sessions/"*.json; do
   grep -q "$sid" "$f" 2>/dev/null || continue
   pid=$(sed -n 's/.*"pid":\\([0-9]*\\).*/\\1/p' "$f")
-  [ -n "$pid" ] && mkdir -p /tmp/claude-dash && echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${pid}.state
+  [ -n "$pid" ] && echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${pid}.state
   exit 0
 done
+# Codex: find PID from running process args
+pid=$(pgrep -f "codex.*$sid" 2>/dev/null | head -1)
+[ -n "$pid" ] && echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${pid}.state
 """
 
 func setupDependencies() {
