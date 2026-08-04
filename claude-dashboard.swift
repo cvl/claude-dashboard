@@ -1866,9 +1866,11 @@ class DashboardView: NSView {
             let rightEdge = rect.maxX - 62 // leave space for resume + notes buttons
 
             // Row 1: name (truncated if needed) + state + duration
+            let charLimitName = s.name.count > 19 ? String(s.name.prefix(18)) + "…" : s.name
             let maxNameW = rightEdge - tx - 60 // room for state label + pin + duration
-            let (displayName, wasTruncated) = truncate(s.name, font: Self.fontBold12, maxWidth: maxNameW)
-            if wasTruncated { newTruncated[i] = s.name }
+            let (displayName, wasTruncated) = truncate(charLimitName, font: Self.fontBold12, maxWidth: maxNameW)
+            let nameTruncated = wasTruncated || s.name.count > 19
+            if nameTruncated { newTruncated[i] = s.name }
             let nameAttr = NSAttributedString(string: displayName, attributes: [
                 .font: Self.fontBold12,
                 .foregroundColor: NSColor.labelColor])
