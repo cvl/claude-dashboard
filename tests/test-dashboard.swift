@@ -521,6 +521,20 @@ do {
     assert(store["live"] != nil, "live session untouched")
 }
 
+// ── Generated hook exit status ──
+
+do {
+    let source = try? String(contentsOfFile: "claude-dashboard.swift", encoding: .utf8)
+    let start = source?.range(of: "let hookScript = \"\"\"")
+    let remainder = start.map { source![$0.upperBound...] }
+    let end = remainder?.range(of: "\"\"\"")
+    let hook = end.map { String(remainder![..<$0.lowerBound]) }
+    assert(
+        hook?.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("exit 0") == true,
+        "generated hook always exits successfully"
+    )
+}
+
 // ═══════════════════════════════════════
 print("\n\(passed) passed, \(failed) failed")
 if failed > 0 { exit(1) }

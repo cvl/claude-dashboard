@@ -2106,6 +2106,7 @@ done
 # Codex: find PID from running process args
 pid=$(pgrep -f "codex.*$sid" 2>/dev/null | head -1)
 [ -n "$pid" ] && echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${pid}.state
+exit 0
 """
 
 func setupDependencies() {
