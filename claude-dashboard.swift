@@ -580,16 +580,18 @@ func loadCodexSessions() -> [Session] {
         guard !usedIds.contains(sid) else { continue }
         usedIds.insert(sid)
 
-        // Get name from Codex state database
-        // /rename updates the "title" column. "name" is always empty.
+        // Get name: 1) codex db (short title = /rename'd), 2) dashboard store, 3) folder name
         var sname = ""
         let dbPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/state_5.sqlite").path
         if !sid.hasPrefix("codex-"), sid.count > 10 {
-            // Try name first, then title (but only if short — long titles are first prompt text)
             let dbOut = shell("/usr/bin/sqlite3", dbPath,
                 "SELECT COALESCE(NULLIF(name,''), title) FROM threads WHERE id='\(sid)' LIMIT 1")
             let candidate = dbOut.trimmingCharacters(in: .whitespacesAndNewlines)
             if !candidate.isEmpty && candidate.count <= 40 { sname = candidate }
+        }
+        // Check dashboard store for existing name (user may have renamed in codex previously)
+        if sname.isEmpty, let storedName = loadStore().store[sid]?.name, !storedName.isEmpty {
+            sname = storedName
         }
         if sname.isEmpty {
             sname = (cwd as NSString).lastPathComponent.isEmpty ? "codex-\(proc.pid)" : (cwd as NSString).lastPathComponent
