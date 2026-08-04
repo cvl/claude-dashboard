@@ -291,7 +291,10 @@ func appendToHistory(_ session: StoredSession) {
     df.dateFormat = "yyyy-MM-dd HH:mm"
     let date = df.string(from: Date(timeIntervalSince1970: session.startedAt / 1000))
     let notes = notesFileName(name: session.name, sessionId: session.sessionId)
-    let resume = "cd \(session.cwd) && claude --resume \(session.sessionId) --name '\(session.name)' --effort max"
+    let isCodex = session.source == "codex"
+    let resume = isCodex
+        ? "cd \(session.cwd) && codex resume \(session.sessionId)"
+        : "cd \(session.cwd) && claude --resume \(session.sessionId) --name '\(session.name)' --effort max"
 
     let prefix = prev != nil ? "[renamed from '\(prev!)'] " : ""
     let entry = """
@@ -600,10 +603,12 @@ func loadCodexSessions() -> [Session] {
     var (store, storeOk) = loadStore()
     // Save live sessions (skip temp IDs — can't be resumed)
     for s in result where !s.sessionId.hasPrefix("codex-") {
-        store[s.sessionId] = StoredSession(sessionId: s.sessionId, name: s.name, cwd: s.cwd,
-                                            startedAt: s.startedAt, lastPid: Int(s.pid),
-                                            lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970,
-                                            source: "codex")
+        let stored = StoredSession(sessionId: s.sessionId, name: s.name, cwd: s.cwd,
+                                    startedAt: s.startedAt, lastPid: Int(s.pid),
+                                    lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970,
+                                    source: "codex")
+        store[s.sessionId] = stored
+        appendToHistory(stored)
     }
     // Filter removed
     for rid in removedSessionIds { store.removeValue(forKey: rid) }
@@ -2466,10 +2471,12 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         try? activeTabId.write(toFile: activeTabFile, atomically: true, encoding: .utf8)
 
         tabSidebar.onTabSelect = { [weak self] id in
-            self?.activeTabId = id
-            self?.tabSidebar.activeTabId = id
+            guard let self else { return }
+            self.activeTabId = id
+            self.tabSidebar.activeTabId = id
             try? id.write(toFile: activeTabFile, atomically: true, encoding: .utf8)
-            self?.poll()
+            // Re-filter cached data instantly — poll continues in background
+            self.refreshView()
         }
         tabSidebar.onTabAdd = { [weak self] in
             guard let self else { return }
@@ -2830,6 +2837,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let idx = sender.tag
         guard idx < currentSessions.count else { return }
         revealSession(currentSessions[idx])
+    }
+
+    func refreshView() {
+        let orderedSessions = applyCustomOrder(currentSessions)
+        dashView.sessions = sessionsForActiveTab(orderedSessions)
+        dashView.terminals = terminalsForActiveTab(currentTerminals)
+        dashView.allSessions = orderedSessions
+        dashView.allTerminals = currentTerminals
+        dashView.pinnedItems = loadPinned()
     }
 
     func applyCustomOrder(_ sessions: [Session]) -> [Session] {
