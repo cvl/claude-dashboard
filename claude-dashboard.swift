@@ -1703,7 +1703,8 @@ class DashboardView: NSView {
             let rect = pinnedCardRect(at: i)
 
             // Pin toggle — positioned after name + status label
-            let nameW = NSAttributedString(string: item.name, attributes: [
+            let pinnedBtnName = item.name.count > 19 ? String(item.name.prefix(18)) + "…" : item.name
+            let nameW = NSAttributedString(string: pinnedBtnName, attributes: [
                 .font: Self.fontBold12]).size().width
             let stateLabel: String
             if item.type == "session" {
@@ -2012,7 +2013,8 @@ class DashboardView: NSView {
 
                 let tx = rect.minX + 14
                 // Name + status
-                let nameAttr = NSAttributedString(string: item.name, attributes: [
+                let pinnedDispName = item.name.count > 19 ? String(item.name.prefix(18)) + "…" : item.name
+                let nameAttr = NSAttributedString(string: pinnedDispName, attributes: [
                     .font: Self.fontBold12, .foregroundColor: NSColor.labelColor])
                 nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 3))
                 let statusAttr = NSAttributedString(string: stateLabel, attributes: [
