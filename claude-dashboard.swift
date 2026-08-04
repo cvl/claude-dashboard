@@ -2471,10 +2471,12 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         try? activeTabId.write(toFile: activeTabFile, atomically: true, encoding: .utf8)
 
         tabSidebar.onTabSelect = { [weak self] id in
-            self?.activeTabId = id
-            self?.tabSidebar.activeTabId = id
+            guard let self else { return }
+            self.activeTabId = id
+            self.tabSidebar.activeTabId = id
             try? id.write(toFile: activeTabFile, atomically: true, encoding: .utf8)
-            self?.poll()
+            // Re-filter cached data instantly — poll continues in background
+            self.refreshView()
         }
         tabSidebar.onTabAdd = { [weak self] in
             guard let self else { return }
@@ -2835,6 +2837,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let idx = sender.tag
         guard idx < currentSessions.count else { return }
         revealSession(currentSessions[idx])
+    }
+
+    func refreshView() {
+        let orderedSessions = applyCustomOrder(currentSessions)
+        dashView.sessions = sessionsForActiveTab(orderedSessions)
+        dashView.terminals = terminalsForActiveTab(currentTerminals)
+        dashView.allSessions = orderedSessions
+        dashView.allTerminals = currentTerminals
+        dashView.pinnedItems = loadPinned()
     }
 
     func applyCustomOrder(_ sessions: [Session]) -> [Session] {
