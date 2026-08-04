@@ -159,9 +159,16 @@ func loadRegisteredTerminals() -> [Terminal] {
         let storedPid = entry["pid"] as? Int ?? 0
         // Check liveness by stored shell PID
         let alive = storedPid > 0 && kill(pid_t(storedPid), 0) == 0
-        // Look up current TTY from the shell PID (not stored TTY which may be stale)
+        // Look up current TTY and cwd from the shell PID
         let tty = alive ? shell("/bin/ps", "-o", "tty=", "-p", "\(storedPid)") : ""
-        result.append(Terminal(tty: tty, name: name, cwd: cwd, isAlive: alive))
+        var liveCwd = cwd
+        if alive {
+            let lsofOut = shell("/usr/sbin/lsof", "-a", "-p", "\(storedPid)", "-d", "cwd", "-F", "n")
+            for line in lsofOut.components(separatedBy: "\n") {
+                if line.hasPrefix("n/") { liveCwd = String(line.dropFirst(1)); break }
+            }
+        }
+        result.append(Terminal(tty: tty, name: name, cwd: liveCwd, isAlive: alive))
     }
     return result.sorted { $0.name < $1.name }
 }
@@ -1696,7 +1703,8 @@ class DashboardView: NSView {
             let rect = pinnedCardRect(at: i)
 
             // Pin toggle — positioned after name + status label
-            let nameW = NSAttributedString(string: item.name, attributes: [
+            let pinnedBtnName = item.name.count > 19 ? String(item.name.prefix(18)) + "…" : item.name
+            let nameW = NSAttributedString(string: pinnedBtnName, attributes: [
                 .font: Self.fontBold12]).size().width
             let stateLabel: String
             if item.type == "session" {
@@ -1859,9 +1867,11 @@ class DashboardView: NSView {
             let rightEdge = rect.maxX - 62 // leave space for resume + notes buttons
 
             // Row 1: name (truncated if needed) + state + duration
+            let charLimitName = s.name.count > 19 ? String(s.name.prefix(18)) + "…" : s.name
             let maxNameW = rightEdge - tx - 60 // room for state label + pin + duration
-            let (displayName, wasTruncated) = truncate(s.name, font: Self.fontBold12, maxWidth: maxNameW)
-            if wasTruncated { newTruncated[i] = s.name }
+            let (displayName, wasTruncated) = truncate(charLimitName, font: Self.fontBold12, maxWidth: maxNameW)
+            let nameTruncated = wasTruncated || s.name.count > 19
+            if nameTruncated { newTruncated[i] = s.name }
             let nameAttr = NSAttributedString(string: displayName, attributes: [
                 .font: Self.fontBold12,
                 .foregroundColor: NSColor.labelColor])
@@ -1872,21 +1882,35 @@ class DashboardView: NSView {
                 .foregroundColor: s.state.color])
             stateAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 10, y: rect.minY + 10))
 
-            let durAttr = NSAttributedString(string: timeAgo(s.lastActive), attributes: [
+            // Time — use hook ts if available, fall back to lastActive
+            let timeDate = s.hookTs > 0 ? Date(timeIntervalSince1970: Double(s.hookTs)) : s.lastActive
+            let durAttr = NSAttributedString(string: timeAgo(timeDate), attributes: [
                 .font: Self.fontReg10,
                 .foregroundColor: NSColor.secondaryLabelColor])
             durAttr.draw(at: NSPoint(x: rightEdge - durAttr.size().width, y: rect.minY + 9))
 
-            // Row 2: path + pid
+            // Row 2: path + source tag
             let pathAttr = NSAttributedString(string: shortPath(s.cwd), attributes: [
                 .font: Self.fontReg10,
                 .foregroundColor: NSColor.secondaryLabelColor])
             pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 30))
 
-            let pidAttr = NSAttributedString(string: "pid:\(s.pid)", attributes: [
+            let tagColor: NSColor = s.source == "codex" ? .systemPurple : .systemBlue
+            let tagText = s.source == "codex" ? "codex" : "claude"
+            let tagAttr = NSAttributedString(string: tagText, attributes: [
                 .font: Self.fontReg9,
-                .foregroundColor: NSColor.secondaryLabelColor])
-            pidAttr.draw(at: NSPoint(x: rightEdge - pidAttr.size().width, y: rect.minY + 31))
+                .foregroundColor: tagColor])
+            // Draw tag with rounded background
+            let tagSize = tagAttr.size()
+            let tagPad: CGFloat = 4
+            let tagRect = NSRect(x: rightEdge - tagSize.width - tagPad * 2,
+                                 y: rect.minY + 30,
+                                 width: tagSize.width + tagPad * 2,
+                                 height: tagSize.height + 2)
+            let tagBg = NSBezierPath(roundedRect: tagRect, xRadius: 3, yRadius: 3)
+            tagColor.withAlphaComponent(0.15).setFill()
+            tagBg.fill()
+            tagAttr.draw(at: NSPoint(x: tagRect.minX + tagPad, y: tagRect.minY + 1))
 
             // Buttons are NSButton subviews managed by rebuildButtons()
         }
@@ -1933,11 +1957,24 @@ class DashboardView: NSView {
                     .foregroundColor: statusColor])
                 statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 10, y: rect.minY + 7))
 
-                // Row 2: path
+                // Row 2: path + terminal tag
                 let pathAttr = NSAttributedString(string: shortPath(t.cwd), attributes: [
                     .font: Self.fontReg10,
                     .foregroundColor: NSColor.secondaryLabelColor])
                 pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 25))
+
+                let tTagColor: NSColor = .systemTeal
+                let tTagAttr = NSAttributedString(string: "terminal", attributes: [
+                    .font: Self.fontReg9, .foregroundColor: tTagColor])
+                let tTagSize = tTagAttr.size()
+                let tTagPad: CGFloat = 4
+                let tTagRect = NSRect(x: rect.maxX - 32 - tTagSize.width - tTagPad * 2,
+                                      y: rect.minY + 25, width: tTagSize.width + tTagPad * 2,
+                                      height: tTagSize.height + 2)
+                let tTagBg = NSBezierPath(roundedRect: tTagRect, xRadius: 3, yRadius: 3)
+                tTagColor.withAlphaComponent(0.15).setFill()
+                tTagBg.fill()
+                tTagAttr.draw(at: NSPoint(x: tTagRect.minX + tTagPad, y: tTagRect.minY + 1))
             }
         }
 
@@ -1976,16 +2013,49 @@ class DashboardView: NSView {
 
                 let tx = rect.minX + 14
                 // Name + status
-                let nameAttr = NSAttributedString(string: item.name, attributes: [
+                let pinnedDispName = item.name.count > 19 ? String(item.name.prefix(18)) + "…" : item.name
+                let nameAttr = NSAttributedString(string: pinnedDispName, attributes: [
                     .font: Self.fontBold12, .foregroundColor: NSColor.labelColor])
                 nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 3))
                 let statusAttr = NSAttributedString(string: stateLabel, attributes: [
                     .font: Self.fontSemi9, .foregroundColor: accentColor])
                 statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 8, y: rect.minY + 5))
+                // Time — hook ts or lastActive
+                let pinnedSession = allSessions.first(where: { $0.sessionId == item.id })
+                let pinnedTime: Date
+                if let ps = pinnedSession {
+                    pinnedTime = ps.hookTs > 0 ? Date(timeIntervalSince1970: Double(ps.hookTs)) : ps.lastActive
+                } else {
+                    pinnedTime = Date() // no session found
+                }
+                let timeAttr = NSAttributedString(string: timeAgo(pinnedTime), attributes: [
+                    .font: Self.fontReg10, .foregroundColor: NSColor.secondaryLabelColor])
+                timeAttr.draw(at: NSPoint(x: rect.maxX - 56 - timeAttr.size().width, y: rect.minY + 5))
                 // Path
                 let pathAttr = NSAttributedString(string: shortPath(item.cwd), attributes: [
                     .font: Self.fontReg9, .foregroundColor: NSColor.secondaryLabelColor])
                 pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 20))
+                // Source tag
+                let pTagColor: NSColor
+                let pTagText: String
+                if item.type == "terminal" {
+                    pTagColor = .systemTeal; pTagText = "terminal"
+                } else {
+                    let src = pinnedSession?.source ?? "claude"
+                    pTagColor = src == "codex" ? .systemPurple : .systemBlue
+                    pTagText = src == "codex" ? "codex" : "claude"
+                }
+                let pTagAttr = NSAttributedString(string: pTagText, attributes: [
+                    .font: Self.fontReg9, .foregroundColor: pTagColor])
+                let pTagSize = pTagAttr.size()
+                let pTagPad: CGFloat = 4
+                let pTagRect = NSRect(x: rect.maxX - 56 - pTagSize.width - pTagPad * 2,
+                                      y: rect.minY + 20, width: pTagSize.width + pTagPad * 2,
+                                      height: pTagSize.height + 2)
+                let pTagBg = NSBezierPath(roundedRect: pTagRect, xRadius: 3, yRadius: 3)
+                pTagColor.withAlphaComponent(0.15).setFill()
+                pTagBg.fill()
+                pTagAttr.draw(at: NSPoint(x: pTagRect.minX + pTagPad, y: pTagRect.minY + 1))
                 // Buttons are added in rebuildPinnedButtons
             }
         }
@@ -2018,15 +2088,19 @@ let hookScript = """
 #!/usr/bin/env bash
 event="${1:-stop}"
 read -t 2 input || true
-# Fast: use grep+sed instead of python3 loop
 sid=$(echo "$input" | sed -n 's/.*"session_id":"\\([^"]*\\)".*/\\1/p')
 [ -z "$sid" ] && exit 0
+mkdir -p /tmp/claude-dash
+# Claude: look up PID from session files
 for f in "$HOME/.claude/sessions/"*.json; do
   grep -q "$sid" "$f" 2>/dev/null || continue
   pid=$(sed -n 's/.*"pid":\\([0-9]*\\).*/\\1/p' "$f")
-  [ -n "$pid" ] && mkdir -p /tmp/claude-dash && echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${pid}.state
+  [ -n "$pid" ] && echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${pid}.state
   exit 0
 done
+# Codex: find PID from running process args
+pid=$(pgrep -f "codex.*$sid" 2>/dev/null | head -1)
+[ -n "$pid" ] && echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${pid}.state
 """
 
 func setupDependencies() {
