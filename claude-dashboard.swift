@@ -207,13 +207,14 @@ let stateDir = "/tmp/claude-dash"
 var previousState: [pid_t: State] = [:]
 var lastActiveTime: [pid_t: Date] = [:]
 
-func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int)? {
+func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?)? {
     let url = URL(fileURLWithPath: "\(stateDir)/\(pid).state")
     guard let data = try? Data(contentsOf: url),
           let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let event = j["event"] as? String,
           let ts = j["ts"] as? Int else { return nil }
-    return (event, ts)
+    let tty = j["tty"] as? String  // set by pty-proxy, nil for hook-based state files
+    return (event, ts, tty)
 }
 
 func resolveState(_ pid: pid_t) -> State {
@@ -386,7 +387,7 @@ func loadSessions() -> [Session] {
                 cwd: (j["cwd"] as? String) ?? "",
                 startedAt: startedAt,
                 state: resolvedState,
-                tty: shell("/bin/ps", "-o", "tty=", "-p", "\(pid)"),
+                tty: stateFileEvent(p)?.tty ?? shell("/bin/ps", "-o", "tty=", "-p", "\(pid)"),
                 hasNotes: hasNotesFile(name: sname, sessionId: sid),
                 lastActive: lastActiveTime[p] ?? fallback,
                 hookTs: hookTs,
@@ -598,19 +599,25 @@ func loadCodexSessions() -> [Session] {
         }
         let resolvedState = resolveState(proc.pid)
         // Check state file for node wrapper and child (native binary) PIDs
-        var hookTs = stateFileEvent(proc.pid)?.ts ?? 0
+        var hookTs = 0
+        var proxyTty: String? = nil
+        if let sf = stateFileEvent(proc.pid) {
+            hookTs = sf.ts; proxyTty = sf.tty
+        }
         if hookTs == 0 {
             let kids = shell("/usr/bin/pgrep", "-P", "\(proc.pid)")
             for kid in kids.components(separatedBy: "\n") {
                 guard let kpid = pid_t(kid.trimmingCharacters(in: .whitespaces)), kpid > 0 else { continue }
-                if let ts = stateFileEvent(kpid)?.ts { hookTs = ts; break }
+                if let sf = stateFileEvent(kpid) {
+                    hookTs = sf.ts; proxyTty = sf.tty; break
+                }
             }
         }
 
         result.append(Session(
             pid: proc.pid, sessionId: sid, name: sname, cwd: cwd,
             startedAt: startedAt, state: resolvedState,
-            tty: proc.tty, hasNotes: hasNotesFile(name: sname, sessionId: sid),
+            tty: proxyTty ?? proc.tty, hasNotes: hasNotesFile(name: sname, sessionId: sid),
             lastActive: lastActiveTime[proc.pid] ?? Date(timeIntervalSince1970: startedAt / 1000),
             hookTs: hookTs, source: "codex"))
 

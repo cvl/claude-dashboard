@@ -71,7 +71,19 @@ static void sigterm_handler(int sig) {
     if (child_pid > 0) kill(child_pid, sig);
 }
 
-/* Write state file */
+/* Get the real TTY name (the terminal tab's TTY, not the slave PTY) */
+static char real_tty[64] = "";
+static void init_real_tty(void) {
+    char *t = ttyname(STDIN_FILENO);
+    if (t) {
+        /* Strip /dev/ prefix */
+        const char *name = t;
+        if (strncmp(name, "/dev/", 5) == 0) name += 5;
+        snprintf(real_tty, sizeof(real_tty), "%s", name);
+    }
+}
+
+/* Write state file — includes real TTY for terminal reveal */
 static void write_state(pid_t pid, state_t state) {
     mkdir(STATE_DIR, 0755);
     char path[128];
@@ -86,7 +98,8 @@ static void write_state(pid_t pid, state_t state) {
     snprintf(tmp, sizeof(tmp), STATE_DIR "/%d.state.tmp", pid);
     FILE *f = fopen(tmp, "w");
     if (f) {
-        fprintf(f, "{\"event\":\"%s\",\"ts\":%ld}", event, (long)time(NULL));
+        fprintf(f, "{\"event\":\"%s\",\"ts\":%ld,\"tty\":\"%s\",\"proxy_pid\":%d}",
+                event, (long)time(NULL), real_tty, (int)getpid());
         fclose(f);
         rename(tmp, path);
     }
@@ -231,6 +244,7 @@ int main(int argc, char *argv[]) {
     }
 
     agent_type = detect_agent(argv[1]);
+    init_real_tty();
 
     /* Save and set raw terminal mode */
     if (isatty(STDIN_FILENO)) {
