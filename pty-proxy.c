@@ -133,7 +133,7 @@ static void ring_append(const char *data, int len) {
 }
 
 /* Ring buffer: get recent content, stripping ANSI escapes.
-   Only examines last 3KB so screen redraws push out stale content. */
+   Only examines last 4KB so screen redraws push out stale content. */
 static int ring_recent_clean(char *out, int max) {
     int avail = ring_len < RING_SIZE ? ring_len : RING_SIZE;
     if (avail > 4096) avail = 4096; /* ~1 render cycle */

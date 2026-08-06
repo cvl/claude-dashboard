@@ -3078,8 +3078,8 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         layoutNotifPanel()
                     }
                 }
-                // Also notify on idle/working → needsInput
-                if prev != .needsInput && s.state == .needsInput {
+                // Also notify on idle → needsInput (working→needsInput handled above)
+                if prev == .idle && s.state == .needsInput {
                     if !dashNotifications.contains(where: { $0.id == sid }) {
                         dashLog("NOTIFY \(s.name) \(prev!.label) → \(s.state.label)")
                         dashNotifications.append(DashNotification(
