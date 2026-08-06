@@ -30,9 +30,9 @@ cdash codex
 cdash codex resume <session-id>
 ```
 
-`cdash` wraps the agent in a PTY proxy that reads terminal output directly — detecting working/idle/blocked states from the actual screen content (spinner characters, permission prompts, etc.). No hooks needed.
+`cdash` intercepts the terminal output stream and detects agent state directly from what the agent renders — spinner characters for working, prompt symbols for idle, permission dialogs for needs-input. The agent behaves exactly as normal; `cdash` is fully transparent.
 
-Sessions launched without `cdash` (plain `claude` or `codex`) still work via hook-based state detection as a fallback.
+Sessions launched without `cdash` (plain `claude` or `codex`) still work via hook-based state detection as a fallback, though hooks are less reliable.
 
 ### Named Terminals
 
@@ -78,17 +78,16 @@ In-app notification panel when sessions finish working:
 
 ## How it works
 
-### PTY Proxy (recommended)
+### State Detection via `cdash` (recommended)
 
-When launched via `cdash claude` or `cdash codex`, a C-based PTY proxy sits between the terminal and the agent. It:
+When launched via `cdash claude` or `cdash codex`, the terminal output passes through a transparent layer that:
 
-1. Forwards all I/O transparently (agent behavior is unchanged)
-2. Captures terminal output in a ring buffer
-3. Tracks OSC title changes (spinner characters, status indicators)
-4. Pattern-matches every 500ms to detect Working/Idle/Needs Input
-5. Writes state to `/tmp/claude-dash/<pid>.state`
+1. Reads every byte the agent writes to the terminal
+2. Watches for OSC title sequences (agents set spinner characters when working, status indicators when idle)
+3. Scans the recent screen content for known patterns — permission prompts, working indicators, idle prompts
+4. Writes the detected state to `/tmp/claude-dash/<pid>.state` every 500ms
 
-Patterns are based on [herdr](https://github.com/nicoulaj/herdr)'s agent detection manifests.
+The agent sees a real terminal and behaves identically. You see the exact same output. Detection patterns are based on [herdr](https://github.com/nicoulaj/herdr)'s agent detection manifests.
 
 ### Hook-based fallback
 
@@ -118,10 +117,7 @@ git clone https://github.com/cvl/claude-dashboard.git && cd claude-dashboard
 open /Applications/ClaudeDashboard.app
 ```
 
-The install script:
-- Compiles the Swift dashboard app → `/Applications/ClaudeDashboard.app`
-- Compiles the C PTY proxy → `/usr/local/bin/pty-proxy`
-- Installs the `cdash` CLI → `/usr/local/bin/cdash`
+The install script compiles the dashboard app, the state detection layer, and the `cdash` CLI.
 
 ## Keyboard shortcuts
 
@@ -142,10 +138,8 @@ The install script:
 | `~/.claude/dashboard-pinned.json` | Pinned items |
 | `~/.claude/dashboard-layout.json` | Saved terminal window positions |
 | `~/.claude/dashboard.log` | Diagnostic log (auto-rotates at 5000 lines) |
-| `~/.claude/hooks/dash-state.sh` | Hook script (auto-installed, fallback path) |
 | `/tmp/claude-dash/*.state` | Live state files (working/stop/needs_input) |
 | `/usr/local/bin/cdash` | CLI entry point |
-| `/usr/local/bin/pty-proxy` | PTY proxy binary |
 
 ## Known limitations
 
