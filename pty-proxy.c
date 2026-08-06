@@ -52,9 +52,8 @@ typedef enum { ST_IDLE, ST_WORKING, ST_NEEDS_INPUT } state_t;
 static state_t current_state = ST_IDLE;
 static const char *agent_type = NULL; /* "claude" or "codex" */
 
-/* Debounce: hold state transitions until confirmed N times */
+/* Debounce: hold working→idle until confirmed N times */
 static int idle_confirmations = 0;
-static int leave_input_confirmations = 0;
 
 static void cleanup(void) {
     if (raw_mode_set) {
@@ -410,8 +409,8 @@ int main(int argc, char *argv[]) {
                 int slen = ring_recent_clean(screen, CLEAN_SIZE - 1);
                 state_t new_state = detect_state(screen, osc_title);
 
-                /* Debug: dump screen + state to /tmp/claude-dash/debug.log */
-                {
+                /* Debug: dump screen + state when CDASH_DEBUG is set */
+                if (getenv("CDASH_DEBUG")) {
                     FILE *dbg = fopen(STATE_DIR "/debug.log", "w");
                     if (dbg) {
                         fprintf(dbg, "state=%d title=[%s] slen=%d\n---\n%.800s\n",
@@ -420,7 +419,7 @@ int main(int argc, char *argv[]) {
                     }
                 }
 
-                /* Debounce state transitions */
+                /* Debounce: working→idle */
                 if (current_state == ST_WORKING && new_state == ST_IDLE) {
                     idle_confirmations++;
                     if (idle_confirmations < DEBOUNCE_COUNT) {

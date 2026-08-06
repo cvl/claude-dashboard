@@ -213,6 +213,10 @@ func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?)? {
           let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let event = j["event"] as? String,
           let ts = j["ts"] as? Int else { return nil }
+    // If proxy_pid is set, check it's still alive (stale file from crashed proxy)
+    if let proxyPid = j["proxy_pid"] as? Int, proxyPid > 0 {
+        if kill(pid_t(proxyPid), 0) != 0 { return nil }
+    }
     let tty = j["tty"] as? String  // set by pty-proxy, nil for hook-based state files
     return (event, ts, tty)
 }
