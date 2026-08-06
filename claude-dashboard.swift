@@ -2314,9 +2314,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView.onResumeClick = { [weak self] s in
             let cmd: String
             if s.source == "codex" {
-                cmd = "cd \(s.cwd) && codex resume \(s.sessionId)"
+                cmd = "cd \(s.cwd) && cdash codex resume \(s.sessionId)"
             } else {
-                cmd = "cd \(s.cwd) && claude --resume \(s.sessionId) --name '\(s.name)' --effort max"
+                cmd = "cd \(s.cwd) && cdash claude --resume \(s.sessionId) --name '\(s.name)' --effort max"
             }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(cmd, forType: .string)
