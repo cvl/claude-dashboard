@@ -12,6 +12,7 @@ fi
 # Route to pty-proxy for agent commands
 case "$1" in
   claude|codex)
+    export CDASH_PROXY=1
     exec claude-dashboard-proxy "$@"
     ;;
 esac

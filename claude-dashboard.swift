@@ -2116,6 +2116,8 @@ class DashboardView: NSView {
 
 let hookScript = """
 #!/usr/bin/env bash
+# Skip hooks when running under cdash proxy (proxy handles state detection)
+[ -n "$CDASH_PROXY" ] && exit 0
 event="${1:-stop}"
 read -t 2 input || true
 sid=$(echo "$input" | sed -n 's/.*"session_id":"\\([^"]*\\)".*/\\1/p')
