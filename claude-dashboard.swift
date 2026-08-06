@@ -4,7 +4,7 @@ import Cocoa
 
 let sessionsURL = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("sessions")
-let pollInterval: TimeInterval = 1
+let pollInterval: TimeInterval = 0.5
 let notesDir = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-notes").path
 let storeFile = FileManager.default.homeDirectoryForCurrentUser
@@ -207,13 +207,18 @@ let stateDir = "/tmp/claude-dash"
 var previousState: [pid_t: State] = [:]
 var lastActiveTime: [pid_t: Date] = [:]
 
-func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int)? {
+func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?)? {
     let url = URL(fileURLWithPath: "\(stateDir)/\(pid).state")
     guard let data = try? Data(contentsOf: url),
           let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let event = j["event"] as? String,
           let ts = j["ts"] as? Int else { return nil }
-    return (event, ts)
+    // If proxy_pid is set, check it's still alive (stale file from crashed proxy)
+    if let proxyPid = j["proxy_pid"] as? Int, proxyPid > 0 {
+        if kill(pid_t(proxyPid), 0) != 0 { return nil }
+    }
+    let tty = j["tty"] as? String  // set by pty-proxy, nil for hook-based state files
+    return (event, ts, tty)
 }
 
 func resolveState(_ pid: pid_t) -> State {
@@ -301,8 +306,8 @@ func appendToHistory(_ session: StoredSession) {
     let notes = notesFileName(name: session.name, sessionId: session.sessionId)
     let isCodex = session.source == "codex"
     let resume = isCodex
-        ? "cd \(session.cwd) && codex resume \(session.sessionId)"
-        : "cd \(session.cwd) && claude --resume \(session.sessionId) --name '\(session.name)' --effort max"
+        ? "cd \(session.cwd) && cdash codex resume \(session.sessionId)"
+        : "cd \(session.cwd) && cdash claude --resume \(session.sessionId) --name '\(session.name)' --effort max"
 
     let prefix = prev != nil ? "[renamed from '\(prev!)'] " : ""
     let entry = """
@@ -386,7 +391,7 @@ func loadSessions() -> [Session] {
                 cwd: (j["cwd"] as? String) ?? "",
                 startedAt: startedAt,
                 state: resolvedState,
-                tty: shell("/bin/ps", "-o", "tty=", "-p", "\(pid)"),
+                tty: stateFileEvent(p)?.tty ?? shell("/bin/ps", "-o", "tty=", "-p", "\(pid)"),
                 hasNotes: hasNotesFile(name: sname, sessionId: sid),
                 lastActive: lastActiveTime[p] ?? fallback,
                 hookTs: hookTs,
@@ -598,19 +603,25 @@ func loadCodexSessions() -> [Session] {
         }
         let resolvedState = resolveState(proc.pid)
         // Check state file for node wrapper and child (native binary) PIDs
-        var hookTs = stateFileEvent(proc.pid)?.ts ?? 0
+        var hookTs = 0
+        var proxyTty: String? = nil
+        if let sf = stateFileEvent(proc.pid) {
+            hookTs = sf.ts; proxyTty = sf.tty
+        }
         if hookTs == 0 {
             let kids = shell("/usr/bin/pgrep", "-P", "\(proc.pid)")
             for kid in kids.components(separatedBy: "\n") {
                 guard let kpid = pid_t(kid.trimmingCharacters(in: .whitespaces)), kpid > 0 else { continue }
-                if let ts = stateFileEvent(kpid)?.ts { hookTs = ts; break }
+                if let sf = stateFileEvent(kpid) {
+                    hookTs = sf.ts; proxyTty = sf.tty; break
+                }
             }
         }
 
         result.append(Session(
             pid: proc.pid, sessionId: sid, name: sname, cwd: cwd,
             startedAt: startedAt, state: resolvedState,
-            tty: proc.tty, hasNotes: hasNotesFile(name: sname, sessionId: sid),
+            tty: proxyTty ?? proc.tty, hasNotes: hasNotesFile(name: sname, sessionId: sid),
             lastActive: lastActiveTime[proc.pid] ?? Date(timeIntervalSince1970: startedAt / 1000),
             hookTs: hookTs, source: "codex"))
 
@@ -1099,6 +1110,7 @@ struct DashNotification {
     let cwd: String
     let tty: String
     let time: Date
+    var isInputNeeded: Bool = false
 }
 
 class NotificationPanelView: NSView {
@@ -1178,10 +1190,11 @@ class NotificationPanelView: NSView {
             NSColor(white: 0.5, alpha: 0.08).setFill()
             bg.fill()
 
-            // Accent
+            // Accent — orange for input needed, blue for finished
+            let accentColor = notif.isInputNeeded ? NSColor.systemOrange : NSColor.systemBlue
             NSGraphicsContext.saveGraphicsState()
             bg.addClip()
-            NSColor.systemBlue.setFill()
+            accentColor.setFill()
             NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: 3, height: itemH)).fill()
             NSGraphicsContext.restoreGraphicsState()
 
@@ -1192,10 +1205,12 @@ class NotificationPanelView: NSView {
                 .font: font, .foregroundColor: NSColor.labelColor])
             nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 5))
 
-            // "finished" + time
+            // Status + time
             let df = DateFormatter()
             df.dateFormat = "HH:mm"
-            let timeStr = "finished \(df.string(from: notif.time))"
+            let timeStr = notif.isInputNeeded
+                ? "input needed \(df.string(from: notif.time))"
+                : "finished \(df.string(from: notif.time))"
             let timeAttr = NSAttributedString(string: timeStr, attributes: [
                 .font: smallFont, .foregroundColor: NSColor.secondaryLabelColor])
             timeAttr.draw(at: NSPoint(x: tx, y: rect.minY + 20))
@@ -2109,6 +2124,8 @@ class DashboardView: NSView {
 
 let hookScript = """
 #!/usr/bin/env bash
+# Skip hooks when running under cdash proxy (proxy handles state detection)
+[ -n "$CDASH_PROXY" ] && exit 0
 event="${1:-stop}"
 read -t 2 input || true
 sid=$(echo "$input" | sed -n 's/.*"session_id":"\\([^"]*\\)".*/\\1/p')
@@ -2307,9 +2324,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView.onResumeClick = { [weak self] s in
             let cmd: String
             if s.source == "codex" {
-                cmd = "cd \(s.cwd) && codex resume \(s.sessionId)"
+                cmd = "cd \(s.cwd) && cdash codex resume \(s.sessionId)"
             } else {
-                cmd = "cd \(s.cwd) && claude --resume \(s.sessionId) --name '\(s.name)' --effort max"
+                cmd = "cd \(s.cwd) && cdash claude --resume \(s.sessionId) --name '\(s.name)' --effort max"
             }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(cmd, forType: .string)
@@ -3046,13 +3063,29 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 if s.state == .working {
                     dismissNotification(sid)
                 }
+                // Dismiss input-needed notification when resolved
+                if prev == .needsInput && s.state != .needsInput {
+                    dismissNotification(sid)
+                }
 
                 if prev == .working && s.state != .working {
                     if !dashNotifications.contains(where: { $0.id == sid }) {
                         dashLog("NOTIFY \(s.name) \(State.working.label) → \(s.state.label)")
                         dashNotifications.append(DashNotification(
                             id: sid, sessionName: s.name,
-                            cwd: s.cwd, tty: s.tty, time: Date()))
+                            cwd: s.cwd, tty: s.tty, time: Date(),
+                            isInputNeeded: s.state == .needsInput))
+                        layoutNotifPanel()
+                    }
+                }
+                // Also notify on idle → needsInput (working→needsInput handled above)
+                if prev == .idle && s.state == .needsInput {
+                    if !dashNotifications.contains(where: { $0.id == sid }) {
+                        dashLog("NOTIFY \(s.name) \(prev!.label) → \(s.state.label)")
+                        dashNotifications.append(DashNotification(
+                            id: sid, sessionName: s.name,
+                            cwd: s.cwd, tty: s.tty, time: Date(),
+                            isInputNeeded: true))
                         layoutNotifPanel()
                     }
                 }

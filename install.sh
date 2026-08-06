@@ -28,12 +28,20 @@ cat > "$APP/Contents/Info.plist" << 'EOF'
 </plist>
 EOF
 
-# Install claudedashboard CLI
-CLI_SRC="$(cd "$(dirname "$0")" && pwd)/claudedashboard"
-CLI_DST="/usr/local/bin/claudedashboard"
+# Build pty-proxy
+PTY_SRC="$(cd "$(dirname "$0")" && pwd)/pty-proxy.c"
+PTY_DST="/usr/local/bin/claude-dashboard-proxy"
+cc -O2 -o /tmp/pty-proxy "$PTY_SRC" -lutil
+cp /tmp/pty-proxy "$PTY_DST" 2>/dev/null || sudo cp /tmp/pty-proxy "$PTY_DST"
+chmod +x "$PTY_DST"
+rm /tmp/pty-proxy
+
+# Install cdash CLI
+CLI_SRC="$(cd "$(dirname "$0")" && pwd)/cdash"
+CLI_DST="/usr/local/bin/cdash"
 cp "$CLI_SRC" "$CLI_DST" 2>/dev/null || sudo cp "$CLI_SRC" "$CLI_DST"
 chmod +x "$CLI_DST"
 
 echo "Installed to $APP"
-echo "CLI: claudedashboard <name>"
+echo "CLI: cdash <name> | cdash claude ... | cdash codex ..."
 echo "Run: open /Applications/ClaudeDashboard.app"

@@ -2,10 +2,20 @@
 set -euo pipefail
 
 if [ $# -eq 0 ]; then
-  echo "Usage: claudedashboard <name>"
-  echo "Registers the current terminal tab in Claude Dashboard."
+  echo "Usage:"
+  echo "  cdash <name>              Register terminal tab"
+  echo "  cdash claude [args...]    Launch Claude with state tracking"
+  echo "  cdash codex [args...]     Launch Codex with state tracking"
   exit 1
 fi
+
+# Route to pty-proxy for agent commands
+case "$1" in
+  claude|codex)
+    export CDASH_PROXY=1
+    exec claude-dashboard-proxy "$@"
+    ;;
+esac
 
 name="$1"
 tty_name=$(tty | sed 's|/dev/||')
