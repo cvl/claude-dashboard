@@ -137,7 +137,7 @@ static void ring_append(const char *data, int len) {
    Only examines last 3KB so screen redraws push out stale content. */
 static int ring_recent_clean(char *out, int max) {
     int avail = ring_len < RING_SIZE ? ring_len : RING_SIZE;
-    if (avail > 6144) avail = 6144; /* ~2 render cycles — enough to catch prompts */
+    if (avail > 4096) avail = 4096; /* ~1 render cycle */
     if (avail <= 0) { out[0] = '\0'; return 0; }
     char raw[RING_SIZE + 1];
     int start = (ring_pos - avail + RING_SIZE) % RING_SIZE;
@@ -431,17 +431,7 @@ int main(int argc, char *argv[]) {
                 } else {
                     idle_confirmations = 0;
                 }
-                /* needs_input → other: debounce to prevent flicker */
-                if (current_state == ST_NEEDS_INPUT && new_state != ST_NEEDS_INPUT) {
-                    leave_input_confirmations++;
-                    if (leave_input_confirmations < DEBOUNCE_COUNT) {
-                        new_state = ST_NEEDS_INPUT;
-                    } else {
-                        leave_input_confirmations = 0;
-                    }
-                } else {
-                    leave_input_confirmations = 0;
-                }
+                /* needs_input → other: no debounce, transition immediately */
 
                 if (new_state != current_state) {
                     write_state(child_pid, new_state);
