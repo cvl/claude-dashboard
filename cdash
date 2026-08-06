@@ -3,9 +3,9 @@ set -euo pipefail
 
 if [ $# -eq 0 ]; then
   echo "Usage:"
-  echo "  claudedashboard <name>              Register terminal tab"
-  echo "  claudedashboard claude [args...]    Launch Claude with state tracking"
-  echo "  claudedashboard codex [args...]     Launch Codex with state tracking"
+  echo "  cdash <name>              Register terminal tab"
+  echo "  cdash claude [args...]    Launch Claude with state tracking"
+  echo "  cdash codex [args...]     Launch Codex with state tracking"
   exit 1
 fi
 

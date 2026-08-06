@@ -36,12 +36,14 @@ cp /tmp/pty-proxy "$PTY_DST" 2>/dev/null || sudo cp /tmp/pty-proxy "$PTY_DST"
 chmod +x "$PTY_DST"
 rm /tmp/pty-proxy
 
-# Install claudedashboard CLI
-CLI_SRC="$(cd "$(dirname "$0")" && pwd)/claudedashboard"
-CLI_DST="/usr/local/bin/claudedashboard"
+# Install cdash CLI
+CLI_SRC="$(cd "$(dirname "$0")" && pwd)/cdash"
+CLI_DST="/usr/local/bin/cdash"
 cp "$CLI_SRC" "$CLI_DST" 2>/dev/null || sudo cp "$CLI_SRC" "$CLI_DST"
 chmod +x "$CLI_DST"
+# Keep claudedashboard as alias for backward compat
+ln -sf "$CLI_DST" /usr/local/bin/claudedashboard 2>/dev/null || sudo ln -sf "$CLI_DST" /usr/local/bin/claudedashboard
 
 echo "Installed to $APP"
-echo "CLI: claudedashboard <name>"
+echo "CLI: cdash <name> | cdash claude ... | cdash codex ..."
 echo "Run: open /Applications/ClaudeDashboard.app"
