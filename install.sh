@@ -41,8 +41,6 @@ CLI_SRC="$(cd "$(dirname "$0")" && pwd)/cdash"
 CLI_DST="/usr/local/bin/cdash"
 cp "$CLI_SRC" "$CLI_DST" 2>/dev/null || sudo cp "$CLI_SRC" "$CLI_DST"
 chmod +x "$CLI_DST"
-# Keep claudedashboard as alias for backward compat
-ln -sf "$CLI_DST" /usr/local/bin/claudedashboard 2>/dev/null || sudo ln -sf "$CLI_DST" /usr/local/bin/claudedashboard
 
 echo "Installed to $APP"
 echo "CLI: cdash <name> | cdash claude ... | cdash codex ..."
