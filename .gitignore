@@ -1,4 +1,4 @@
 claude-dashboard-bin
-pty-proxy
+claude-dashboard-proxy
 *.o
 .DS_Store

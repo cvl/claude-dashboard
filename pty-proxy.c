@@ -1,6 +1,6 @@
 /*
  * pty-proxy: Transparent PTY proxy for agent state detection.
- * Usage: pty-proxy <command> [args...]
+ * Usage: claude-dashboard-proxy <command> [args...]
  *
  * Spawns <command> in a PTY, forwards I/O transparently,
  * detects agent state from terminal output patterns,
@@ -239,7 +239,7 @@ static const char *detect_agent(const char *cmd) {
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: pty-proxy <command> [args...]\n");
+        fprintf(stderr, "Usage: claude-dashboard-proxy <command> [args...]\n");
         return 1;
     }
 

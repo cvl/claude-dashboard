@@ -30,7 +30,7 @@ EOF
 
 # Build pty-proxy
 PTY_SRC="$(cd "$(dirname "$0")" && pwd)/pty-proxy.c"
-PTY_DST="/usr/local/bin/pty-proxy"
+PTY_DST="/usr/local/bin/claude-dashboard-proxy"
 cc -O2 -o /tmp/pty-proxy "$PTY_SRC" -lutil
 cp /tmp/pty-proxy "$PTY_DST" 2>/dev/null || sudo cp /tmp/pty-proxy "$PTY_DST"
 chmod +x "$PTY_DST"
