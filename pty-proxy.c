@@ -1,5 +1,5 @@
 /*
- * pty-proxy: Transparent PTY proxy for agent state detection.
+ * claude-dashboard-proxy: Transparent PTY proxy for agent state detection.
  * Usage: claude-dashboard-proxy <command> [args...]
  *
  * Spawns <command> in a PTY, forwards I/O transparently,
@@ -27,14 +27,16 @@
 #define STATE_DIR "/tmp/claude-dash"
 #define RING_SIZE 8192
 #define TITLE_SIZE 256
-#define CHECK_INTERVAL_MS 500
+#define CLEAN_SIZE 4096
+#define CHECK_INTERVAL_MS 200
+#define DEBOUNCE_COUNT 4  /* confirmations needed for working→idle (4*200ms=800ms) */
 
 static int master_fd = -1;
 static pid_t child_pid = 0;
 static struct termios orig_termios;
 static int raw_mode_set = 0;
 
-/* Ring buffer for recent output */
+/* Ring buffer for recent output (raw bytes) */
 static char ring[RING_SIZE];
 static int ring_pos = 0;
 static int ring_len = 0;
@@ -43,16 +45,30 @@ static int ring_len = 0;
 static char osc_title[TITLE_SIZE];
 static int osc_collecting = 0;
 static int osc_pos = 0;
+static int osc_st_pending = 0; /* waiting for \ after ESC in ST terminator */
 
 /* State tracking */
 typedef enum { ST_IDLE, ST_WORKING, ST_NEEDS_INPUT } state_t;
 static state_t current_state = ST_IDLE;
 static const char *agent_type = NULL; /* "claude" or "codex" */
 
+/* Debounce: hold state transitions until confirmed N times */
+static int idle_confirmations = 0;
+static int leave_input_confirmations = 0;
+
 static void cleanup(void) {
     if (raw_mode_set) {
         tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
         raw_mode_set = 0;
+    }
+}
+
+/* Remove state file on exit */
+static void cleanup_state(void) {
+    if (child_pid > 0) {
+        char path[128];
+        snprintf(path, sizeof(path), STATE_DIR "/%d.state", child_pid);
+        unlink(path);
     }
 }
 
@@ -71,12 +87,15 @@ static void sigterm_handler(int sig) {
     if (child_pid > 0) kill(child_pid, sig);
 }
 
+static void sigint_handler(int sig) {
+    if (child_pid > 0) kill(child_pid, sig);
+}
+
 /* Get the real TTY name (the terminal tab's TTY, not the slave PTY) */
 static char real_tty[64] = "";
 static void init_real_tty(void) {
     char *t = ttyname(STDIN_FILENO);
     if (t) {
-        /* Strip /dev/ prefix */
         const char *name = t;
         if (strncmp(name, "/dev/", 5) == 0) name += 5;
         snprintf(real_tty, sizeof(real_tty), "%s", name);
@@ -114,33 +133,85 @@ static void ring_append(const char *data, int len) {
     }
 }
 
-/* Ring buffer: get recent content as string (last n bytes) */
-static int ring_recent(char *out, int max) {
-    int avail = ring_len < max ? ring_len : max;
+/* Ring buffer: get recent content, stripping ANSI escapes.
+   Only examines last 3KB so screen redraws push out stale content. */
+static int ring_recent_clean(char *out, int max) {
+    int avail = ring_len < RING_SIZE ? ring_len : RING_SIZE;
+    if (avail > 6144) avail = 6144; /* ~2 render cycles — enough to catch prompts */
+    if (avail <= 0) { out[0] = '\0'; return 0; }
+    char raw[RING_SIZE + 1];
     int start = (ring_pos - avail + RING_SIZE) % RING_SIZE;
-    for (int i = 0; i < avail; i++) {
-        out[i] = ring[(start + i) % RING_SIZE];
+    for (int i = 0; i < avail; i++)
+        raw[i] = ring[(start + i) % RING_SIZE];
+    raw[avail] = '\0';
+
+    /* Strip ANSI escape sequences, inserting space to preserve word boundaries */
+    int j = 0;
+    for (int i = 0; i < avail && j < max - 1; i++) {
+        unsigned char c = (unsigned char)raw[i];
+        if (c == 0x1b) {
+            if (i + 1 < avail && raw[i + 1] == '[') {
+                /* CSI sequence: skip until letter, emit space */
+                i += 2;
+                while (i < avail && !((raw[i] >= 'A' && raw[i] <= 'Z') ||
+                       (raw[i] >= 'a' && raw[i] <= 'z'))) i++;
+                if (j > 0 && out[j-1] != ' ' && out[j-1] != '\n')
+                    out[j++] = ' ';
+                continue;
+            }
+            if (i + 1 < avail && raw[i + 1] == ']') {
+                /* OSC sequence: skip until BEL or ST */
+                i += 2;
+                while (i < avail && raw[i] != 0x07) {
+                    if (raw[i] == 0x1b && i + 1 < avail && raw[i + 1] == '\\') {
+                        i++; break;
+                    }
+                    i++;
+                }
+                if (j > 0 && out[j-1] != ' ' && out[j-1] != '\n')
+                    out[j++] = ' ';
+                continue;
+            }
+            /* Other escape: skip ESC + next char */
+            i++;
+            continue;
+        }
+        /* Skip control chars except newline/tab */
+        if (c < 0x20 && c != '\n' && c != '\t') continue;
+        out[j++] = raw[i];
     }
-    out[avail] = '\0';
-    return avail;
+    out[j] = '\0';
+    return j;
 }
 
-/* OSC title tracking: process bytes for \x1b]0;title\x07 or \x1b]2;title\x07 */
+/* OSC title tracking: handles both BEL (\x07) and ST (\x1b\\) terminators */
 static void track_osc(const char *data, int len) {
     for (int i = 0; i < len; i++) {
         unsigned char c = (unsigned char)data[i];
-        if (osc_collecting) {
-            if (c == 0x07 || c == 0x1b) { /* BEL or ESC ends OSC */
+
+        /* Handle pending ST: ESC was seen, check for \ */
+        if (osc_st_pending) {
+            osc_st_pending = 0;
+            if (c == '\\' && osc_collecting) {
                 osc_title[osc_pos] = '\0';
                 osc_collecting = 0;
                 osc_pos = 0;
+            }
+            continue;
+        }
+
+        if (osc_collecting) {
+            if (c == 0x07) { /* BEL terminates OSC */
+                osc_title[osc_pos] = '\0';
+                osc_collecting = 0;
+                osc_pos = 0;
+            } else if (c == 0x1b) { /* ESC — might be start of ST (\x1b\\) */
+                osc_st_pending = 1;
             } else if (osc_pos < TITLE_SIZE - 1) {
                 osc_title[osc_pos++] = c;
             }
         } else if (c == 0x1b && i + 1 < len && data[i + 1] == ']') {
-            /* Start of OSC sequence */
             i++; /* skip ] */
-            /* Check for 0; or 2; */
             if (i + 1 < len && (data[i + 1] == '0' || data[i + 1] == '2') &&
                 i + 2 < len && data[i + 2] == ';') {
                 i += 2; /* skip N; */
@@ -172,14 +243,18 @@ static int contains_ci(const char *haystack, const char *needle) {
 static int title_has_braille(const char *title) {
     const unsigned char *p = (const unsigned char *)title;
     while (*p) {
-        /* UTF-8 braille: E2 A0 80 to E2 A3 BF */
-        if (p[0] == 0xE2 && p[1] >= 0xA0 && p[1] <= 0xA3 && p[2] >= 0x80 && p[2] <= 0xBF)
-            return 1;
-        if (*p >= 0x80) {
-            /* skip multi-byte UTF-8 */
-            if ((*p & 0xE0) == 0xC0) p += 2;
-            else if ((*p & 0xF0) == 0xE0) p += 3;
-            else if ((*p & 0xF8) == 0xF0) p += 4;
+        /* UTF-8 braille: E2 A0 80 to E2 A3 BF — check bounds before accessing p[1], p[2] */
+        if (p[0] == 0xE2) {
+            if (p[1] == 0) break;
+            if (p[1] >= 0xA0 && p[1] <= 0xA3) {
+                if (p[2] == 0) break;
+                if (p[2] >= 0x80 && p[2] <= 0xBF) return 1;
+            }
+            p += 3;
+        } else if (*p >= 0x80) {
+            if ((*p & 0xE0) == 0xC0) { if (!p[1]) break; p += 2; }
+            else if ((*p & 0xF0) == 0xE0) { if (!p[1] || !p[2]) break; p += 3; }
+            else if ((*p & 0xF8) == 0xF0) { if (!p[1] || !p[2] || !p[3]) break; p += 4; }
             else p++;
         } else {
             p++;
@@ -191,6 +266,7 @@ static int title_has_braille(const char *title) {
 /* Check if title starts with ✳ (U+2733, UTF-8: E2 9C B3) */
 static int title_starts_with_sparkle(const char *title) {
     const unsigned char *p = (const unsigned char *)title;
+    if (p[0] == 0 || p[1] == 0 || p[2] == 0) return 0;
     return p[0] == 0xE2 && p[1] == 0x9C && p[2] == 0xB3;
 }
 
@@ -199,18 +275,17 @@ static state_t detect_state(const char *screen, const char *title) {
     if (!agent_type) return ST_IDLE;
 
     if (strcmp(agent_type, "claude") == 0) {
+        /* Screen checks first — needs_input overrides title spinner */
+        if (contains_ci(screen, "do you want to proceed?") &&
+            (contains_ci(screen, "yes") || strstr(screen, "\xe2\x9d\xaf") /* ❯ */))
+            return ST_NEEDS_INPUT;
+        if (contains_ci(screen, "esc to cancel") &&
+            (contains_ci(screen, "enter to confirm") || contains_ci(screen, "enter to select")))
+            return ST_NEEDS_INPUT;
         /* OSC title: braille spinner = working */
         if (title_has_braille(title)) return ST_WORKING;
         /* OSC title: ✳ = idle */
         if (title_starts_with_sparkle(title)) return ST_IDLE;
-        /* Permission prompt */
-        if (contains_ci(screen, "do you want to proceed?") &&
-            (contains_ci(screen, "yes") || strstr(screen, "❯")))
-            return ST_NEEDS_INPUT;
-        /* Form/dialog blockers */
-        if (contains_ci(screen, "esc to cancel") &&
-            (contains_ci(screen, "enter to confirm") || contains_ci(screen, "enter to select")))
-            return ST_NEEDS_INPUT;
     } else if (strcmp(agent_type, "codex") == 0) {
         /* OSC title: "Action Required" = blocked */
         if (contains_ci(title, "Action Required")) return ST_NEEDS_INPUT;
@@ -257,7 +332,6 @@ int main(int argc, char *argv[]) {
     }
 
     /* Open PTY */
-    int slave_fd;
     child_pid = forkpty(&master_fd, NULL, NULL, NULL);
     if (child_pid < 0) {
         perror("forkpty");
@@ -265,7 +339,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (child_pid == 0) {
-        /* Child: exec the command */
+        /* Child: keep CDASH_PROXY set — hooks must not race with proxy */
         execvp(argv[1], &argv[1]);
         perror("execvp");
         _exit(127);
@@ -280,10 +354,13 @@ int main(int argc, char *argv[]) {
     signal(SIGWINCH, sigwinch_handler);
     signal(SIGCHLD, sigchld_handler);
     signal(SIGTERM, sigterm_handler);
-    signal(SIGINT, SIG_IGN); /* Let child handle Ctrl+C */
+    signal(SIGINT, sigint_handler);  /* Forward Ctrl+C to child */
 
-    /* Write initial state */
-    if (agent_type) write_state(child_pid, ST_IDLE);
+    /* Write initial state, register cleanup */
+    if (agent_type) {
+        write_state(child_pid, ST_IDLE);
+        atexit(cleanup_state);
+    }
 
     /* Main loop */
     char buf[4096];
@@ -329,9 +406,43 @@ int main(int argc, char *argv[]) {
             long elapsed_ms = (now.tv_sec - last_check.tv_sec) * 1000 +
                               (now.tv_nsec - last_check.tv_nsec) / 1000000;
             if (elapsed_ms >= CHECK_INTERVAL_MS) {
-                char screen[4096];
-                ring_recent(screen, 4095);
+                char screen[CLEAN_SIZE];
+                int slen = ring_recent_clean(screen, CLEAN_SIZE - 1);
                 state_t new_state = detect_state(screen, osc_title);
+
+                /* Debug: dump screen + state to /tmp/claude-dash/debug.log */
+                {
+                    FILE *dbg = fopen(STATE_DIR "/debug.log", "w");
+                    if (dbg) {
+                        fprintf(dbg, "state=%d title=[%s] slen=%d\n---\n%.800s\n",
+                                new_state, osc_title, slen, screen);
+                        fclose(dbg);
+                    }
+                }
+
+                /* Debounce state transitions */
+                if (current_state == ST_WORKING && new_state == ST_IDLE) {
+                    idle_confirmations++;
+                    if (idle_confirmations < DEBOUNCE_COUNT) {
+                        new_state = ST_WORKING;
+                    } else {
+                        idle_confirmations = 0;
+                    }
+                } else {
+                    idle_confirmations = 0;
+                }
+                /* needs_input → other: debounce to prevent flicker */
+                if (current_state == ST_NEEDS_INPUT && new_state != ST_NEEDS_INPUT) {
+                    leave_input_confirmations++;
+                    if (leave_input_confirmations < DEBOUNCE_COUNT) {
+                        new_state = ST_NEEDS_INPUT;
+                    } else {
+                        leave_input_confirmations = 0;
+                    }
+                } else {
+                    leave_input_confirmations = 0;
+                }
+
                 if (new_state != current_state) {
                     write_state(child_pid, new_state);
                     current_state = new_state;
@@ -349,7 +460,7 @@ int main(int argc, char *argv[]) {
                 if (n <= 0) break;
                 write(STDOUT_FILENO, buf, n);
             }
-            /* Write final idle state */
+            /* Write final idle state (cleanup_state will remove it on exit) */
             if (agent_type) write_state(child_pid, ST_IDLE);
             cleanup();
             return WIFEXITED(status) ? WEXITSTATUS(status) : 1;

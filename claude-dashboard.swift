@@ -4,7 +4,7 @@ import Cocoa
 
 let sessionsURL = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("sessions")
-let pollInterval: TimeInterval = 1
+let pollInterval: TimeInterval = 0.5
 let notesDir = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-notes").path
 let storeFile = FileManager.default.homeDirectoryForCurrentUser
@@ -1106,6 +1106,7 @@ struct DashNotification {
     let cwd: String
     let tty: String
     let time: Date
+    var isInputNeeded: Bool = false
 }
 
 class NotificationPanelView: NSView {
@@ -1185,10 +1186,11 @@ class NotificationPanelView: NSView {
             NSColor(white: 0.5, alpha: 0.08).setFill()
             bg.fill()
 
-            // Accent
+            // Accent — orange for input needed, blue for finished
+            let accentColor = notif.isInputNeeded ? NSColor.systemOrange : NSColor.systemBlue
             NSGraphicsContext.saveGraphicsState()
             bg.addClip()
-            NSColor.systemBlue.setFill()
+            accentColor.setFill()
             NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: 3, height: itemH)).fill()
             NSGraphicsContext.restoreGraphicsState()
 
@@ -1199,10 +1201,12 @@ class NotificationPanelView: NSView {
                 .font: font, .foregroundColor: NSColor.labelColor])
             nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 5))
 
-            // "finished" + time
+            // Status + time
             let df = DateFormatter()
             df.dateFormat = "HH:mm"
-            let timeStr = "finished \(df.string(from: notif.time))"
+            let timeStr = notif.isInputNeeded
+                ? "input needed \(df.string(from: notif.time))"
+                : "finished \(df.string(from: notif.time))"
             let timeAttr = NSAttributedString(string: timeStr, attributes: [
                 .font: smallFont, .foregroundColor: NSColor.secondaryLabelColor])
             timeAttr.draw(at: NSPoint(x: tx, y: rect.minY + 20))
@@ -3055,13 +3059,29 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 if s.state == .working {
                     dismissNotification(sid)
                 }
+                // Dismiss input-needed notification when resolved
+                if prev == .needsInput && s.state != .needsInput {
+                    dismissNotification(sid)
+                }
 
                 if prev == .working && s.state != .working {
                     if !dashNotifications.contains(where: { $0.id == sid }) {
                         dashLog("NOTIFY \(s.name) \(State.working.label) → \(s.state.label)")
                         dashNotifications.append(DashNotification(
                             id: sid, sessionName: s.name,
-                            cwd: s.cwd, tty: s.tty, time: Date()))
+                            cwd: s.cwd, tty: s.tty, time: Date(),
+                            isInputNeeded: s.state == .needsInput))
+                        layoutNotifPanel()
+                    }
+                }
+                // Also notify on idle/working → needsInput
+                if prev != .needsInput && s.state == .needsInput {
+                    if !dashNotifications.contains(where: { $0.id == sid }) {
+                        dashLog("NOTIFY \(s.name) \(prev!.label) → \(s.state.label)")
+                        dashNotifications.append(DashNotification(
+                            id: sid, sessionName: s.name,
+                            cwd: s.cwd, tty: s.tty, time: Date(),
+                            isInputNeeded: true))
                         layoutNotifPanel()
                     }
                 }
