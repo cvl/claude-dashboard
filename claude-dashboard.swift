@@ -302,8 +302,8 @@ func appendToHistory(_ session: StoredSession) {
     let notes = notesFileName(name: session.name, sessionId: session.sessionId)
     let isCodex = session.source == "codex"
     let resume = isCodex
-        ? "cd \(session.cwd) && codex resume \(session.sessionId)"
-        : "cd \(session.cwd) && claude --resume \(session.sessionId) --name '\(session.name)' --effort max"
+        ? "cd \(session.cwd) && cdash codex resume \(session.sessionId)"
+        : "cd \(session.cwd) && cdash claude --resume \(session.sessionId) --name '\(session.name)' --effort max"
 
     let prefix = prev != nil ? "[renamed from '\(prev!)'] " : ""
     let entry = """
