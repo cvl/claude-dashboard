@@ -218,7 +218,15 @@ func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int)? {
 
 func resolveState(_ pid: pid_t) -> State {
     guard kill(pid, 0) == 0 else { return track(pid, .dead) }
-    let sf = stateFileEvent(pid)
+    // Check state file for this PID, then child PIDs (codex writes to native binary PID)
+    var sf = stateFileEvent(pid)
+    if sf == nil {
+        let kids = shell("/usr/bin/pgrep", "-P", "\(pid)")
+        for kid in kids.components(separatedBy: "\n") {
+            guard let kpid = pid_t(kid.trimmingCharacters(in: .whitespaces)), kpid > 0 else { continue }
+            if let ksf = stateFileEvent(kpid) { sf = ksf; break }
+        }
+    }
     let state: State
     switch sf?.event {
     case "working":     state = .working
@@ -572,22 +580,32 @@ func loadCodexSessions() -> [Session] {
         guard !usedIds.contains(sid) else { continue }
         usedIds.insert(sid)
 
-        // Get name from Codex state database
-        // /rename updates the "title" column. "name" is always empty.
+        // Get name: 1) codex db (short title = /rename'd), 2) dashboard store, 3) folder name
         var sname = ""
         let dbPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/state_5.sqlite").path
         if !sid.hasPrefix("codex-"), sid.count > 10 {
-            // Try name first, then title (but only if short — long titles are first prompt text)
             let dbOut = shell("/usr/bin/sqlite3", dbPath,
                 "SELECT COALESCE(NULLIF(name,''), title) FROM threads WHERE id='\(sid)' LIMIT 1")
             let candidate = dbOut.trimmingCharacters(in: .whitespacesAndNewlines)
             if !candidate.isEmpty && candidate.count <= 40 { sname = candidate }
         }
+        // Check dashboard store for existing name (user may have renamed in codex previously)
+        if sname.isEmpty, let storedName = loadStore().store[sid]?.name, !storedName.isEmpty {
+            sname = storedName
+        }
         if sname.isEmpty {
             sname = (cwd as NSString).lastPathComponent.isEmpty ? "codex-\(proc.pid)" : (cwd as NSString).lastPathComponent
         }
         let resolvedState = resolveState(proc.pid)
-        let hookTs = stateFileEvent(proc.pid)?.ts ?? 0
+        // Check state file for node wrapper and child (native binary) PIDs
+        var hookTs = stateFileEvent(proc.pid)?.ts ?? 0
+        if hookTs == 0 {
+            let kids = shell("/usr/bin/pgrep", "-P", "\(proc.pid)")
+            for kid in kids.components(separatedBy: "\n") {
+                guard let kpid = pid_t(kid.trimmingCharacters(in: .whitespaces)), kpid > 0 else { continue }
+                if let ts = stateFileEvent(kpid)?.ts { hookTs = ts; break }
+            }
+        }
 
         result.append(Session(
             pid: proc.pid, sessionId: sid, name: sname, cwd: cwd,
@@ -2103,9 +2121,8 @@ for f in "$HOME/.claude/sessions/"*.json; do
   [ -n "$pid" ] && echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${pid}.state
   exit 0
 done
-# Codex: find PID from running process args
-pid=$(pgrep -f "codex.*$sid" 2>/dev/null | head -1)
-[ -n "$pid" ] && echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${pid}.state
+# Codex: hook runs as child of codex process, use PPID
+echo "{\\"event\\":\\"$event\\",\\"ts\\":$(date +%s)}" > /tmp/claude-dash/${PPID}.state
 exit 0
 """
 
