@@ -2608,8 +2608,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let hasInputNeeded = dashNotifications.contains { $0.isInputNeeded }
         if hasInputNeeded && inputSoundTimer == nil {
             NSSound(named: "Ping")?.play()
+            NSApp.requestUserAttention(.informationalRequest)
             inputSoundTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
                 NSSound(named: "Ping")?.play()
+                NSApp.requestUserAttention(.informationalRequest)
             }
         } else if !hasInputNeeded {
             if inputSoundTimer != nil {
