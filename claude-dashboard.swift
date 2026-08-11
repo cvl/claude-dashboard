@@ -2253,6 +2253,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var tabSidebar: TabSidebarView!
     var timer: Timer?
     var inputSoundTimer: Timer?
+    var attentionRequestId: Int = 0
     var currentSessions: [Session] = []
     var currentTerminals: [Terminal] = []
     var tabs: [TabBucket] = []
@@ -2611,9 +2612,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             inputSoundTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
                 NSSound(named: "Ping")?.play()
             }
-        } else if !hasInputNeeded && inputSoundTimer != nil {
-            inputSoundTimer?.invalidate()
-            inputSoundTimer = nil
+        } else if !hasInputNeeded {
+            if inputSoundTimer != nil {
+                inputSoundTimer?.invalidate()
+                inputSoundTimer = nil
+            }
+            if attentionRequestId != 0 {
+                NSApp.cancelUserAttentionRequest(attentionRequestId)
+                attentionRequestId = 0
+            }
         }
     }
 
@@ -3092,7 +3099,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             isInputNeeded: s.state == .needsInput))
                         layoutNotifPanel()
                         if s.state == .needsInput {
-                            NSApp.requestUserAttention(.criticalRequest)
+                            attentionRequestId = NSApp.requestUserAttention(.criticalRequest)
                             updateInputSoundTimer()
                         }
                     }
@@ -3106,7 +3113,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             cwd: s.cwd, tty: s.tty, time: Date(),
                             isInputNeeded: true))
                         layoutNotifPanel()
-                        NSApp.requestUserAttention(.criticalRequest)
+                        attentionRequestId = NSApp.requestUserAttention(.criticalRequest)
                         updateInputSoundTimer()
                     }
                 }
