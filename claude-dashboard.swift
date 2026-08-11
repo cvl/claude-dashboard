@@ -3076,6 +3076,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             cwd: s.cwd, tty: s.tty, time: Date(),
                             isInputNeeded: s.state == .needsInput))
                         layoutNotifPanel()
+                        if s.state == .needsInput {
+                            NSApp.requestUserAttention(.criticalRequest)
+                        }
                     }
                 }
                 // Also notify on idle → needsInput (working→needsInput handled above)
@@ -3087,6 +3090,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             cwd: s.cwd, tty: s.tty, time: Date(),
                             isInputNeeded: true))
                         layoutNotifPanel()
+                        NSApp.requestUserAttention(.criticalRequest)
                     }
                 }
             }
