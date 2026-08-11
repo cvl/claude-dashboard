@@ -34,6 +34,7 @@ PTY_DST="/usr/local/bin/claude-dashboard-proxy"
 cc -O2 -o /tmp/pty-proxy "$PTY_SRC" -lutil
 cp /tmp/pty-proxy "$PTY_DST" 2>/dev/null || sudo cp /tmp/pty-proxy "$PTY_DST"
 chmod +x "$PTY_DST"
+codesign -s - "$PTY_DST" 2>/dev/null || true
 rm /tmp/pty-proxy
 
 # Install cdash CLI
