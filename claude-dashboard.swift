@@ -2252,6 +2252,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var dashView: DashboardView!
     var tabSidebar: TabSidebarView!
     var timer: Timer?
+    var inputSoundTimer: Timer?
     var currentSessions: [Session] = []
     var currentTerminals: [Terminal] = []
     var tabs: [TabBucket] = []
@@ -2600,6 +2601,20 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func dismissNotification(_ id: String) {
         dashNotifications.removeAll { $0.id == id }
         notifView.notifications = dashNotifications
+        updateInputSoundTimer()
+    }
+
+    func updateInputSoundTimer() {
+        let hasInputNeeded = dashNotifications.contains { $0.isInputNeeded }
+        if hasInputNeeded && inputSoundTimer == nil {
+            NSSound(named: "Ping")?.play()
+            inputSoundTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
+                NSSound(named: "Ping")?.play()
+            }
+        } else if !hasInputNeeded && inputSoundTimer != nil {
+            inputSoundTimer?.invalidate()
+            inputSoundTimer = nil
+        }
     }
 
     func layoutNotifPanel() {
@@ -3078,6 +3093,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         layoutNotifPanel()
                         if s.state == .needsInput {
                             NSApp.requestUserAttention(.criticalRequest)
+                            updateInputSoundTimer()
                         }
                     }
                 }
@@ -3091,6 +3107,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             isInputNeeded: true))
                         layoutNotifPanel()
                         NSApp.requestUserAttention(.criticalRequest)
+                        updateInputSoundTimer()
                     }
                 }
             }
