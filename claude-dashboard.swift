@@ -2252,6 +2252,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var dashView: DashboardView!
     var tabSidebar: TabSidebarView!
     var timer: Timer?
+    var inputSoundTimer: Timer?
     var currentSessions: [Session] = []
     var currentTerminals: [Terminal] = []
     var tabs: [TabBucket] = []
@@ -2600,6 +2601,24 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func dismissNotification(_ id: String) {
         dashNotifications.removeAll { $0.id == id }
         notifView.notifications = dashNotifications
+        updateInputSoundTimer()
+    }
+
+    func updateInputSoundTimer() {
+        let hasInputNeeded = dashNotifications.contains { $0.isInputNeeded }
+        if hasInputNeeded && inputSoundTimer == nil {
+            NSSound(named: "Ping")?.play()
+            NSApp.requestUserAttention(.informationalRequest)
+            inputSoundTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
+                NSSound(named: "Ping")?.play()
+                NSApp.requestUserAttention(.informationalRequest)
+            }
+        } else if !hasInputNeeded {
+            if inputSoundTimer != nil {
+                inputSoundTimer?.invalidate()
+                inputSoundTimer = nil
+            }
+        }
     }
 
     func layoutNotifPanel() {
@@ -3076,6 +3095,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             cwd: s.cwd, tty: s.tty, time: Date(),
                             isInputNeeded: s.state == .needsInput))
                         layoutNotifPanel()
+                        if s.state == .needsInput {
+                            NSApp.requestUserAttention(.informationalRequest)
+                            updateInputSoundTimer()
+                        }
                     }
                 }
                 // Also notify on idle → needsInput (working→needsInput handled above)
@@ -3087,6 +3110,8 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             cwd: s.cwd, tty: s.tty, time: Date(),
                             isInputNeeded: true))
                         layoutNotifPanel()
+                        NSApp.requestUserAttention(.informationalRequest)
+                        updateInputSoundTimer()
                     }
                 }
             }
