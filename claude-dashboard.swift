@@ -498,7 +498,24 @@ func loadCodexSessions() -> [Session] {
         }
         codexProcs.append((pid: pid, tty: tty, sessionId: sid))
     }
-    guard !codexProcs.isEmpty else { return [] }
+    if codexProcs.isEmpty {
+        // No live codex — still load dead sessions from store
+        var result: [Session] = []
+        let (store, _) = loadStore()
+        for (sid, stored) in store {
+            guard stored.source == "codex" else { continue }
+            guard !removedSessionIds.contains(sid) else { continue }
+            let p = pid_t(stored.lastPid)
+            let fallback = Date(timeIntervalSince1970: stored.startedAt / 1000)
+            result.append(Session(
+                pid: p, sessionId: sid, name: stored.name, cwd: stored.cwd,
+                startedAt: stored.startedAt, state: .dead,
+                tty: "", hasNotes: hasNotesFile(name: stored.name, sessionId: sid),
+                lastActive: lastActiveTime[p] ?? Date(timeIntervalSince1970: stored.lastActiveTs ?? fallback.timeIntervalSince1970),
+                hookTs: 0, source: "codex"))
+        }
+        return result
+    }
 
     // Build session ID → metadata map from JSONL headers
     // Only scan recent files (last 30 days) to avoid slow enumeration
