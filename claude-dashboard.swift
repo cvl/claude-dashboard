@@ -441,8 +441,12 @@ func loadSessions() -> [Session] {
                 // Resumed under new sessionId — migrate notes, remove old entry
                 let oldPath = notesPath(name: stored.name, sessionId: sid)
                 let newPath = notesPath(name: live.name, sessionId: live.sessionId)
-                if oldPath != newPath && fm.fileExists(atPath: oldPath) && !fm.fileExists(atPath: newPath) {
-                    try? fm.moveItem(atPath: oldPath, toPath: newPath)
+                if oldPath != newPath && fm.fileExists(atPath: oldPath) {
+                    let newSize = (try? fm.attributesOfItem(atPath: newPath)[.size] as? Int) ?? 0
+                    if !fm.fileExists(atPath: newPath) || newSize == 0 {
+                        try? fm.removeItem(atPath: newPath)
+                        try? fm.moveItem(atPath: oldPath, toPath: newPath)
+                    }
                 }
                 resumedOldIds.append(sid)
                 continue
