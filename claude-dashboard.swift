@@ -1824,6 +1824,7 @@ class DashboardView: NSView {
         }
         // Pinned context menu
         if let idx = pinnedIndex(at: loc), idx < pinnedItems.count {
+            let item = pinnedItems[idx]
             let menu = NSMenu()
             let unpinItem = NSMenuItem(title: "Unpin",
                 action: #selector(contextUnpin(_:)), keyEquivalent: "")
@@ -1835,6 +1836,13 @@ class DashboardView: NSView {
             closeItem.target = self
             closeItem.tag = idx
             menu.addItem(closeItem)
+            if let s = sessions.first(where: { $0.sessionId == item.id }), s.state != .dead {
+                let chatItem = NSMenuItem(title: "Add to Chat",
+                    action: #selector(contextAddPinnedToChat(_:)), keyEquivalent: "")
+                chatItem.target = self
+                chatItem.tag = idx
+                menu.addItem(chatItem)
+            }
             NSMenu.popUpContextMenu(menu, with: event, for: self)
             return
         }
@@ -1858,6 +1866,14 @@ class DashboardView: NSView {
     @objc func contextAddToChat(_ sender: NSMenuItem) {
         guard sender.tag < sessions.count else { return }
         onAddToChat?(sessions[sender.tag])
+    }
+
+    @objc func contextAddPinnedToChat(_ sender: NSMenuItem) {
+        guard sender.tag < pinnedItems.count else { return }
+        let item = pinnedItems[sender.tag]
+        if let s = sessions.first(where: { $0.sessionId == item.id }) {
+            onAddToChat?(s)
+        }
     }
 
     @objc func contextPinTerminal(_ sender: NSMenuItem) {
