@@ -6,6 +6,7 @@ import sys
 import os
 import json
 import time
+import glob
 
 DB_PATH = os.path.expanduser("~/.claude/dashboard-chat.db")
 STATE_DIR = "/tmp/claude-dash"
@@ -62,6 +63,23 @@ def read_state_file(pid):
     except Exception:
         return None
 
+def find_all_state_files():
+    """Read all state files. Returns list of (child_pid, event, proxy_pid, tty, name, project)."""
+    results = []
+    try:
+        for fname in os.listdir(STATE_DIR):
+            if not fname.endswith(".state"): continue
+            pid_str = fname[:-6]
+            if not pid_str.isdigit(): continue
+            try:
+                with open(f"{STATE_DIR}/{fname}") as f:
+                    j = json.load(f)
+                    results.append((int(pid_str), j.get("event", ""), j.get("proxy_pid", 0),
+                                    j.get("tty", ""), j.get("name", ""), j.get("project", "")))
+            except: pass
+    except: pass
+    return results
+
 def write_inject(pid, text):
     """Write inject file for a proxy child PID."""
     path = f"{STATE_DIR}/{pid}.inject"
@@ -90,30 +108,25 @@ def cmd_send(args):
                (project, name))
     db.commit()
 
-    # Count recipients
+    # Find sessions to notify — use live state files with name/project from proxy
     rows = db.execute("SELECT display_name, pid FROM sessions WHERE project_id=? AND display_name!=? AND pid>0",
                        (project, name)).fetchall()
-
-    # Inject into idle recipients
-    targets = []
-    if recipient:
-        # DM — only inject target
-        for r_name, r_pid in rows:
-            if r_name == recipient and r_pid:
-                targets.append((r_name, r_pid))
-    else:
-        # Broadcast — inject all idle sessions
-        targets = [(r_name, r_pid) for r_name, r_pid in rows if r_pid]
-
-    for t_name, t_pid in targets:
-        sf = read_state_file(t_pid)
-        if sf and sf[0] == "stop":  # idle
-            inject_text = (f"You have a new chat message from {agent_type}/{name} "
-                          f"in project {project}. Run `cdash chat read` to see it "
-                          f"and `cdash chat send \"reply\"` to respond.\n")
-            write_inject(t_pid, inject_text)
-
     db.close()
+
+    state_files = find_all_state_files()
+
+    # Match by name+project in state files (proxy writes these from env vars)
+    target_names = {recipient} if recipient else {r[0] for r in rows}
+
+    for sf_pid, sf_event, sf_proxy_pid, sf_tty, sf_name, sf_project in state_files:
+        if sf_event != "stop": continue  # only inject idle
+        if sf_project != project: continue  # same project only
+        if sf_name not in target_names: continue
+        inject_text = (f"You have a new chat message from {agent_type}/{name} "
+                      f"in project {project}. Run `cdash chat read` to see it "
+                      f"and `cdash chat send \"reply\"` to respond.\n")
+        write_inject(sf_pid, inject_text)
+
     active = len([r for r in rows if r[1] and r[1] > 0])
     if recipient:
         print(f"Sent to {recipient}")

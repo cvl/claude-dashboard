@@ -102,6 +102,16 @@ static void init_real_tty(void) {
 }
 
 /* Write state file — includes real TTY for terminal reveal */
+static char session_name[128] = "";
+static char session_project[128] = "";
+
+static void init_session_info(void) {
+    const char *n = getenv("CDASH_SESSION_NAME");
+    if (n) snprintf(session_name, sizeof(session_name), "%s", n);
+    const char *p = getenv("CDASH_PROJECT");
+    if (p) snprintf(session_project, sizeof(session_project), "%s", p);
+}
+
 static void write_state(pid_t pid, state_t state) {
     mkdir(STATE_DIR, 0755);
     char path[128];
@@ -116,8 +126,8 @@ static void write_state(pid_t pid, state_t state) {
     snprintf(tmp, sizeof(tmp), STATE_DIR "/%d.state.tmp", pid);
     FILE *f = fopen(tmp, "w");
     if (f) {
-        fprintf(f, "{\"event\":\"%s\",\"ts\":%ld,\"tty\":\"%s\",\"proxy_pid\":%d}",
-                event, (long)time(NULL), real_tty, (int)getpid());
+        fprintf(f, "{\"event\":\"%s\",\"ts\":%ld,\"tty\":\"%s\",\"proxy_pid\":%d,\"name\":\"%s\",\"project\":\"%s\"}",
+                event, (long)time(NULL), real_tty, (int)getpid(), session_name, session_project);
         fclose(f);
         rename(tmp, path);
     }
@@ -319,6 +329,7 @@ int main(int argc, char *argv[]) {
 
     agent_type = detect_agent(argv[1]);
     init_real_tty();
+    init_session_info();
 
     /* Save and set raw terminal mode */
     if (isatty(STDIN_FILENO)) {
