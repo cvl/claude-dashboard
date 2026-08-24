@@ -26,10 +26,25 @@ if [ "$1" = "chat" ]; then
   subcmd="${1:-read}"; shift 2>/dev/null || true
 
   project="${CDASH_PROJECT:-$(git_root_name)}"
-  session_name="${CDASH_SESSION_NAME:-$(basename "$(pwd)")}"
   agent_type="${CDASH_AGENT_TYPE:-claude}"
   pid="${CDASH_PID:-$$}"
   proxy_pid="${CDASH_PROXY_PID:-}"
+
+  # Session name: env var > Claude/Codex session file name > cwd basename
+  session_name="${CDASH_SESSION_NAME:-}"
+  if [ -z "$session_name" ]; then
+    session_name=$(python3 -c "
+import json, os, glob
+pid = $pid
+for f in glob.glob(os.path.expanduser('~/.claude/sessions/*.json')):
+    try:
+        d = json.load(open(f))
+        if d.get('pid') == pid:
+            print(d.get('name', '')); break
+    except: pass
+" 2>/dev/null)
+    session_name="${session_name:-$(basename "$(pwd)")}"
+  fi
 
   case "$subcmd" in
     send)
