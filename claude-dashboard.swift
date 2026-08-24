@@ -1518,7 +1518,36 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
 
 class FlippedView: NSView { override var isFlipped: Bool { true } }
 
-class KeyableBorderlessWindow: NSWindow {
+/// Child window that stays attached to parent — hides by moving offscreen instead of orderOut
+/// (orderOut breaks macOS child window auto-move during drag)
+class AttachedChildWindow: NSWindow {
+    private var _hidden = false
+    var isHiddenOffscreen: Bool { _hidden }
+
+    override var isVisible: Bool { !_hidden }
+
+    func hideOffscreen() {
+        guard !_hidden else { return }
+        _hidden = true
+        super.setFrame(NSRect(x: -9999, y: -9999, width: 1, height: 1), display: false)
+    }
+
+    func showAt(_ frame: NSRect) {
+        _hidden = false
+        super.setFrame(frame, display: true)
+        super.orderFront(nil)
+    }
+
+    override func orderOut(_ sender: Any?) {
+        hideOffscreen()
+    }
+
+    override func orderFront(_ sender: Any?) {
+        if !_hidden { super.orderFront(sender) }
+    }
+}
+
+class KeyableBorderlessWindow: AttachedChildWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
@@ -2754,7 +2783,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.addChildWindow(tabPanel, ordered: .below)
 
         // Notification panel — floating to the left of tabs
-        notifPanel = NSWindow(
+        notifPanel = AttachedChildWindow(
             contentRect: NSRect(x: 0, y: 0, width: 180, height: 100),
             styleMask: [.borderless], backing: .buffered, defer: false)
         notifPanel.isOpaque = false
