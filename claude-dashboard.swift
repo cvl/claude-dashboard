@@ -1836,7 +1836,7 @@ class DashboardView: NSView {
             closeItem.target = self
             closeItem.tag = idx
             menu.addItem(closeItem)
-            if let s = sessions.first(where: { $0.sessionId == item.id }), s.state != .dead {
+            if let s = allSessions.first(where: { $0.sessionId == item.id }), s.state != .dead {
                 let chatItem = NSMenuItem(title: "Add to Chat",
                     action: #selector(contextAddPinnedToChat(_:)), keyEquivalent: "")
                 chatItem.target = self
@@ -1871,7 +1871,7 @@ class DashboardView: NSView {
     @objc func contextAddPinnedToChat(_ sender: NSMenuItem) {
         guard sender.tag < pinnedItems.count else { return }
         let item = pinnedItems[sender.tag]
-        if let s = sessions.first(where: { $0.sessionId == item.id }) {
+        if let s = allSessions.first(where: { $0.sessionId == item.id }) {
             onAddToChat?(s)
         }
     }
