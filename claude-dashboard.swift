@@ -1543,7 +1543,8 @@ class AttachedChildWindow: NSWindow {
     }
 
     override func orderFront(_ sender: Any?) {
-        if !_hidden { super.orderFront(sender) }
+        _hidden = false
+        super.orderFront(sender)
     }
 }
 
