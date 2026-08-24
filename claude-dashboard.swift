@@ -2982,47 +2982,59 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let sidebarWidth: CGFloat = 68
     var tabPanel: NSWindow!
 
+    private var lastTabH: CGFloat = 0
+    private var lastNotifH: CGFloat = 0
+
     func layoutViews() {
-        // Don't show child windows if main panel is minimized or hidden
         let mainHidden = !panel.isVisible || panel.isMiniaturized
 
-        // Tabs
+        // Tabs — only setFrame when visibility or size changes
         let wantTabs = showTabs && !mainHidden
         if wantTabs {
-            let mainFrame = panel.frame
             let tabH = tabSidebar.idealHeight + 8
-            let tabX = mainFrame.minX - sidebarWidth - 4
-            let tabY = mainFrame.maxY - tabH - 28
-            tabPanel.setFrame(NSRect(x: tabX, y: tabY, width: sidebarWidth, height: tabH),
-                              display: true)
+            let needsReposition = !tabPanel.isVisible || tabH != lastTabH
+            if needsReposition {
+                lastTabH = tabH
+                let mainFrame = panel.frame
+                let tabX = mainFrame.minX - sidebarWidth - 4
+                let tabY = mainFrame.maxY - tabH - 28
+                tabPanel.setFrame(NSRect(x: tabX, y: tabY, width: sidebarWidth, height: tabH),
+                                  display: true)
+            }
             if !tabPanel.isVisible { tabPanel.orderFront(nil) }
         } else {
             if tabPanel.isVisible { tabPanel.orderOut(nil) }
         }
 
-        // Notification panel
+        // Notification panel — only setFrame when visibility or size changes
         let wantNotif = !dashNotifications.isEmpty && !mainHidden
         if wantNotif {
-            let w = notifView.idealWidth
             let h = notifView.idealHeight
-            let anchor = (wantTabs && tabPanel.isVisible) ? tabPanel.frame : panel.frame
-            let x = anchor.minX - w - 4
-            let y = anchor.maxY - h
-            notifPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+            let needsReposition = !notifPanel.isVisible || h != lastNotifH
+            if needsReposition {
+                lastNotifH = h
+                let w = notifView.idealWidth
+                let anchor = (wantTabs && tabPanel.isVisible) ? tabPanel.frame : panel.frame
+                let x = anchor.minX - w - 4
+                let y = anchor.maxY - h
+                notifPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+            }
             if !notifPanel.isVisible { notifPanel.orderFront(nil) }
         } else {
             if notifPanel.isVisible { notifPanel.orderOut(nil) }
         }
 
-        // Chat panel
+        // Chat panel — only setFrame on first show
         let wantChat = showChat && !mainHidden
         if wantChat {
-            let w: CGFloat = 300
-            let h: CGFloat = 400
-            let x = panel.frame.maxX + 4
-            let y = panel.frame.maxY - h
-            chatPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
-            if !chatPanel.isVisible { chatPanel.orderFront(nil) }
+            if !chatPanel.isVisible {
+                let w: CGFloat = 300
+                let h: CGFloat = 400
+                let x = panel.frame.maxX + 4
+                let y = panel.frame.maxY - h
+                chatPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+                chatPanel.orderFront(nil)
+            }
         } else {
             if chatPanel.isVisible { chatPanel.orderOut(nil) }
         }
