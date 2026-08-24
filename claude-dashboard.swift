@@ -1514,6 +1514,11 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     }
 }
 
+class KeyableBorderlessWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 // MARK: - Dashboard Window View
 
 class DashboardView: NSView {
@@ -2793,7 +2798,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         // Chat panel — separate floating window
-        chatPanel = NSWindow(
+        chatPanel = KeyableBorderlessWindow(
             contentRect: NSRect(x: 0, y: 0, width: 300, height: 400),
             styleMask: [.borderless], backing: .buffered, defer: false)
         chatPanel.isOpaque = false
