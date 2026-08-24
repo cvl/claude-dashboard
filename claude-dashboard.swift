@@ -2986,7 +2986,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Don't show child windows if main panel is minimized or hidden
         let mainHidden = !panel.isVisible || panel.isMiniaturized
 
-        if showTabs && !mainHidden {
+        // Tabs
+        let wantTabs = showTabs && !mainHidden
+        if wantTabs {
             let mainFrame = panel.frame
             let tabH = tabSidebar.idealHeight + 8
             let tabX = mainFrame.minX - sidebarWidth - 4
@@ -2999,15 +3001,11 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         // Notification panel
-        if !dashNotifications.isEmpty && !mainHidden {
+        let wantNotif = !dashNotifications.isEmpty && !mainHidden
+        if wantNotif {
             let w = notifView.idealWidth
             let h = notifView.idealHeight
-            let anchor: NSRect
-            if showTabs && tabPanel.isVisible {
-                anchor = tabPanel.frame
-            } else {
-                anchor = panel.frame
-            }
+            let anchor = (wantTabs && tabPanel.isVisible) ? tabPanel.frame : panel.frame
             let x = anchor.minX - w - 4
             let y = anchor.maxY - h
             notifPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
@@ -3017,8 +3015,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         // Chat panel
-        if showChat && !mainHidden {
-            layoutChatPanel()
+        let wantChat = showChat && !mainHidden
+        if wantChat {
+            let w: CGFloat = 300
+            let h: CGFloat = 400
+            let x = panel.frame.maxX + 4
+            let y = panel.frame.maxY - h
+            chatPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+            if !chatPanel.isVisible { chatPanel.orderFront(nil) }
         } else {
             if chatPanel.isVisible { chatPanel.orderOut(nil) }
         }
@@ -3123,19 +3127,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    func layoutChatPanel() {
-        guard showChat, panel.isVisible else {
-            if chatPanel.isVisible { chatPanel.orderOut(nil) }
-            return
-        }
-        // Position to the right of the main panel
-        let w: CGFloat = 300
-        let h: CGFloat = 400
-        let x = panel.frame.maxX + 4
-        let y = panel.frame.maxY - h
-        chatPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
-        if !chatPanel.isVisible { chatPanel.orderFront(nil) }
-    }
+    func layoutChatPanel() { layoutViews() }
 
     func showToast(_ message: String, near button: NSView) {
         let label = NSTextField(labelWithString: message)
@@ -3179,6 +3171,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         notifPanel.orderOut(nil)
         chatPanel.orderOut(nil)
         return false
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        layoutViews()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        layoutViews()
     }
 
     func windowDidMiniaturize(_ notification: Notification) {
