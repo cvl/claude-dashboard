@@ -3173,10 +3173,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return false
     }
 
-    func windowDidMove(_ notification: Notification) {
-        layoutViews()
-    }
-
+    // Don't call layoutViews on windowDidMove — child windows auto-move with parent.
+    // Calling setFrame during drag fights with macOS auto-positioning and causes glitching.
+    // Only reposition on resize (changes relative offsets).
     func windowDidResize(_ notification: Notification) {
         layoutViews()
     }
