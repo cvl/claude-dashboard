@@ -1310,6 +1310,29 @@ func loadChatProjects() -> [String] {
     return projects
 }
 
+func loadChatMembers(project: String) -> [ChatMember] {
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
+          let db else { return [] }
+    defer { sqlite3_close(db) }
+
+    var stmt: OpaquePointer?
+    let sql = "SELECT display_name, agent_type, pid FROM sessions WHERE project_id=? ORDER BY display_name"
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, project, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+    var result: [ChatMember] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+        let name = String(cString: sqlite3_column_text(stmt, 0))
+        let atype = String(cString: sqlite3_column_text(stmt, 1))
+        let pid = Int(sqlite3_column_int(stmt, 2))
+        let active = pid > 0 && kill(pid_t(pid), 0) == 0
+        result.append(ChatMember(name: name, agentType: atype, isActive: active))
+    }
+    return result
+}
+
 func chatUnreadCount(project: String) -> Int {
     var db: OpaquePointer?
     guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
@@ -1346,11 +1369,19 @@ func updateHumanReadCursor(project: String, maxId: Int) {
                    "read", "--project", project, "--name", "human", "--type", "human")
 }
 
+struct ChatMember {
+    let name: String
+    let agentType: String
+    let isActive: Bool
+}
+
 class ChatPanelView: NSView, NSTextFieldDelegate {
     var messages: [ChatMessage] = [] { didSet { needsDisplay = true } }
     var activeProject: String = ""
     var projects: [String] = []
+    var members: [ChatMember] = [] { didSet { refreshMembers() } }
     var onSend: ((String, String) -> Void)?  // (project, message)
+    var onRemoveFromChat: ((String) -> Void)?  // session name
 
     private let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
     private let smallFont = NSFont.monospacedSystemFont(ofSize: 8, weight: .regular)
@@ -1359,11 +1390,13 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     private let padY: CGFloat = 6
     private let inputH: CGFloat = 28
     private let headerH: CGFloat = 24
+    private let membersH: CGFloat = 24
 
     private var inputField: NSTextField?
     private var scrollView: NSScrollView?
     private var contentView: NSView?
     private var projectPopup: NSPopUpButton?
+    private var membersView: NSView?
     var sessionNames: [String] = []  // for @mention autocomplete
 
     override var isFlipped: Bool { true }
@@ -1378,6 +1411,12 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         projectPopup = popup
         popup.target = self
         popup.action = #selector(projectChanged(_:))
+
+        // Members strip
+        let mv = NSView(frame: NSRect(x: 0, y: padY + headerH, width: bounds.width, height: membersH))
+        mv.autoresizingMask = [.width]
+        addSubview(mv)
+        membersView = mv
 
         // Input field (fixed at bottom)
         let inputY = bounds.height - inputH - padY
@@ -1399,8 +1438,8 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         sendBtn.autoresizingMask = [.minXMargin]
         addSubview(sendBtn)
 
-        // Scroll view for messages — between header and input
-        let scrollY = padY + headerH
+        // Scroll view for messages — between members and input
+        let scrollY = padY + headerH + membersH
         let scrollH = inputY - scrollY - padY
         let sv = NSScrollView(frame: NSRect(x: 0, y: scrollY, width: bounds.width, height: scrollH))
         sv.autoresizingMask = [.width]
@@ -1482,6 +1521,65 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         } else {
             activeProject = newProjects.first ?? ""
         }
+    }
+
+    func refreshMembers() {
+        guard let mv = membersView else { return }
+        mv.subviews.forEach { $0.removeFromSuperview() }
+        var x: CGFloat = padX
+        for (i, m) in members.enumerated() where m.name != "human" {
+            let color: NSColor = m.agentType == "claude" ? .systemGreen :
+                                 m.agentType == "codex" ? .systemBlue : .systemGray
+            let dot = m.isActive ? "● " : "○ "
+            let label = dot + m.name
+            let btn = NSButton(frame: NSRect(x: x, y: 2, width: 0, height: 18))
+            btn.title = label
+            btn.font = smallFont
+            btn.isBordered = false
+            btn.contentTintColor = color
+            btn.sizeToFit()
+            btn.frame.size.height = 18
+            btn.tag = i
+            btn.target = self
+            btn.action = #selector(memberClicked(_:))
+            mv.addSubview(btn)
+            x += btn.frame.width + 6
+        }
+    }
+
+    @objc func memberClicked(_ sender: NSButton) {
+        guard sender.tag < members.count else { return }
+        let name = members[sender.tag].name
+        if let field = inputField {
+            field.stringValue = "@\(name) "
+            field.becomeFirstResponder()
+            field.currentEditor()?.moveToEndOfLine(nil)
+        }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let mv = membersView else { super.rightMouseDown(with: event); return }
+        let loc = convert(event.locationInWindow, from: nil)
+        let mvLoc = mv.convert(loc, from: self)
+        for (i, sub) in mv.subviews.enumerated() {
+            if sub.frame.contains(mvLoc) && i < members.count {
+                let m = members[i]
+                guard m.name != "human" else { return }
+                let menu = NSMenu()
+                let item = NSMenuItem(title: "Remove from Chat", action: #selector(removeMemberFromChat(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = i
+                menu.addItem(item)
+                NSMenu.popUpContextMenu(menu, with: event, for: self)
+                return
+            }
+        }
+        super.rightMouseDown(with: event)
+    }
+
+    @objc func removeMemberFromChat(_ sender: NSMenuItem) {
+        guard sender.tag < members.count else { return }
+        onRemoveFromChat?(members[sender.tag].name)
     }
 
     func refreshMessages() {
@@ -2751,8 +2849,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         dashView.onAddToChat = { [weak self] s in
             guard let self else { return }
-            // Project = active tab name (or "main")
-            let project = self.activeTabId == "main" ? "main" : (self.tabs.first(where: { $0.id == self.activeTabId })?.name ?? "main")
+            // Project = tab the session belongs to (not necessarily active tab)
+            let sessionTab = self.tabs.first(where: { $0.sessionIds.contains(s.sessionId) })
+            let project = sessionTab?.name ?? "main"
             // Register in chat db
             let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
                           "send", "--project", project, "--name", s.name,
@@ -2955,6 +3054,12 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                           "send", "--project", project, "--name", "human",
                           "--type", "human", "--message", message, "--to", target)
             self?.pollChat()
+        }
+        chatView.onRemoveFromChat = { [weak self] name in
+            guard let self, !chatView.activeProject.isEmpty else { return }
+            let _ = shell("/usr/bin/sqlite3", chatDbPath,
+                          "DELETE FROM sessions WHERE project_id='\(chatView.activeProject)' AND display_name='\(name)'")
+            self.pollChat()
         }
 
         tabs = loadTabs()
@@ -3227,17 +3332,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             chatView.activeProject = first
         }
         guard !chatView.activeProject.isEmpty else { return }
-        // Feed session names for @mention autocomplete
-        let namesOut = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
-                             "list", "--project", chatView.activeProject)
-        chatView.sessionNames = namesOut.components(separatedBy: "\n")
-            .compactMap { line -> String? in
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                guard let slash = trimmed.firstIndex(of: "/") else { return nil }
-                let afterSlash = trimmed[trimmed.index(after: slash)...]
-                guard let space = afterSlash.firstIndex(of: " ") else { return String(afterSlash) }
-                return String(afterSlash[..<space])
-            }
+        // Load members and feed names for autocomplete
+        let mbrs = loadChatMembers(project: chatView.activeProject)
+        chatView.members = mbrs
+        chatView.sessionNames = mbrs.map(\.name)
         let msgs = loadChatMessages(project: chatView.activeProject)
         let fp = msgs.map { "\($0.id)" }.joined()
         if fp != lastChatFingerprint {
