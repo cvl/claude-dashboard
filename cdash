@@ -30,17 +30,29 @@ if [ "$1" = "chat" ]; then
   pid="${CDASH_PID:-$$}"
   proxy_pid="${CDASH_PROXY_PID:-}"
 
-  # Session name: env var > Claude/Codex session file name > cwd basename
+  # Session name: env var > Claude/Codex session file by PID (walk ancestors) > cwd basename
   session_name="${CDASH_SESSION_NAME:-}"
   if [ -z "$session_name" ]; then
     session_name=$(python3 -c "
 import json, os, glob
-pid = $pid
+# Collect ancestor PIDs (walk up process tree)
+pids = set()
+p = os.getpid()
+while p > 1:
+    pids.add(p)
+    try:
+        with open(f'/proc/{p}/stat') if os.path.exists(f'/proc/{p}/stat') else open(os.devnull) as f: pass
+        # macOS: use ps
+        import subprocess
+        out = subprocess.check_output(['ps', '-o', 'ppid=', '-p', str(p)], text=True).strip()
+        p = int(out) if out else 0
+    except: break
 for f in glob.glob(os.path.expanduser('~/.claude/sessions/*.json')):
     try:
         d = json.load(open(f))
-        if d.get('pid') == pid:
-            print(d.get('name', '')); break
+        if d.get('pid') in pids:
+            n = d.get('name', '')
+            if n: print(n); break
     except: pass
 " 2>/dev/null)
     session_name="${session_name:-$(basename "$(pwd)")}"

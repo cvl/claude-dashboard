@@ -3128,11 +3128,17 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if chatPanel.isVisible { chatPanel.orderOut(nil) }
             return
         }
-        let pf = panel.frame
+        // Position to the left of the leftmost visible panel (tabs > notif > main)
+        let anchor: NSRect
+        if showTabs && tabPanel.isVisible {
+            anchor = tabPanel.frame
+        } else {
+            anchor = panel.frame
+        }
         let w: CGFloat = 300
         let h: CGFloat = 400
-        let x = pf.minX - w - 8
-        let y = pf.maxY - h
+        let x = anchor.minX - w - 4
+        let y = anchor.maxY - h
         chatPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
         if !chatPanel.isVisible { chatPanel.orderFront(nil) }
     }
