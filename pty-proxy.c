@@ -54,6 +54,7 @@ static const char *agent_type = NULL; /* "claude" or "codex" */
 
 /* Debounce: hold working→idle until confirmed N times */
 static int idle_confirmations = 0;
+static int did_chat_intro = 0;
 
 static void cleanup(void) {
     if (raw_mode_set) {
@@ -450,6 +451,18 @@ int main(int argc, char *argv[]) {
 
                 if (new_state != current_state) {
                     write_state(child_pid, new_state);
+                    /* Chat intro: inject once on first working→idle if project is set */
+                    if (!did_chat_intro && new_state == ST_IDLE && current_state == ST_WORKING
+                        && session_project[0]) {
+                        did_chat_intro = 1;
+                        const char *intro =
+                            "You have team chat available via cdash. "
+                            "Use `cdash chat read` to check messages, "
+                            "`cdash chat send \"msg\"` to broadcast, "
+                            "`cdash chat send \"msg\" --to name` for DM. "
+                            "Check now and before breaking changes.\r";
+                        write(master_fd, intro, strlen(intro));
+                    }
                     current_state = new_state;
                 }
                 last_check = now;
