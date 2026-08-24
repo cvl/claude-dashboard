@@ -210,6 +210,13 @@ let stateDir = "/tmp/claude-dash"
 var previousState: [pid_t: State] = [:]
 var lastActiveTime: [pid_t: Date] = [:]
 
+func isCdashSession(_ pid: pid_t) -> Bool {
+    let url = URL(fileURLWithPath: "\(stateDir)/\(pid).state")
+    guard let data = try? Data(contentsOf: url),
+          let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+    return j["proxy_pid"] != nil
+}
+
 func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?)? {
     let url = URL(fileURLWithPath: "\(stateDir)/\(pid).state")
     guard let data = try? Data(contentsOf: url),
@@ -382,6 +389,7 @@ func loadSessions() -> [Session] {
                   let pid = j["pid"] as? Int else { continue }
             let p = pid_t(pid)
             guard kill(p, 0) == 0 else { continue } // skip dead PIDs
+            guard isCdashSession(p) else { continue } // skip non-cdash sessions
             let sid = (j["sessionId"] as? String) ?? ""
             let sname = (j["name"] as? String) ?? "session-\(pid)"
             let startedAt = (j["startedAt"] as? Double) ?? 0
@@ -1396,7 +1404,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     private let bodyFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
     private let padX: CGFloat = 8
     private let padY: CGFloat = 6
-    private let inputH: CGFloat = 28
+    private let inputH: CGFloat = 32
     private let headerH: CGFloat = 22
     private let membersH: CGFloat = 30
 
@@ -1458,7 +1466,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         inputField = tf
 
         let sendBtn = NSButton(frame: NSRect(x: bounds.width - padX - 28, y: tfY, width: 28, height: inputH))
-        sendBtn.image = NSImage(systemSymbolName: "arrow.up.circle.fill", accessibilityDescription: "Send")
+        sendBtn.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")
         sendBtn.imageScaling = .scaleProportionallyUpOrDown
         sendBtn.isBordered = false
         sendBtn.contentTintColor = .systemBlue
@@ -2959,6 +2967,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             var pinned = loadPinned()
             pinned.removeAll { $0.id == s.sessionId }
             savePinned(pinned)
+            // Remove from chat
+            let _ = shell("/usr/bin/sqlite3", chatDbPath,
+                          "DELETE FROM sessions WHERE display_name='\(s.name.replacingOccurrences(of: "'", with: "''"))'")
             self?.poll()
         }
         dashView.onPinSession = { [weak self] s in
