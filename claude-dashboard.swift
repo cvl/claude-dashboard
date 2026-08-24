@@ -1621,6 +1621,7 @@ class DashboardView: NSView {
     var onNotesClick: ((Session) -> Void)?
     var onRemoveClick: ((Session) -> Void)?
     var onResumeClick: ((Session) -> Void)?
+    var onAddToChat: ((Session) -> Void)?
     var onReorder: ((Int, Int) -> Void)?  // (fromIndex, toInsertBeforeIndex)
     var onTerminalClick: ((Terminal) -> Void)?
     var onTerminalRemove: ((Terminal) -> Void)?
@@ -1793,6 +1794,13 @@ class DashboardView: NSView {
             closeItem.target = self
             closeItem.tag = idx
             menu.addItem(closeItem)
+            if s.state != .dead {
+                let chatItem = NSMenuItem(title: "Add to Chat",
+                    action: #selector(contextAddToChat(_:)), keyEquivalent: "")
+                chatItem.target = self
+                chatItem.tag = idx
+                menu.addItem(chatItem)
+            }
             NSMenu.popUpContextMenu(menu, with: event, for: self)
             return
         }
@@ -1845,6 +1853,11 @@ class DashboardView: NSView {
     @objc func contextCloseSession(_ sender: NSMenuItem) {
         guard sender.tag < sessions.count else { return }
         onRemoveClick?(sessions[sender.tag])
+    }
+
+    @objc func contextAddToChat(_ sender: NSMenuItem) {
+        guard sender.tag < sessions.count else { return }
+        onAddToChat?(sessions[sender.tag])
     }
 
     @objc func contextPinTerminal(_ sender: NSMenuItem) {
@@ -2719,6 +2732,28 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ids.insert(sid, at: insertAt)
             self.sessionOrder = ids
             self.poll()
+        }
+        dashView.onAddToChat = { [weak self] s in
+            guard let self else { return }
+            // Project = active tab name (or "main")
+            let project = self.activeTabId == "main" ? "main" : (self.tabs.first(where: { $0.id == self.activeTabId })?.name ?? "main")
+            // Register in chat db
+            let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
+                          "send", "--project", project, "--name", s.name,
+                          "--type", s.source, "--pid", "\(s.pid)",
+                          "--message", "\(s.name) joined the chat")
+            // Inject intro via state file's child PID
+            let sf = stateFileEvent(s.pid)
+            let injectPath = "\(stateDir)/\(s.pid).inject"
+            let intro = "You have team chat available via cdash in project \"\(project)\". " +
+                "Use `cdash chat read` to check messages, " +
+                "`cdash chat send \"msg\"` to broadcast, " +
+                "`cdash chat send \"msg\" --to name` for DM. " +
+                "Check now and before breaking changes."
+            try? intro.write(toFile: injectPath, atomically: true, encoding: .utf8)
+            // Enable chat panel
+            if !self.showChat { self.showChat = true }
+            self.pollChat()
         }
         dashView.onRemoveClick = { [weak self] s in
             removeSession(s)
