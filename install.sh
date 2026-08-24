@@ -43,6 +43,12 @@ CLI_DST="/usr/local/bin/cdash"
 cp "$CLI_SRC" "$CLI_DST" 2>/dev/null || sudo cp "$CLI_SRC" "$CLI_DST"
 chmod +x "$CLI_DST"
 
+# Install agent-chat backend
+CHAT_DIR="/usr/local/lib/claude-dashboard"
+CHAT_SRC="$(cd "$(dirname "$0")" && pwd)/agent-chat.py"
+mkdir -p "$CHAT_DIR" 2>/dev/null || sudo mkdir -p "$CHAT_DIR"
+cp "$CHAT_SRC" "$CHAT_DIR/agent-chat.py" 2>/dev/null || sudo cp "$CHAT_SRC" "$CHAT_DIR/agent-chat.py"
+
 echo "Installed to $APP"
 echo "CLI: cdash <name> | cdash claude ... | cdash codex ..."
 echo "Run: open /Applications/ClaudeDashboard.app"

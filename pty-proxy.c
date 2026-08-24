@@ -338,7 +338,12 @@ int main(int argc, char *argv[]) {
     }
 
     if (child_pid == 0) {
-        /* Child: keep CDASH_PROXY set — hooks must not race with proxy */
+        /* Child: set PID env vars for cdash chat identity */
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", getpid());
+        setenv("CDASH_PID", buf, 1);
+        snprintf(buf, sizeof(buf), "%d", getppid());
+        setenv("CDASH_PROXY_PID", buf, 1);
         execvp(argv[1], &argv[1]);
         perror("execvp");
         _exit(127);
@@ -437,6 +442,23 @@ int main(int argc, char *argv[]) {
                     current_state = new_state;
                 }
                 last_check = now;
+            }
+        }
+
+        /* Check for inject file when idle */
+        if (current_state == ST_IDLE) {
+            char inject_path[128];
+            snprintf(inject_path, sizeof(inject_path), STATE_DIR "/%d.inject", child_pid);
+            FILE *inj = fopen(inject_path, "r");
+            if (inj) {
+                char inject_buf[2048];
+                size_t n = fread(inject_buf, 1, sizeof(inject_buf) - 1, inj);
+                fclose(inj);
+                unlink(inject_path);
+                if (n > 0) {
+                    inject_buf[n] = '\0';
+                    write(master_fd, inject_buf, n);
+                }
             }
         }
 
