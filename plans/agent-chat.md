@@ -7,13 +7,20 @@ Multiple Claude Code and Codex sessions communicate with each other through a sh
 ## Architecture
 
 ```
-Claude session → MCP server (stdio) ──┐
-Codex session  → MCP server (stdio) ──┼── SQLite (~/.claude/dashboard-chat.db)
-Dashboard app (UI + human input) ──────┘
-PTY proxy (inject messages into idle sessions)
+Claude session ─ Bash: cdash chat ──┐
+Codex session  ─ Bash: cdash chat ──┼── SQLite (~/.claude/dashboard-chat.db)
+Dashboard app (UI + human input) ───┘
+PTY proxy (inject "cdash chat read" into idle sessions)
 ```
 
-No daemon, no web server. SQLite with WAL mode handles concurrency.
+No daemon, no web server, no MCP server, no config changes. Agents use `cdash chat` via Bash tool. SQLite with WAL mode handles concurrency.
+
+## Why Not MCP
+
+- MCP server requires a Node.js package installed + registered in `~/.claude/settings.json`
+- Every Claude Code session would see chat tools (global config, can't scope per-session)
+- Extra process per session, more things to maintain
+- `cdash chat` reuses the existing CLI, needs nothing new installed
 
 ## Components
 
@@ -42,7 +49,7 @@ CREATE TABLE messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL REFERENCES projects(id),
     sender_id TEXT NOT NULL,
-    recipient TEXT,  -- NULL = broadcast, session_id or display_name = DM, 'human' = escalation
+    recipient TEXT,  -- NULL = broadcast, display_name = DM, 'human' = escalation
     body TEXT NOT NULL,
     created_at INTEGER DEFAULT (unixepoch())
 );
@@ -51,39 +58,50 @@ CREATE INDEX idx_messages_project ON messages(project_id, created_at);
 CREATE INDEX idx_messages_recipient ON messages(recipient, created_at);
 ```
 
-### 2. MCP Server (`agent-chat-mcp/`)
+### 2. cdash CLI Chat Commands
 
-Thin stdio MCP server. Each session spawns its own instance. All instances read/write the same SQLite db.
+Extend the existing `cdash` bash script. All operations use `python3` + `sqlite3` (same pattern as existing cdash terminal registration).
 
-**Environment:** `CDASH_PROJECT` (set by cdash CLI), `CDASH_SESSION_NAME` (optional).
+#### `cdash chat join [--project NAME] [--name DISPLAY_NAME]`
+- Creates project if needed (default: basename of cwd)
+- Registers session (agent type detected from parent process or `CDASH_AGENT_TYPE`)
+- Stores session PID for presence tracking
+- Outputs: project name, active sessions
 
-**Tools:**
+#### `cdash chat send MESSAGE [--to NAME]`
+- Sends broadcast (no --to) or DM (--to session_name or --to human)
+- Auto-joins if not yet joined
+- If recipient has a known proxy PID and is idle, writes inject file
+- Outputs: confirmation
 
-#### `join_chat`
-- Params: `display_name` (optional), `project` (optional, falls back to `CDASH_PROJECT` or cwd basename)
-- Creates project if needed, registers session
-- Returns: `session_id`, `project`, list of active sessions
-- Tool description includes: "You are `{name}` in project `{project}`. Call read_messages to check for team communication."
-
-#### `send_message`
-- Params: `to` (optional — omit for broadcast, or session name / "human"), `message`
-- Inserts into messages table
-- If recipient has a known proxy PID, writes inject file (`/tmp/claude-dash/{pid}.inject`)
-- Returns: confirmation + recipient list
-
-#### `send_message_to_human`
-- Params: `message`, `urgency` ("info" | "decision_needed")
-- Shortcut for human escalation. Dashboard shows it prominently.
-
-#### `read_messages`
-- Params: `since_id` (optional — last seen message ID), `limit` (default 20)
+#### `cdash chat read [--since ID] [--limit N]`
 - Returns messages for this session's project (broadcasts + DMs to this session)
-- Updates `last_seen` on the session record
+- Default: last 20 messages, or since last read
+- Updates last_seen
+- Output format:
+  ```
+  [12] claude/backend  11:32  I'm modifying UserSession.
+  [13] codex/payments  11:33  Please preserve isActive().
+  [14] human           11:34  Do that, and add the new method separately.
+  ```
 
-#### `list_sessions`
-- Returns active sessions in same project with status (last_seen recency)
+#### `cdash chat list`
+- Shows active sessions in same project
+- Output:
+  ```
+  claude/backend    active   (pid 12345)
+  codex/payments    active   (pid 12346)
+  claude/tests      idle     (last seen 2m ago)
+  ```
 
-**Stack:** TypeScript, `@anthropic-ai/sdk` or `@modelcontextprotocol/sdk`, `better-sqlite3`. Single file ~200 LOC.
+#### `cdash chat notify NAME MESSAGE`
+- Writes inject file for target session's proxy: `cdash chat read\n`
+- Only works if target is idle (proxy checks state before injecting)
+
+#### Session identity
+- `CDASH_SESSION_ID` env var set by `cdash chat join`, persisted for session lifetime
+- Or derived from: agent type + display_name + project
+- `cdash claude/codex` auto-sets `CDASH_AGENT_TYPE`
 
 ### 3. Dashboard Chat UI (Swift, in `claude-dashboard.swift`)
 
@@ -97,12 +115,13 @@ New panel in the dashboard app — chat view alongside the existing session list
 - Unread badge on chat toggle button
 
 **Data flow:**
-- Poll `dashboard-chat.db` every 1-2s (same timer as session poll)
+- Poll `dashboard-chat.db` every 1s (same timer as session poll)
 - Read messages table for active project
-- Human messages written directly to SQLite
+- Human messages written directly to SQLite via `python3` or Swift SQLite bindings
 
 **Alerts for human-directed messages:**
-- Messages with `recipient = 'human'` or `urgency = 'decision_needed'` → dock bounce + ping (same as needs_input)
+- Messages with `recipient = 'human'` → dock bounce + ping (same as needs_input)
+- Show prominently in notification panel
 
 ### 4. PTY Proxy Injection (`pty-proxy.c`)
 
@@ -130,7 +149,7 @@ if (current_state == ST_IDLE) {
 
 Only injects when `ST_IDLE` — never interrupts working sessions or permission prompts.
 
-### 5. cdash CLI Changes
+### 5. cdash CLI Changes for Project Support
 
 ```bash
 cdash claude --project vpn-platform [args...]
@@ -138,66 +157,78 @@ cdash codex --project crypto-checkout [args...]
 ```
 
 - Sets `CDASH_PROJECT` env var before launching proxy
-- Proxy passes it through to child (claude/codex process)
-- MCP server reads it to scope all chat operations
-
-Default project: basename of cwd if `--project` not given.
-
-### 6. MCP Registration
-
-Add to `~/.claude/settings.json` (via install.sh):
-
-```json
-{
-  "mcpServers": {
-    "agent-chat": {
-      "command": "node",
-      "args": ["/usr/local/lib/agent-chat-mcp/index.js"]
-    }
-  }
-}
-```
-
-Similarly for Codex (`~/.codex/` config).
+- Sets `CDASH_AGENT_TYPE=claude` or `codex`
+- Default project: basename of cwd if `--project` not given
+- Auto-joins chat on session start (calls `cdash chat join` internally)
 
 ## Build Order
 
 ### Phase 1: Core (get messages flowing)
-1. SQLite schema + db init
-2. MCP server with join_chat, send_message, read_messages, list_sessions
-3. Install script additions (MCP registration)
-4. Test: two Claude sessions in same project exchange messages manually
+1. SQLite schema + db init in cdash
+2. `cdash chat join/send/read/list` commands
+3. Test: two sessions in same project exchange messages via `cdash chat`
 
 ### Phase 2: Dashboard integration
-5. Chat UI panel in dashboard app (read-only first)
-6. Human message input
-7. Alerts for human-directed messages (dock bounce + ping)
-8. Project selector
+4. Chat UI panel in dashboard app (read-only first)
+5. Human message input
+6. Alerts for human-directed messages (dock bounce + ping)
+7. Project selector
 
 ### Phase 3: Auto-injection
-9. PTY proxy inject file support
-10. MCP send_message writes inject file for idle recipients
-11. Test: PM agent sends task, web-dev agent auto-receives and acts
+8. PTY proxy inject file support
+9. `cdash chat send` writes inject file for idle recipients
+10. Test: agent A sends message, idle agent B auto-receives
 
 ### Phase 4: Polish
-12. `cdash --project` flag
-13. Unread counts in dashboard
-14. Session presence (active/idle/disconnected based on last_seen)
-15. Auto-join on `cdash claude` if project is set
+11. `cdash claude --project` flag + auto-join
+12. Unread counts in dashboard
+13. Session presence (active/idle/disconnected based on last_seen)
+14. `cdash chat notify` command for manual nudging
+
+## Example Flow
+
+```bash
+# Terminal 1
+$ cdash claude --project vpn-platform
+> cdash chat join --name backend
+Joined vpn-platform as claude/backend. 0 other sessions active.
+
+> cdash chat send "I'm changing UserSession.isActive() behavior. Anyone relying on it?"
+
+# Terminal 2
+$ cdash codex --project vpn-platform
+> cdash chat join --name payments
+Joined vpn-platform as codex/payments. 1 other session active.
+
+> cdash chat read
+[1] claude/backend  11:32  I'm changing UserSession.isActive() behavior. Anyone relying on it?
+
+> cdash chat send --to backend "I am. Payment expiry logic assumes false means expired."
+
+# Dashboard app shows all messages in vpn-platform chat panel
+# Human types in dashboard: "Keep isActive() backward compatible."
+# Both agents see it on next cdash chat read
+```
+
+## Auto-injection Flow
+
+```
+1. codex/payments sends: cdash chat send --to backend "Are you done with UserSession?"
+2. cdash chat sees claude/backend has proxy_pid=12345, state=idle
+3. Writes "/tmp/claude-dash/12345.inject" with content: "cdash chat read"
+4. Proxy poll loop sees inject file, state is ST_IDLE
+5. Proxy writes "cdash chat read\n" to master_fd
+6. Claude session receives it as user input, runs cdash chat read
+7. Claude sees the message and can respond
+```
 
 ## Constraints
 
 - No daemon process — SQLite direct access only
+- No MCP server — agents use Bash tool + cdash CLI
 - No web server — dashboard app is the UI
+- No config changes to Claude Code or Codex settings
 - No task management, kanban, orchestration
 - No auth, permissions, roles
-- Total new code: ~400-500 LOC (MCP server ~200, Swift UI ~200, proxy ~15)
-- Single SQLite db file, WAL mode, no migrations beyond initial schema
-
-## Risk: Agent Awareness
-
-Agents won't proactively check messages unless prompted. Mitigations:
-1. MCP tool descriptions tell agents they're part of a project team
-2. `join_chat` response reminds them to check periodically
-3. PTY injection for idle sessions (Phase 3) — most reliable
-4. Dashboard alerts for human when agents message them
+- Total new code: ~200 LOC cdash additions, ~200 LOC Swift UI, ~15 LOC proxy
+- Single SQLite db file, WAL mode
