@@ -451,9 +451,8 @@ int main(int argc, char *argv[]) {
 
                 if (new_state != current_state) {
                     write_state(child_pid, new_state);
-                    /* Chat intro: inject once on first working→idle if project is set */
-                    if (!did_chat_intro && new_state == ST_IDLE && current_state == ST_WORKING
-                        && session_project[0]) {
+                    /* Chat intro: inject once on first idle if project is set */
+                    if (!did_chat_intro && new_state == ST_IDLE && session_project[0]) {
                         did_chat_intro = 1;
                         const char *intro =
                             "You have team chat available via cdash. "
