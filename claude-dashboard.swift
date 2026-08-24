@@ -1481,6 +1481,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
                 m.append(timeAttr)
                 return m
             }())
+            headerLabel.isSelectable = true
             headerLabel.frame = NSRect(x: padX + 4, y: y, width: w - padX * 2 - 8, height: 14)
             cv.addSubview(headerLabel)
             y += 15
@@ -1489,6 +1490,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
             let bodyLabel = NSTextField(wrappingLabelWithString: msg.body)
             bodyLabel.font = bodyFont
             bodyLabel.textColor = .labelColor
+            bodyLabel.isSelectable = true
             bodyLabel.preferredMaxLayoutWidth = w - padX * 2 - 12
             bodyLabel.frame = NSRect(x: padX + 4, y: y, width: w - padX * 2 - 8, height: 0)
             bodyLabel.sizeToFit()
@@ -1507,10 +1509,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
 
         cv.frame = NSRect(x: 0, y: 0, width: w, height: max(y, sv.contentSize.height))
 
-        // Auto-scroll to bottom
-        if y > sv.contentSize.height {
-            cv.scroll(NSPoint(x: 0, y: y - sv.contentSize.height))
-        }
+        // Auto-scroll to bottom (newest messages)
+        let maxScroll = max(0, cv.frame.height - sv.contentSize.height)
+        sv.contentView.scroll(to: NSPoint(x: 0, y: maxScroll))
+        sv.reflectScrolledClipView(sv.contentView)
     }
 }
 
