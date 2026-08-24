@@ -1,4 +1,5 @@
 import Cocoa
+import SQLite3
 
 // MARK: - Config
 
@@ -17,6 +18,8 @@ let activeTabFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-active-tab").path
 let logFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard.log").path
+let chatDbPath = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".claude").appendingPathComponent("dashboard-chat.db").path
 let codexSessionsDir = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".codex").appendingPathComponent("sessions")
 let codexHooksFile = FileManager.default.homeDirectoryForCurrentUser
@@ -1250,6 +1253,267 @@ class NotificationPanelView: NSView {
     }
 }
 
+// MARK: - Chat Panel
+
+struct ChatMessage {
+    let id: Int
+    let senderName: String
+    let senderType: String
+    let recipient: String?
+    let body: String
+    let timestamp: Int
+}
+
+func loadChatMessages(project: String, limit: Int = 50) -> [ChatMessage] {
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
+          let db else { return [] }
+    defer { sqlite3_close(db) }
+
+    var stmt: OpaquePointer?
+    let sql = "SELECT id, sender_name, sender_type, recipient, body, created_at FROM messages WHERE project_id=? ORDER BY id DESC LIMIT ?"
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { sqlite3_finalize(stmt) }
+
+    sqlite3_bind_text(stmt, 1, project, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    sqlite3_bind_int(stmt, 2, Int32(limit))
+
+    var msgs: [ChatMessage] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+        let id = Int(sqlite3_column_int(stmt, 0))
+        let sName = String(cString: sqlite3_column_text(stmt, 1))
+        let sType = String(cString: sqlite3_column_text(stmt, 2))
+        let recip = sqlite3_column_text(stmt, 3).map { String(cString: $0) }
+        let body = String(cString: sqlite3_column_text(stmt, 4))
+        let ts = Int(sqlite3_column_int(stmt, 5))
+        msgs.append(ChatMessage(id: id, senderName: sName, senderType: sType,
+                                recipient: recip, body: body, timestamp: ts))
+    }
+    return msgs.reversed()
+}
+
+func loadChatProjects() -> [String] {
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
+          let db else { return [] }
+    defer { sqlite3_close(db) }
+
+    var stmt: OpaquePointer?
+    let sql = "SELECT DISTINCT project_id FROM messages ORDER BY project_id"
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { sqlite3_finalize(stmt) }
+
+    var projects: [String] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+        projects.append(String(cString: sqlite3_column_text(stmt, 0)))
+    }
+    return projects
+}
+
+func chatUnreadCount(project: String) -> Int {
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
+          let db else { return 0 }
+    defer { sqlite3_close(db) }
+
+    // Get human's read cursor
+    var cursor = 0
+    var stmt: OpaquePointer?
+    let cursorSql = "SELECT last_read_id FROM read_cursors WHERE project_id=? AND display_name='human'"
+    if sqlite3_prepare_v2(db, cursorSql, -1, &stmt, nil) == SQLITE_OK {
+        sqlite3_bind_text(stmt, 1, project, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        if sqlite3_step(stmt) == SQLITE_ROW { cursor = Int(sqlite3_column_int(stmt, 0)) }
+        sqlite3_finalize(stmt)
+    }
+
+    // Count messages after cursor
+    let countSql = "SELECT COUNT(*) FROM messages WHERE project_id=? AND id>?"
+    if sqlite3_prepare_v2(db, countSql, -1, &stmt, nil) == SQLITE_OK {
+        sqlite3_bind_text(stmt, 1, project, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        sqlite3_bind_int(stmt, 2, Int32(cursor))
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            let count = Int(sqlite3_column_int(stmt, 0))
+            sqlite3_finalize(stmt)
+            return count
+        }
+        sqlite3_finalize(stmt)
+    }
+    return 0
+}
+
+func updateHumanReadCursor(project: String, maxId: Int) {
+    let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
+                   "read", "--project", project, "--name", "human", "--type", "human")
+}
+
+class ChatPanelView: NSView, NSTextFieldDelegate {
+    var messages: [ChatMessage] = [] { didSet { needsDisplay = true } }
+    var activeProject: String = ""
+    var projects: [String] = []
+    var onSend: ((String, String) -> Void)?  // (project, message)
+
+    private let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+    private let smallFont = NSFont.monospacedSystemFont(ofSize: 8, weight: .regular)
+    private let bodyFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+    private let padX: CGFloat = 8
+    private let padY: CGFloat = 6
+    private let inputH: CGFloat = 28
+    private let headerH: CGFloat = 24
+
+    private var inputField: NSTextField?
+    private var scrollView: NSScrollView?
+    private var contentView: NSView?
+    private var projectPopup: NSPopUpButton?
+
+    override var isFlipped: Bool { true }
+
+    func setupViews() {
+        // Project selector
+        let popup = NSPopUpButton(frame: NSRect(x: padX, y: padY, width: bounds.width - padX * 2, height: 20))
+        popup.font = smallFont
+        popup.isBordered = false
+        popup.autoresizingMask = [.width]
+        addSubview(popup)
+        projectPopup = popup
+        popup.target = self
+        popup.action = #selector(projectChanged(_:))
+
+        // Scroll view for messages
+        let scrollY = padY + headerH
+        let scrollH = bounds.height - scrollY - inputH - padY * 2
+        let sv = NSScrollView(frame: NSRect(x: 0, y: scrollY, width: bounds.width, height: scrollH))
+        sv.autoresizingMask = [.width, .height]
+        sv.hasVerticalScroller = true
+        sv.drawsBackground = false
+        sv.borderType = .noBorder
+        let cv = NSView(frame: NSRect(x: 0, y: 0, width: sv.contentSize.width, height: 0))
+        cv.autoresizingMask = [.width]
+        sv.documentView = cv
+        addSubview(sv)
+        scrollView = sv
+        contentView = cv
+
+        // Input field
+        let inputY = bounds.height - inputH - padY
+        let tf = NSTextField(frame: NSRect(x: padX, y: inputY, width: bounds.width - padX * 2 - 50, height: inputH))
+        tf.font = bodyFont
+        tf.placeholderString = "Message..."
+        tf.bezelStyle = .roundedBezel
+        tf.autoresizingMask = [.width, .minYMargin]
+        tf.delegate = self
+        addSubview(tf)
+        inputField = tf
+
+        let sendBtn = NSButton(frame: NSRect(x: bounds.width - padX - 44, y: inputY, width: 44, height: inputH))
+        sendBtn.title = "Send"
+        sendBtn.font = smallFont
+        sendBtn.bezelStyle = .rounded
+        sendBtn.target = self
+        sendBtn.action = #selector(sendClicked(_:))
+        sendBtn.autoresizingMask = [.minXMargin, .minYMargin]
+        addSubview(sendBtn)
+    }
+
+    @objc func projectChanged(_ sender: NSPopUpButton) {
+        if let title = sender.titleOfSelectedItem {
+            activeProject = title
+        }
+    }
+
+    @objc func sendClicked(_ sender: Any) {
+        guard let text = inputField?.stringValue, !text.isEmpty else { return }
+        onSend?(activeProject, text)
+        inputField?.stringValue = ""
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        if sel == #selector(insertNewline(_:)) {
+            sendClicked(control)
+            return true
+        }
+        return false
+    }
+
+    func updateProjects(_ newProjects: [String]) {
+        guard let popup = projectPopup else { return }
+        let prev = popup.titleOfSelectedItem
+        popup.removeAllItems()
+        if newProjects.isEmpty {
+            popup.addItem(withTitle: "(no projects)")
+            return
+        }
+        popup.addItems(withTitles: newProjects)
+        if let prev, newProjects.contains(prev) {
+            popup.selectItem(withTitle: prev)
+            activeProject = prev
+        } else {
+            activeProject = newProjects.first ?? ""
+        }
+    }
+
+    func refreshMessages() {
+        guard let cv = contentView, let sv = scrollView else { return }
+        // Remove old message views
+        cv.subviews.forEach { $0.removeFromSuperview() }
+
+        let w = sv.contentSize.width
+        var y: CGFloat = 4
+
+        for msg in messages {
+            let df = DateFormatter()
+            df.dateFormat = "HH:mm"
+            let timeStr = df.string(from: Date(timeIntervalSince1970: Double(msg.timestamp)))
+
+            let senderColor: NSColor = msg.senderType == "claude" ? .systemGreen :
+                                       msg.senderType == "codex" ? .systemBlue : .systemGray
+            let sender = msg.senderType == "human" ? "You" : "\(msg.senderType)/\(msg.senderName)"
+            let dm = msg.recipient != nil ? " → \(msg.recipient!)" : ""
+
+            // Sender line
+            let senderStr = NSAttributedString(string: "\(sender)\(dm)", attributes: [
+                .font: font, .foregroundColor: senderColor])
+            let timeAttr = NSAttributedString(string: "  \(timeStr)", attributes: [
+                .font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor])
+
+            let headerLabel = NSTextField(labelWithAttributedString: {
+                let m = NSMutableAttributedString()
+                m.append(senderStr)
+                m.append(timeAttr)
+                return m
+            }())
+            headerLabel.frame = NSRect(x: padX + 4, y: y, width: w - padX * 2 - 8, height: 14)
+            cv.addSubview(headerLabel)
+            y += 15
+
+            // Body
+            let bodyLabel = NSTextField(wrappingLabelWithString: msg.body)
+            bodyLabel.font = bodyFont
+            bodyLabel.textColor = .labelColor
+            bodyLabel.preferredMaxLayoutWidth = w - padX * 2 - 12
+            bodyLabel.frame = NSRect(x: padX + 4, y: y, width: w - padX * 2 - 8, height: 0)
+            bodyLabel.sizeToFit()
+            cv.addSubview(bodyLabel)
+            y += bodyLabel.frame.height + 2
+
+            // Accent line
+            let accent = NSView(frame: NSRect(x: padX, y: headerLabel.frame.minY,
+                                              width: 2, height: bodyLabel.frame.maxY - headerLabel.frame.minY))
+            accent.wantsLayer = true
+            accent.layer?.backgroundColor = senderColor.cgColor
+            cv.addSubview(accent)
+
+            y += 8
+        }
+
+        cv.frame = NSRect(x: 0, y: 0, width: w, height: max(y, sv.contentSize.height))
+
+        // Auto-scroll to bottom
+        if y > sv.contentSize.height {
+            cv.scroll(NSPoint(x: 0, y: y - sv.contentSize.height))
+        }
+    }
+}
+
 // MARK: - Dashboard Window View
 
 class DashboardView: NSView {
@@ -2303,6 +2567,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var notifPanel: NSWindow!
     var notifView: NotificationPanelView!
     var dashNotifications: [DashNotification] = []
+    var chatPanel: NSWindow!
+    var chatView: ChatPanelView!
+    var showChat: Bool {
+        get { UserDefaults.standard.object(forKey: "showChat") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "showChat"); layoutViews() }
+    }
+    var lastChatFingerprint = ""
+    var lastChatMaxId = 0
     var prevStates: [String: State] = [:]
     var pollCount = 0
 
@@ -2520,6 +2792,41 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.layoutNotifPanel()
         }
 
+        // Chat panel — separate floating window
+        chatPanel = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 400),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        chatPanel.isOpaque = false
+        chatPanel.backgroundColor = .clear
+        chatPanel.hasShadow = true
+        chatPanel.level = panel.level
+        chatPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+        let chatVisual = NSVisualEffectView(frame: chatPanel.contentView!.bounds)
+        chatVisual.material = .hudWindow
+        chatVisual.blendingMode = .behindWindow
+        chatVisual.state = .active
+        chatVisual.autoresizingMask = [.width, .height]
+        chatVisual.wantsLayer = true
+        chatVisual.layer?.cornerRadius = 8
+        chatVisual.layer?.masksToBounds = true
+        chatPanel.contentView!.addSubview(chatVisual)
+
+        chatView = ChatPanelView(frame: chatPanel.contentView!.bounds)
+        chatView.autoresizingMask = [.width, .height]
+        chatPanel.contentView!.addSubview(chatView)
+        chatView.setupViews()
+        panel.addChildWindow(chatPanel, ordered: .below)
+        chatPanel.orderOut(nil)
+
+        chatView.onSend = { [weak self] project, message in
+            guard !project.isEmpty, !message.isEmpty else { return }
+            let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
+                          "send", "--project", project, "--name", "human",
+                          "--type", "human", "--message", message)
+            self?.pollChat()
+        }
+
         tabs = loadTabs()
         tabSidebar.tabs = tabs
         tabSidebar.activeTabId = activeTabId
@@ -2699,6 +3006,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             if notifPanel.isVisible { notifPanel.orderOut(nil) }
         }
+
+        // Chat panel
+        if showChat && !mainHidden {
+            layoutChatPanel()
+        } else {
+            if chatPanel.isVisible { chatPanel.orderOut(nil) }
+        }
     }
 
     func moveItemToTab(tabId: String, itemId: String) {
@@ -2762,6 +3076,58 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         showTabs = !showTabs
     }
 
+    @objc func toggleShowChat(_ sender: NSMenuItem) {
+        showChat = !showChat
+        if showChat {
+            pollChat()
+            layoutChatPanel()
+        } else {
+            chatPanel.orderOut(nil)
+        }
+    }
+
+    func pollChat() {
+        let projects = loadChatProjects()
+        chatView.updateProjects(projects)
+        if chatView.activeProject.isEmpty, let first = projects.first {
+            chatView.activeProject = first
+        }
+        guard !chatView.activeProject.isEmpty else { return }
+        let msgs = loadChatMessages(project: chatView.activeProject)
+        let fp = msgs.map { "\($0.id)" }.joined()
+        if fp != lastChatFingerprint {
+            lastChatFingerprint = fp
+            chatView.messages = msgs
+            chatView.refreshMessages()
+
+            // Track max ID for human-directed message alerts
+            if let maxId = msgs.last?.id, maxId > lastChatMaxId {
+                // Check for new human-directed messages
+                for msg in msgs where msg.id > lastChatMaxId {
+                    if msg.recipient == "human" && msg.senderType != "human" {
+                        NSApp.requestUserAttention(.informationalRequest)
+                        NSSound(named: "Ping")?.play()
+                    }
+                }
+                lastChatMaxId = maxId
+            }
+        }
+    }
+
+    func layoutChatPanel() {
+        guard showChat, panel.isVisible else {
+            if chatPanel.isVisible { chatPanel.orderOut(nil) }
+            return
+        }
+        let pf = panel.frame
+        let w: CGFloat = 300
+        let h: CGFloat = 400
+        let x = pf.minX - w - 8
+        let y = pf.maxY - h
+        chatPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+        if !chatPanel.isVisible { chatPanel.orderFront(nil) }
+    }
+
     func showToast(_ message: String, near button: NSView) {
         let label = NSTextField(labelWithString: message)
         label.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
@@ -2802,12 +3168,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sender.orderOut(nil)
         tabPanel.orderOut(nil)
         notifPanel.orderOut(nil)
+        chatPanel.orderOut(nil)
         return false
     }
 
     func windowDidMiniaturize(_ notification: Notification) {
         tabPanel.orderOut(nil)
         notifPanel.orderOut(nil)
+        chatPanel.orderOut(nil)
     }
 
     func windowDidDeminiaturize(_ notification: Notification) {
@@ -2823,6 +3191,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Force child windows to front — they may be behind other apps
             if showTabs { tabPanel.orderFront(nil) }
             if !dashNotifications.isEmpty { notifPanel.orderFront(nil) }
+            if showChat { chatPanel.orderFront(nil) }
             layoutViews()
         }
     }
@@ -2840,6 +3209,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             panel.orderOut(nil)
             tabPanel.orderOut(nil)
             notifPanel.orderOut(nil)
+            chatPanel.orderOut(nil)
         } else {
             panel.makeKeyAndOrderFront(nil)
             layoutViews()
@@ -2851,6 +3221,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.level = alwaysOnTop ? .floating : .normal
         tabPanel.level = panel.level
         notifPanel.level = panel.level
+        chatPanel.level = panel.level
     }
 
     @objc func toggleWakeOnAttention(_ sender: NSMenuItem) {
@@ -2949,7 +3320,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let codexSessions = loadCodexSessions()
             let ss = claudeSessions + codexSessions
             let terms = loadRegisteredTerminals()
-            DispatchQueue.main.async { self?.updateUI(ss, terminals: terms) }
+            DispatchQueue.main.async {
+                self?.updateUI(ss, terminals: terms)
+                if self?.showChat == true { self?.pollChat() }
+            }
         }
     }
 
@@ -3029,6 +3403,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         tabsToggle.target = self
         tabsToggle.state = showTabs ? .on : .off
         menu.addItem(tabsToggle)
+
+        let chatToggle = NSMenuItem(
+            title: "Show Chat",
+            action: #selector(toggleShowChat(_:)), keyEquivalent: "")
+        chatToggle.target = self
+        chatToggle.state = showChat ? .on : .off
+        menu.addItem(chatToggle)
 
         let openNotes = NSMenuItem(
             title: "Open Notes Folder",
