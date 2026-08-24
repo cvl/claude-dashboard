@@ -122,9 +122,9 @@ def cmd_send(args):
         if sf_event != "stop": continue  # only inject idle
         if sf_project != project: continue  # same project only
         if sf_name not in target_names: continue
-        inject_text = (f"You have a new chat message from {agent_type}/{name} "
-                      f"in project {project}. Run `cdash chat read` to see it "
-                      f"and `cdash chat send \"reply\"` to respond.\n")
+        snippet = message[:100] + ("..." if len(message) > 100 else "")
+        inject_text = (f"Chat from {agent_type}/{name}: \"{snippet}\" "
+                      f"— Run `cdash chat read` for context, `cdash chat send \"reply\"` to respond.\n")
         write_inject(sf_pid, inject_text)
 
     active = len([r for r in rows if r[1] and r[1] > 0])

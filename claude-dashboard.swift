@@ -1364,6 +1364,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     private var scrollView: NSScrollView?
     private var contentView: NSView?
     private var projectPopup: NSPopUpButton?
+    var sessionNames: [String] = []  // for @mention autocomplete
 
     override var isFlipped: Bool { true }
 
@@ -1378,28 +1379,13 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         popup.target = self
         popup.action = #selector(projectChanged(_:))
 
-        // Scroll view for messages — stops above input field
-        let scrollY = padY + headerH
-        let scrollH = bounds.height - scrollY - inputH - padY * 3
-        let sv = NSScrollView(frame: NSRect(x: 0, y: scrollY, width: bounds.width, height: scrollH))
-        sv.autoresizingMask = [.width, .height]
-        sv.hasVerticalScroller = true
-        sv.drawsBackground = false
-        sv.borderType = .noBorder
-        let cv = FlippedView(frame: NSRect(x: 0, y: 0, width: sv.contentSize.width, height: 0))
-        cv.autoresizingMask = [.width]
-        sv.documentView = cv
-        addSubview(sv)
-        scrollView = sv
-        contentView = cv
-
-        // Input field
+        // Input field (fixed at bottom)
         let inputY = bounds.height - inputH - padY
         let tf = NSTextField(frame: NSRect(x: padX, y: inputY, width: bounds.width - padX * 2 - 50, height: inputH))
         tf.font = bodyFont
-        tf.placeholderString = "Message..."
+        tf.placeholderString = "Message... (@name to DM, Tab to complete)"
         tf.bezelStyle = .roundedBezel
-        tf.autoresizingMask = [.width, .minYMargin]
+        tf.autoresizingMask = [.width]
         tf.delegate = self
         addSubview(tf)
         inputField = tf
@@ -1410,8 +1396,23 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         sendBtn.bezelStyle = .rounded
         sendBtn.target = self
         sendBtn.action = #selector(sendClicked(_:))
-        sendBtn.autoresizingMask = [.minXMargin, .minYMargin]
+        sendBtn.autoresizingMask = [.minXMargin]
         addSubview(sendBtn)
+
+        // Scroll view for messages — between header and input
+        let scrollY = padY + headerH
+        let scrollH = inputY - scrollY - padY
+        let sv = NSScrollView(frame: NSRect(x: 0, y: scrollY, width: bounds.width, height: scrollH))
+        sv.autoresizingMask = [.width]
+        sv.hasVerticalScroller = true
+        sv.drawsBackground = false
+        sv.borderType = .noBorder
+        let cv = FlippedView(frame: NSRect(x: 0, y: 0, width: sv.contentSize.width, height: 0))
+        cv.autoresizingMask = [.width]
+        sv.documentView = cv
+        addSubview(sv)
+        scrollView = sv
+        contentView = cv
     }
 
     @objc func projectChanged(_ sender: NSPopUpButton) {
@@ -1422,13 +1423,45 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
 
     @objc func sendClicked(_ sender: Any) {
         guard let text = inputField?.stringValue, !text.isEmpty else { return }
-        onSend?(activeProject, text)
+        // Parse @name at start — route as DM
+        var msg = text
+        var target: String? = nil
+        if msg.hasPrefix("@") {
+            let parts = msg.dropFirst().split(separator: " ", maxSplits: 1)
+            if let name = parts.first {
+                target = String(name)
+                msg = parts.count > 1 ? String(parts[1]) : ""
+            }
+        }
+        guard !msg.isEmpty else { return }
+        if let target {
+            onSendDM?(activeProject, msg, target)
+        } else {
+            onSend?(activeProject, msg)
+        }
         inputField?.stringValue = ""
     }
+
+    var onSendDM: ((String, String, String) -> Void)?  // (project, message, target)
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
         if sel == #selector(insertNewline(_:)) {
             sendClicked(control)
+            return true
+        }
+        // Tab — autocomplete @name
+        if sel == #selector(insertTab(_:)) {
+            guard let field = inputField, field.stringValue.contains("@") else { return false }
+            let text = field.stringValue
+            guard let atIdx = text.lastIndex(of: "@") else { return false }
+            let partial = String(text[text.index(after: atIdx)...]).lowercased()
+            if partial.isEmpty { return false }
+            if let match = sessionNames.first(where: { $0.lowercased().hasPrefix(partial) && $0 != "human" }) {
+                let prefix = String(text[...atIdx])
+                field.stringValue = prefix + match + " "
+                // Move cursor to end
+                field.currentEditor()?.moveToEndOfLine(nil)
+            }
             return true
         }
         return false
@@ -2865,6 +2898,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                           "--type", "human", "--message", message)
             self?.pollChat()
         }
+        chatView.onSendDM = { [weak self] project, message, target in
+            guard !project.isEmpty, !message.isEmpty else { return }
+            let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
+                          "send", "--project", project, "--name", "human",
+                          "--type", "human", "--message", message, "--to", target)
+            self?.pollChat()
+        }
 
         tabs = loadTabs()
         tabSidebar.tabs = tabs
@@ -3136,6 +3176,17 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             chatView.activeProject = first
         }
         guard !chatView.activeProject.isEmpty else { return }
+        // Feed session names for @mention autocomplete
+        let namesOut = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
+                             "list", "--project", chatView.activeProject)
+        chatView.sessionNames = namesOut.components(separatedBy: "\n")
+            .compactMap { line -> String? in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard let slash = trimmed.firstIndex(of: "/") else { return nil }
+                let afterSlash = trimmed[trimmed.index(after: slash)...]
+                guard let space = afterSlash.firstIndex(of: " ") else { return String(afterSlash) }
+                return String(afterSlash[..<space])
+            }
         let msgs = loadChatMessages(project: chatView.activeProject)
         let fp = msgs.map { "\($0.id)" }.joined()
         if fp != lastChatFingerprint {
