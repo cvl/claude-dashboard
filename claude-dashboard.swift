@@ -1327,8 +1327,13 @@ func loadChatMembers(project: String) -> [ChatMember] {
         let name = String(cString: sqlite3_column_text(stmt, 0))
         let atype = String(cString: sqlite3_column_text(stmt, 1))
         let pid = Int(sqlite3_column_int(stmt, 2))
-        let active = pid > 0 && kill(pid_t(pid), 0) == 0
-        result.append(ChatMember(name: name, agentType: atype, isActive: active))
+        let state: State
+        if pid > 0 && kill(pid_t(pid), 0) == 0 {
+            state = resolveState(pid_t(pid))
+        } else {
+            state = .dead
+        }
+        result.append(ChatMember(name: name, agentType: atype, state: state))
     }
     return result
 }
@@ -1372,7 +1377,7 @@ func updateHumanReadCursor(project: String, maxId: Int) {
 struct ChatMember {
     let name: String
     let agentType: String
-    let isActive: Bool
+    let state: State  // working/idle/needsInput/dead
 }
 
 class ChatPanelView: NSView, NSTextFieldDelegate {
@@ -1414,10 +1419,11 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         addSubview(label)
         channelLabel = label
 
-        let arrow = NSButton(frame: NSRect(x: bounds.width - padX - 20, y: padY, width: 20, height: 18))
-        arrow.title = "▾"
-        arrow.font = NSFont.systemFont(ofSize: 10)
+        let arrow = NSButton(frame: NSRect(x: bounds.width - padX - 28, y: padY - 2, width: 28, height: 22))
+        arrow.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Channels")
+        arrow.imageScaling = .scaleProportionallyDown
         arrow.isBordered = false
+        arrow.contentTintColor = .secondaryLabelColor
         arrow.target = self
         arrow.action = #selector(channelArrowClicked(_:))
         arrow.autoresizingMask = [.minXMargin]
@@ -1441,19 +1447,21 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
 
         // Input field
         let tfY = bounds.height - inputH - membersH - padY
-        let tf = NSTextField(frame: NSRect(x: padX, y: tfY, width: bounds.width - padX * 2 - 50, height: inputH))
-        tf.font = bodyFont
+        let tf = NSTextField(frame: NSRect(x: padX, y: tfY, width: bounds.width - padX * 2 - 32, height: inputH))
+        tf.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         tf.placeholderString = "@name to DM, Tab to complete"
         tf.bezelStyle = .roundedBezel
+        tf.usesSingleLineMode = true
         tf.autoresizingMask = [.width]
         tf.delegate = self
         addSubview(tf)
         inputField = tf
 
-        let sendBtn = NSButton(frame: NSRect(x: bounds.width - padX - 44, y: tfY, width: 44, height: inputH))
-        sendBtn.title = "Send"
-        sendBtn.font = smallFont
-        sendBtn.bezelStyle = .rounded
+        let sendBtn = NSButton(frame: NSRect(x: bounds.width - padX - 28, y: tfY, width: 28, height: inputH))
+        sendBtn.image = NSImage(systemSymbolName: "arrow.up.circle.fill", accessibilityDescription: "Send")
+        sendBtn.imageScaling = .scaleProportionallyUpOrDown
+        sendBtn.isBordered = false
+        sendBtn.contentTintColor = .systemBlue
         sendBtn.target = self
         sendBtn.action = #selector(sendClicked(_:))
         sendBtn.autoresizingMask = [.minXMargin]
@@ -1574,27 +1582,35 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         guard let mv = membersView else { return }
         mv.subviews.forEach { $0.removeFromSuperview() }
         var x: CGFloat = padX
+        let chipH: CGFloat = 24
         for (i, m) in members.enumerated() where m.name != "human" {
-            let color: NSColor = m.agentType == "claude" ? .systemGreen :
-                                 m.agentType == "codex" ? .systemBlue : .systemGray
-            let dot = m.isActive ? "●" : "○"
-            let text = "\(dot) \(m.name)"
-            let attr = NSAttributedString(string: text, attributes: [
-                .font: smallFont, .foregroundColor: color])
-            let chipW = attr.size().width + 12
-            let chipH: CGFloat = 20
+            let typeColor: NSColor = m.agentType == "claude" ? .systemGreen :
+                                     m.agentType == "codex" ? .systemBlue : .systemGray
+            let stateColor = m.state.color
+            let nameAttr = NSAttributedString(string: m.name, attributes: [
+                .font: font, .foregroundColor: NSColor.labelColor])
+            let chipW = nameAttr.size().width + 26  // dot + padding
 
-            // Chip background
-            let chip = NSView(frame: NSRect(x: x, y: 4, width: chipW, height: chipH))
+            let chip = NSView(frame: NSRect(x: x, y: 3, width: chipW, height: chipH))
             chip.wantsLayer = true
-            chip.layer?.backgroundColor = color.withAlphaComponent(0.12).cgColor
-            chip.layer?.cornerRadius = chipH / 2
-            chip.layer?.borderWidth = 0.5
-            chip.layer?.borderColor = color.withAlphaComponent(0.3).cgColor
+            chip.layer?.backgroundColor = NSColor(white: 0.5, alpha: 0.1).cgColor
+            chip.layer?.cornerRadius = 6
+            chip.layer?.borderWidth = 1
+            chip.layer?.borderColor = typeColor.withAlphaComponent(0.4).cgColor
 
-            // Clickable button overlaid
+            // State dot
+            let dotSize: CGFloat = 8
+            let dot = NSView(frame: NSRect(x: 6, y: (chipH - dotSize) / 2, width: dotSize, height: dotSize))
+            dot.wantsLayer = true
+            dot.layer?.backgroundColor = stateColor.cgColor
+            dot.layer?.cornerRadius = dotSize / 2
+            chip.addSubview(dot)
+
+            // Clickable button
             let btn = NSButton(frame: NSRect(x: 0, y: 0, width: chipW, height: chipH))
-            btn.attributedTitle = attr
+            let btnAttr = NSAttributedString(string: "    \(m.name)", attributes: [
+                .font: font, .foregroundColor: NSColor.labelColor])
+            btn.attributedTitle = btnAttr
             btn.isBordered = false
             btn.tag = i
             btn.target = self
@@ -2472,11 +2488,17 @@ class DashboardView: NSView {
                 .foregroundColor: NSColor.secondaryLabelColor])
             durAttr.draw(at: NSPoint(x: rightEdge - durAttr.size().width, y: rect.minY + 9))
 
-            // Row 2: path + source tag
-            let pathAttr = NSAttributedString(string: shortPath(s.cwd), attributes: [
+            // Row 2: path + source tag (clip path to available width)
+            let pathStr = shortPath(s.cwd)
+            let pathAttr = NSAttributedString(string: pathStr, attributes: [
                 .font: Self.fontReg10,
                 .foregroundColor: NSColor.secondaryLabelColor])
+            let maxPathW = rightEdge - tx - 50  // leave room for tag
+            let pathRect = NSRect(x: tx, y: rect.minY + 30, width: min(pathAttr.size().width, maxPathW), height: 14)
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: pathRect).addClip()
             pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 30))
+            NSGraphicsContext.restoreGraphicsState()
 
             let tagColor: NSColor = s.source == "codex" ? .systemPurple : .systemBlue
             let tagText = s.source == "codex" ? "codex" : "claude"
