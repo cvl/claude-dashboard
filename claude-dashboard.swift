@@ -1386,7 +1386,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         sv.hasVerticalScroller = true
         sv.drawsBackground = false
         sv.borderType = .noBorder
-        let cv = NSView(frame: NSRect(x: 0, y: 0, width: sv.contentSize.width, height: 0))
+        let cv = FlippedView(frame: NSRect(x: 0, y: 0, width: sv.contentSize.width, height: 0))
         cv.autoresizingMask = [.width]
         sv.documentView = cv
         addSubview(sv)
@@ -1513,6 +1513,8 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         }
     }
 }
+
+class FlippedView: NSView { override var isFlipped: Bool { true } }
 
 class KeyableBorderlessWindow: NSWindow {
     override var canBecomeKey: Bool { true }
