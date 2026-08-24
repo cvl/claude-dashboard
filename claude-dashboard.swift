@@ -1382,6 +1382,9 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     var members: [ChatMember] = [] { didSet { refreshMembers() } }
     var onSend: ((String, String) -> Void)?  // (project, message)
     var onRemoveFromChat: ((String) -> Void)?  // session name
+    var onSwitchChannel: ((String) -> Void)?
+    var onAddChannel: (() -> Void)?
+    var onRemoveChannel: ((String) -> Void)?
 
     private let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
     private let smallFont = NSFont.monospacedSystemFont(ofSize: 8, weight: .regular)
@@ -1389,58 +1392,41 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     private let padX: CGFloat = 8
     private let padY: CGFloat = 6
     private let inputH: CGFloat = 28
-    private let headerH: CGFloat = 24
-    private let membersH: CGFloat = 24
+    private let headerH: CGFloat = 22
+    private let membersH: CGFloat = 30
 
     private var inputField: NSTextField?
     private var scrollView: NSScrollView?
     private var contentView: NSView?
-    private var projectPopup: NSPopUpButton?
+    private var channelLabel: NSTextField?
     private var membersView: NSView?
-    var sessionNames: [String] = []  // for @mention autocomplete
+    var sessionNames: [String] = []
 
     override var isFlipped: Bool { true }
 
     func setupViews() {
-        // Project selector
-        let popup = NSPopUpButton(frame: NSRect(x: padX, y: padY, width: bounds.width - padX * 2, height: 20))
-        popup.font = smallFont
-        popup.isBordered = false
-        popup.autoresizingMask = [.width]
-        addSubview(popup)
-        projectPopup = popup
-        popup.target = self
-        popup.action = #selector(projectChanged(_:))
+        // Channel header — label + arrow button
+        let label = NSTextField(labelWithString: "# main")
+        label.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .bold)
+        label.textColor = .labelColor
+        label.frame = NSRect(x: padX, y: padY, width: bounds.width - padX - 30, height: 18)
+        label.autoresizingMask = [.width]
+        addSubview(label)
+        channelLabel = label
 
-        // Members strip
-        let mv = NSView(frame: NSRect(x: 0, y: padY + headerH, width: bounds.width, height: membersH))
-        mv.autoresizingMask = [.width]
-        addSubview(mv)
-        membersView = mv
+        let arrow = NSButton(frame: NSRect(x: bounds.width - padX - 20, y: padY, width: 20, height: 18))
+        arrow.title = "▾"
+        arrow.font = NSFont.systemFont(ofSize: 10)
+        arrow.isBordered = false
+        arrow.target = self
+        arrow.action = #selector(channelArrowClicked(_:))
+        arrow.autoresizingMask = [.minXMargin]
+        addSubview(arrow)
 
-        // Input field (fixed at bottom)
-        let inputY = bounds.height - inputH - padY
-        let tf = NSTextField(frame: NSRect(x: padX, y: inputY, width: bounds.width - padX * 2 - 50, height: inputH))
-        tf.font = bodyFont
-        tf.placeholderString = "Message... (@name to DM, Tab to complete)"
-        tf.bezelStyle = .roundedBezel
-        tf.autoresizingMask = [.width]
-        tf.delegate = self
-        addSubview(tf)
-        inputField = tf
-
-        let sendBtn = NSButton(frame: NSRect(x: bounds.width - padX - 44, y: inputY, width: 44, height: inputH))
-        sendBtn.title = "Send"
-        sendBtn.font = smallFont
-        sendBtn.bezelStyle = .rounded
-        sendBtn.target = self
-        sendBtn.action = #selector(sendClicked(_:))
-        sendBtn.autoresizingMask = [.minXMargin]
-        addSubview(sendBtn)
-
-        // Scroll view for messages — between members and input
-        let scrollY = padY + headerH + membersH
-        let scrollH = inputY - scrollY - padY
+        // Scroll view for messages — main area
+        let scrollY = headerH + padY
+        let inputY = bounds.height - inputH - membersH - padY * 2
+        let scrollH = inputY - scrollY
         let sv = NSScrollView(frame: NSRect(x: 0, y: scrollY, width: bounds.width, height: scrollH))
         sv.autoresizingMask = [.width]
         sv.hasVerticalScroller = true
@@ -1452,12 +1438,82 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         addSubview(sv)
         scrollView = sv
         contentView = cv
+
+        // Input field
+        let tfY = bounds.height - inputH - membersH - padY
+        let tf = NSTextField(frame: NSRect(x: padX, y: tfY, width: bounds.width - padX * 2 - 50, height: inputH))
+        tf.font = bodyFont
+        tf.placeholderString = "@name to DM, Tab to complete"
+        tf.bezelStyle = .roundedBezel
+        tf.autoresizingMask = [.width]
+        tf.delegate = self
+        addSubview(tf)
+        inputField = tf
+
+        let sendBtn = NSButton(frame: NSRect(x: bounds.width - padX - 44, y: tfY, width: 44, height: inputH))
+        sendBtn.title = "Send"
+        sendBtn.font = smallFont
+        sendBtn.bezelStyle = .rounded
+        sendBtn.target = self
+        sendBtn.action = #selector(sendClicked(_:))
+        sendBtn.autoresizingMask = [.minXMargin]
+        addSubview(sendBtn)
+
+        // Members strip below input
+        let mvY = bounds.height - membersH
+        let mv = FlippedView(frame: NSRect(x: 0, y: mvY, width: bounds.width, height: membersH))
+        mv.autoresizingMask = [.width]
+        addSubview(mv)
+        membersView = mv
     }
 
-    @objc func projectChanged(_ sender: NSPopUpButton) {
-        if let title = sender.titleOfSelectedItem {
-            activeProject = title
+    func updateChannelLabel() {
+        channelLabel?.stringValue = "# \(activeProject)"
+    }
+
+    @objc func channelArrowClicked(_ sender: NSButton) {
+        let menu = NSMenu()
+        for p in projects {
+            let item = NSMenuItem(title: "# \(p)", action: #selector(channelSelected(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = p
+            if p == activeProject { item.state = .on }
+            menu.addItem(item)
         }
+        menu.addItem(.separator())
+        let addItem = NSMenuItem(title: "Add Channel...", action: #selector(addChannelClicked(_:)), keyEquivalent: "")
+        addItem.target = self
+        menu.addItem(addItem)
+        menu.popUp(positioning: nil, at: NSPoint(x: sender.frame.minX, y: sender.frame.maxY), in: self)
+    }
+
+    @objc func channelSelected(_ sender: NSMenuItem) {
+        guard let p = sender.representedObject as? String else { return }
+        activeProject = p
+        updateChannelLabel()
+        onSwitchChannel?(p)
+    }
+
+    @objc func addChannelClicked(_ sender: NSMenuItem) {
+        onAddChannel?()
+    }
+
+    // Right-click on channel label → remove channel
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let loc = convert(event.locationInWindow, from: nil)
+        if let label = channelLabel, label.frame.contains(loc), !activeProject.isEmpty {
+            let menu = NSMenu()
+            let rm = NSMenuItem(title: "Remove Channel \"\(activeProject)\"",
+                                action: #selector(removeChannelClicked(_:)), keyEquivalent: "")
+            rm.target = self
+            menu.addItem(rm)
+            return menu
+        }
+        return nil
+    }
+
+    @objc func removeChannelClicked(_ sender: NSMenuItem) {
+        onRemoveChannel?(activeProject)
     }
 
     @objc func sendClicked(_ sender: Any) {
@@ -1507,20 +1563,11 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     }
 
     func updateProjects(_ newProjects: [String]) {
-        guard let popup = projectPopup else { return }
-        let prev = popup.titleOfSelectedItem
-        popup.removeAllItems()
-        if newProjects.isEmpty {
-            popup.addItem(withTitle: "(no projects)")
-            return
+        projects = newProjects
+        if activeProject.isEmpty, let first = newProjects.first {
+            activeProject = first
         }
-        popup.addItems(withTitles: newProjects)
-        if let prev, newProjects.contains(prev) {
-            popup.selectItem(withTitle: prev)
-            activeProject = prev
-        } else {
-            activeProject = newProjects.first ?? ""
-        }
+        updateChannelLabel()
     }
 
     func refreshMembers() {
@@ -1530,20 +1577,32 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         for (i, m) in members.enumerated() where m.name != "human" {
             let color: NSColor = m.agentType == "claude" ? .systemGreen :
                                  m.agentType == "codex" ? .systemBlue : .systemGray
-            let dot = m.isActive ? "● " : "○ "
-            let label = dot + m.name
-            let btn = NSButton(frame: NSRect(x: x, y: 2, width: 0, height: 18))
-            btn.title = label
-            btn.font = smallFont
+            let dot = m.isActive ? "●" : "○"
+            let text = "\(dot) \(m.name)"
+            let attr = NSAttributedString(string: text, attributes: [
+                .font: smallFont, .foregroundColor: color])
+            let chipW = attr.size().width + 12
+            let chipH: CGFloat = 20
+
+            // Chip background
+            let chip = NSView(frame: NSRect(x: x, y: 4, width: chipW, height: chipH))
+            chip.wantsLayer = true
+            chip.layer?.backgroundColor = color.withAlphaComponent(0.12).cgColor
+            chip.layer?.cornerRadius = chipH / 2
+            chip.layer?.borderWidth = 0.5
+            chip.layer?.borderColor = color.withAlphaComponent(0.3).cgColor
+
+            // Clickable button overlaid
+            let btn = NSButton(frame: NSRect(x: 0, y: 0, width: chipW, height: chipH))
+            btn.attributedTitle = attr
             btn.isBordered = false
-            btn.contentTintColor = color
-            btn.sizeToFit()
-            btn.frame.size.height = 18
             btn.tag = i
             btn.target = self
             btn.action = #selector(memberClicked(_:))
-            mv.addSubview(btn)
-            x += btn.frame.width + 6
+            chip.addSubview(btn)
+
+            mv.addSubview(chip)
+            x += chipW + 4
         }
     }
 
@@ -1561,14 +1620,16 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         guard let mv = membersView else { super.rightMouseDown(with: event); return }
         let loc = convert(event.locationInWindow, from: nil)
         let mvLoc = mv.convert(loc, from: self)
-        for (i, sub) in mv.subviews.enumerated() {
-            if sub.frame.contains(mvLoc) && i < members.count {
-                let m = members[i]
-                guard m.name != "human" else { return }
+        // Members are chips — match non-human members by chip index
+        let nonHuman = members.enumerated().filter { $0.element.name != "human" }
+        for (chipIdx, (memberIdx, m)) in nonHuman.enumerated() {
+            guard chipIdx < mv.subviews.count else { break }
+            if mv.subviews[chipIdx].frame.contains(mvLoc) {
                 let menu = NSMenu()
-                let item = NSMenuItem(title: "Remove from Chat", action: #selector(removeMemberFromChat(_:)), keyEquivalent: "")
+                let item = NSMenuItem(title: "Remove \(m.name) from Chat",
+                                      action: #selector(removeMemberFromChat(_:)), keyEquivalent: "")
                 item.target = self
-                item.tag = i
+                item.tag = memberIdx
                 menu.addItem(item)
                 NSMenu.popUpContextMenu(menu, with: event, for: self)
                 return
@@ -3061,6 +3122,30 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                           "DELETE FROM sessions WHERE project_id='\(chatView.activeProject)' AND display_name='\(name)'")
             self.pollChat()
         }
+        chatView.onSwitchChannel = { [weak self] project in
+            self?.lastChatFingerprint = ""
+            self?.pollChat()
+        }
+        chatView.onAddChannel = { [weak self] in
+            guard let self else { return }
+            if let name = self.promptTabName("New Channel", defaultValue: "") {
+                let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
+                              "send", "--project", name, "--name", "human", "--type", "human",
+                              "--message", "Channel created")
+                self.chatView.activeProject = name
+                self.chatView.updateChannelLabel()
+                self.lastChatFingerprint = ""
+                self.pollChat()
+            }
+        }
+        chatView.onRemoveChannel = { [weak self] project in
+            guard let self else { return }
+            let _ = shell("/usr/bin/sqlite3", chatDbPath,
+                          "DELETE FROM messages WHERE project_id='\(project)'; DELETE FROM sessions WHERE project_id='\(project)'; DELETE FROM projects WHERE id='\(project)'; DELETE FROM read_cursors WHERE project_id='\(project)'")
+            self.chatView.activeProject = ""
+            self.lastChatFingerprint = ""
+            self.pollChat()
+        }
 
         tabs = loadTabs()
         tabSidebar.tabs = tabs
@@ -3074,8 +3159,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.activeTabId = id
             self.tabSidebar.activeTabId = id
             try? id.write(toFile: activeTabFile, atomically: true, encoding: .utf8)
-            // Re-filter cached data instantly — poll continues in background
+            // Sync chat to tab's project
+            let tabName = self.tabs.first(where: { $0.id == id })?.name ?? "main"
+            if self.chatView.projects.contains(tabName) {
+                self.chatView.activeProject = tabName
+                self.chatView.updateChannelLabel()
+                self.lastChatFingerprint = ""  // force refresh
+            }
             self.refreshView()
+            if self.showChat { self.pollChat() }
         }
         tabSidebar.onTabAdd = { [weak self] in
             guard let self else { return }
