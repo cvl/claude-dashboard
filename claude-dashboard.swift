@@ -1378,9 +1378,9 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         popup.target = self
         popup.action = #selector(projectChanged(_:))
 
-        // Scroll view for messages
+        // Scroll view for messages — stops above input field
         let scrollY = padY + headerH
-        let scrollH = bounds.height - scrollY - inputH - padY * 2
+        let scrollH = bounds.height - scrollY - inputH - padY * 3
         let sv = NSScrollView(frame: NSRect(x: 0, y: scrollY, width: bounds.width, height: scrollH))
         sv.autoresizingMask = [.width, .height]
         sv.hasVerticalScroller = true
