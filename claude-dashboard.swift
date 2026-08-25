@@ -992,7 +992,7 @@ private extension NSBezierPath {
 // MARK: - Tab Sidebar View
 
 class TabSidebarView: NSView {
-    var tabs: [TabBucket] = [] { didSet { needsDisplay = true } }
+    var tabs: [TabBucket] = [] { didSet { needsDisplay = true; updateTrackingAreas() } }
     var activeTabId: String = "main" { didSet { needsDisplay = true } }
     var dropTargetTabId: String? { didSet { needsDisplay = true } }
     var workingTabIds: Set<String> = [] { didSet { needsDisplay = true } }
@@ -1039,17 +1039,20 @@ class TabSidebarView: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        // Cursor: per-rect with .activeInActiveApp (not .activeInActiveApp!)
+        let cursorOpts: NSTrackingArea.Options = [.mouseEnteredAndExited, .cursorUpdate, .activeInActiveApp]
         for a in cursorAreas { removeTrackingArea(a) }
         cursorAreas.removeAll()
         for i in 0..<tabs.count {
-            let a = NSTrackingArea(rect: tabRect(at: i).intersection(visibleRect),
-                options: [.cursorUpdate, .activeInActiveApp], owner: self)
+            let r = tabRect(at: i).intersection(visibleRect)
+            guard !r.isNull, !r.isEmpty else { continue }
+            let a = NSTrackingArea(rect: r, options: cursorOpts, owner: self)
             addTrackingArea(a); cursorAreas.append(a)
         }
-        let addA = NSTrackingArea(rect: addBtnRect().intersection(visibleRect),
-            options: [.cursorUpdate, .activeInActiveApp], owner: self)
-        addTrackingArea(addA); cursorAreas.append(addA)
+        let addR = addBtnRect().intersection(visibleRect)
+        if !addR.isNull, !addR.isEmpty {
+            let addA = NSTrackingArea(rect: addR, options: cursorOpts, owner: self)
+            addTrackingArea(addA); cursorAreas.append(addA)
+        }
         // Hover tracking
         if let h = hoverArea { removeTrackingArea(h) }
         hoverArea = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp], owner: self)
@@ -1063,6 +1066,11 @@ class TabSidebarView: NSView {
         NSCursor.pointingHand.set()
     }
 
+    override func mouseEntered(with event: NSEvent) {
+        guard let area = event.trackingArea, cursorAreas.contains(where: { $0 === area }) else { return }
+        NSCursor.pointingHand.set()
+    }
+
     override func mouseMoved(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
         var found: Int? = nil
@@ -1073,6 +1081,10 @@ class TabSidebarView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
+        if let area = event.trackingArea, cursorAreas.contains(where: { $0 === area }) {
+            NSCursor.arrow.set(); return
+        }
+        guard event.trackingArea === hoverArea else { return }
         if hoveredTabIdx != nil { hoveredTabIdx = nil; needsDisplay = true }
     }
 
@@ -1193,7 +1205,7 @@ struct DashNotification {
 }
 
 class NotificationPanelView: NSView {
-    var notifications: [DashNotification] = [] { didSet { needsDisplay = true } }
+    var notifications: [DashNotification] = [] { didSet { needsDisplay = true; updateTrackingAreas() } }
     var onClickNotification: ((DashNotification) -> Void)?
     var onDismissNotification: ((String) -> Void)?
     var onClearAll: (() -> Void)?
@@ -1235,12 +1247,18 @@ class NotificationPanelView: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
+        let cursorOpts: NSTrackingArea.Options = [.mouseEnteredAndExited, .cursorUpdate, .activeInActiveApp]
         for a in notifCursorAreas { removeTrackingArea(a) }
         notifCursorAreas.removeAll()
+        let clear = clearRect().intersection(visibleRect)
+        if !clear.isNull, !clear.isEmpty {
+            let a = NSTrackingArea(rect: clear, options: cursorOpts, owner: self)
+            addTrackingArea(a); notifCursorAreas.append(a)
+        }
         for i in 0..<notifications.count {
             let r = itemRect(at: i).intersection(visibleRect)
             guard !r.isNull, !r.isEmpty else { continue }
-            let a = NSTrackingArea(rect: r, options: [.cursorUpdate, .activeInActiveApp], owner: self)
+            let a = NSTrackingArea(rect: r, options: cursorOpts, owner: self)
             addTrackingArea(a); notifCursorAreas.append(a)
         }
         if let h = notifHoverArea { removeTrackingArea(h) }
@@ -1255,6 +1273,11 @@ class NotificationPanelView: NSView {
         NSCursor.pointingHand.set()
     }
 
+    override func mouseEntered(with event: NSEvent) {
+        guard let area = event.trackingArea, notifCursorAreas.contains(where: { $0 === area }) else { return }
+        NSCursor.pointingHand.set()
+    }
+
     override func mouseMoved(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
         var found: Int? = nil
@@ -1265,6 +1288,10 @@ class NotificationPanelView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
+        if let area = event.trackingArea, notifCursorAreas.contains(where: { $0 === area }) {
+            NSCursor.arrow.set(); return
+        }
+        guard event.trackingArea === notifHoverArea else { return }
         if hoveredNotifIdx != nil { hoveredNotifIdx = nil; needsDisplay = true }
     }
 
@@ -1522,7 +1549,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         addSubview(label)
         channelLabel = label
 
-        let arrow = NSButton(frame: NSRect(x: bounds.width - padX - 28, y: padY - 2, width: 28, height: 22))
+        let arrow = PointerButton(frame: NSRect(x: bounds.width - padX - 28, y: padY - 2, width: 28, height: 22))
         arrow.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Channels")
         arrow.imageScaling = .scaleProportionallyDown
         arrow.isBordered = false
