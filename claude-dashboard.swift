@@ -2477,7 +2477,7 @@ class DashboardView: NSView {
             let isHovered = hoveredCardType == "session" && hoveredCardIndex == i
             if isHovered {
                 NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
-                NSBezierPath(rect: rect).fill()
+                NSBezierPath(rect: NSRect(x: 0, y: rect.minY, width: bounds.width, height: cardH)).fill()
             }
 
             // State dot
@@ -2542,7 +2542,7 @@ class DashboardView: NSView {
                 let isHovered = hoveredCardType == "terminal" && hoveredCardIndex == i
                 if isHovered {
                     NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
-                    NSBezierPath(rect: rect).fill()
+                    NSBezierPath(rect: NSRect(x: 0, y: rect.minY, width: bounds.width, height: termCardH)).fill()
                 }
 
                 // State dot — same position as sessions
@@ -2606,10 +2606,10 @@ class DashboardView: NSView {
                     accentColor = alive ? .systemTeal : .systemRed
                     stateLabel = alive ? "ACTIVE" : "CLOSED"
                 }
-                // Hover — same as sessions
+                // Hover — full width, same as sessions
                 if isHovered {
                     NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
-                    NSBezierPath(rect: rect).fill()
+                    NSBezierPath(rect: NSRect(x: 0, y: rect.minY, width: bounds.width, height: pinnedCardH)).fill()
                 }
 
                 // State dot
