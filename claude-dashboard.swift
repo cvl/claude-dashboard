@@ -1635,11 +1635,17 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         addSubview(sb)
         sendButton = sb as? NSButton
 
-        // Members strip below input
+        // Members strip below input — horizontal scroll
         let mvY = bounds.height - membersH
-        let mv = FlippedView(frame: NSRect(x: 0, y: mvY, width: bounds.width, height: membersH))
-        mv.autoresizingMask = [.width]
-        addSubview(mv)
+        let mvScroll = NSScrollView(frame: NSRect(x: 0, y: mvY, width: bounds.width, height: membersH))
+        mvScroll.hasHorizontalScroller = false
+        mvScroll.hasVerticalScroller = false
+        mvScroll.drawsBackground = false
+        mvScroll.borderType = .noBorder
+        mvScroll.autoresizingMask = [.width]
+        let mv = FlippedView(frame: NSRect(x: 0, y: 0, width: bounds.width, height: membersH))
+        mvScroll.documentView = mv
+        addSubview(mvScroll)
         membersView = mv
     }
 
@@ -1796,6 +1802,8 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             mv.addSubview(chip)
             x += chipW + 6
         }
+        // Resize document view to fit all chips
+        mv.setFrameSize(NSSize(width: max(x, mv.superview?.frame.width ?? x), height: membersH))
     }
 
     @objc func memberClicked(_ sender: NSButton) {
