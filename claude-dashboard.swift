@@ -2742,10 +2742,10 @@ class DashboardView: NSView {
                 .font: Self.fontReg9,
                 .foregroundColor: NSColor(calibratedWhite: isDead ? 0.75 : 0.56, alpha: 1)])
             let maxPathW = rightEdge - tx
-            let pathClip = NSRect(x: pathX, y: rect.minY + 26, width: maxPathW, height: 14)
+            let pathClip = NSRect(x: tx, y: rect.minY + 26, width: maxPathW, height: 14)
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: pathClip).addClip()
-            pathAttr.draw(at: NSPoint(x: pathX, y: rect.minY + 26))
+            pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 26))
             NSGraphicsContext.restoreGraphicsState()
 
             // Full-width separator
