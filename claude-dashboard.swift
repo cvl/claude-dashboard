@@ -1888,18 +1888,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             let sender = msg.senderType == "human" ? "You" : "\(msg.senderName)"
             let dm = msg.recipient != nil ? " → \(msg.recipient!)" : ""
 
-            // Tag + Sender + time
-            if msg.senderType != "human" {
-                let tagText = msg.senderType == "codex" ? "CX" : "CL"
-                let tagColor: NSColor = msg.senderType == "codex"
-                    ? NSColor(calibratedRed: 0.6, green: 0.4, blue: 0.15, alpha: 1)
-                    : NSColor(calibratedRed: 0.2, green: 0.45, blue: 0.8, alpha: 1)
-                full.append(NSAttributedString(string: "\(tagText) ", attributes: [
-                    .font: NSFont.systemFont(ofSize: 9, weight: .semibold),
-                    .foregroundColor: tagColor,
-                    .backgroundColor: tagColor.withAlphaComponent(0.12)]))
-                full.append(NSAttributedString(string: " "))
-            }
+            // Sender + time
             full.append(NSAttributedString(string: "\(sender)\(dm)", attributes: [
                 .font: font, .foregroundColor: senderColor]))
             full.append(NSAttributedString(string: "  \(timeStr)\n", attributes: [
