@@ -1514,16 +1514,18 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         box.fillColor = .white
         box.cornerRadius = 8
         box.contentViewMargins = .zero
+        box.titlePosition = .noTitle
         addSubview(box)
 
-        let sc = NSScrollView(frame: box.contentView!.bounds)
+        let inset: CGFloat = 2
+        let sc = NSScrollView(frame: NSRect(x: inset, y: inset, width: inputW - inset * 2, height: inputH - inset * 2))
         sc.hasVerticalScroller = true
         sc.autohidesScrollers = true
         sc.hasHorizontalScroller = false
         sc.borderType = .noBorder
         sc.drawsBackground = false
         sc.autoresizingMask = [.width, .height]
-        box.contentView!.addSubview(sc)
+        box.addSubview(sc)
 
         let tv = ChatInputTextView(frame: NSRect(x: 0, y: 0, width: sc.contentSize.width, height: inputH))
         tv.font = NSFont.systemFont(ofSize: 13, weight: .regular)
