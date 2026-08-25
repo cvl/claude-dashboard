@@ -2085,6 +2085,7 @@ class DashboardView: NSView {
             hoveredCardType = newType; hoveredCardIndex = newIdx
             needsDisplay = true
         }
+        if !newType.isEmpty { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -2487,11 +2488,10 @@ class DashboardView: NSView {
     private var trackingAreas2: [NSTrackingArea] = []
 
     override func resetCursorRects() {
+        // Cursor rects handled in mouseMoved with activeAlways tracking
         for ta in trackingAreas2 { removeTrackingArea(ta) }
         trackingAreas2.removeAll()
-
         for i in 0..<sessions.count {
-            addCursorRect(cardRect(at: i), cursor: .pointingHand)
             if truncatedNames[i] != nil {
                 let ta = NSTrackingArea(rect: cardRect(at: i),
                     options: [.mouseEnteredAndExited, .activeAlways],
@@ -2500,13 +2500,8 @@ class DashboardView: NSView {
                 trackingAreas2.append(ta)
             }
         }
-        for i in 0..<terminals.count {
-            addCursorRect(termCardRect(at: i), cursor: .pointingHand)
-        }
-        for i in 0..<pinnedItems.count {
-            addCursorRect(pinnedCardRect(at: i), cursor: .pointingHand)
-        }
     }
+
 
     override func mouseEntered(with event: NSEvent) {
         guard let idx = event.trackingArea?.userInfo?["idx"] as? Int,
@@ -3352,6 +3347,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         layoutViews()
         panel.center()
+        panel.disableCursorRects()  // cursors handled via mouseMoved
         panel.makeKeyAndOrderFront(nil)
 
         // Main menu — needed for Cmd+A, Cmd+C, etc. in text views
