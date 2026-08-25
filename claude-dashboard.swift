@@ -1556,18 +1556,14 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         inputScroll = sc
 
         let sb = PointerButton(frame: NSRect(x: sendX, y: inputAreaY, width: sendW, height: inputH))
-        sb.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .medium))
-        sb.imagePosition = .imageOnly
-        sb.isBordered = true
-        sb.showsBorderOnlyWhileMouseInside = true
-        sb.bezelStyle = .accessoryBarAction
+        let sendConfig = NSImage.SymbolConfiguration(pointSize: 18, weight: .medium)
+        sb.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")?.withSymbolConfiguration(sendConfig)
+        sb.imageScaling = .scaleNone
+        sb.isBordered = false
         sb.contentTintColor = .controlAccentColor
         sb.target = self
         sb.action = #selector(sendClicked(_:))
         sb.autoresizingMask = [.minXMargin]
-        sb.wantsLayer = true
-        sb.layer?.cornerRadius = 6
         addSubview(sb)
         sendButton = sb
 
@@ -1861,72 +1857,10 @@ class AttachedChildWindow: NSWindow {
 class ChatMessageTextView: NSTextView {
     override var acceptsFirstResponder: Bool { false }
     override func becomeFirstResponder() -> Bool { false }
-    override func resetCursorRects() {
-        // Don't set I-beam cursor — prevents fighting with sibling button cursors
-    }
+    // Still allows text selection via mouse drag
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         super.mouseDown(with: event)
-    }
-}
-
-/// Button with pointer cursor + rounded hover background, works on non-key windows
-class HoverIconButton: NSView {
-    var image: NSImage? { didSet { needsDisplay = true } }
-    var contentTintColor: NSColor? { didSet { needsDisplay = true } }
-    var target: AnyObject?
-    var action: Selector?
-    var imageScaling: NSImageScaling = .scaleNone
-    private var isHovered = false
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        trackingAreas.forEach { removeTrackingArea($0) }
-        addTrackingArea(NSTrackingArea(rect: bounds,
-            options: [.mouseEnteredAndExited, .cursorUpdate, .activeAlways], owner: self))
-    }
-
-    override func cursorUpdate(with event: NSEvent) {
-        NSCursor.pointingHand.set()
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        isHovered = true
-        needsDisplay = true
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        isHovered = false
-        needsDisplay = true
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        if let target = target, let action = action {
-            NSApp.sendAction(action, to: target, from: self)
-        }
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        if isHovered {
-            let bg = NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 6, yRadius: 6)
-            NSColor(calibratedWhite: 0.0, alpha: 0.06).setFill()
-            bg.fill()
-        }
-        guard let img = image else { return }
-        let tinted: NSImage
-        if let tint = contentTintColor {
-            tinted = img.copy() as! NSImage
-            tinted.lockFocus()
-            tint.set()
-            NSRect(origin: .zero, size: tinted.size).fill(using: .sourceAtop)
-            tinted.unlockFocus()
-        } else {
-            tinted = img
-        }
-        let imgSize = tinted.size
-        let x = (bounds.width - imgSize.width) / 2
-        let y = (bounds.height - imgSize.height) / 2
-        tinted.draw(in: NSRect(x: x, y: y, width: imgSize.width, height: imgSize.height))
     }
 }
 
