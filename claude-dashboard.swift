@@ -1224,6 +1224,7 @@ class NotificationPanelView: NSView {
     }
 
     private var hoveredNotifIdx: Int? = nil
+    private var hoveredClearAll = false
     private var notifHoverArea: NSTrackingArea?
     private var clickTargets: [PointerButton] = []
 
@@ -1300,12 +1301,15 @@ class NotificationPanelView: NSView {
         for (i, _) in notifications.enumerated() {
             if itemRect(at: i).contains(loc) { found = i; break }
         }
-        if found != hoveredNotifIdx { hoveredNotifIdx = found; needsDisplay = true }
+        let overClear = clearRect().contains(loc)
+        if found != hoveredNotifIdx || overClear != hoveredClearAll {
+            hoveredNotifIdx = found; hoveredClearAll = overClear; needsDisplay = true
+        }
     }
 
     override func mouseExited(with event: NSEvent) {
         guard event.trackingArea === notifHoverArea else { return }
-        if hoveredNotifIdx != nil { hoveredNotifIdx = nil; needsDisplay = true }
+        if hoveredNotifIdx != nil || hoveredClearAll { hoveredNotifIdx = nil; hoveredClearAll = false; needsDisplay = true }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -1313,8 +1317,13 @@ class NotificationPanelView: NSView {
 
         // Clear all button
         let cr = clearRect()
+        if hoveredClearAll {
+            let hoverBg = NSBezierPath(roundedRect: cr, xRadius: 4, yRadius: 4)
+            NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
+            hoverBg.fill()
+        }
         let clearAttr = NSAttributedString(string: "Clear all", attributes: [
-            .font: smallFont, .foregroundColor: NSColor.secondaryLabelColor])
+            .font: smallFont, .foregroundColor: hoveredClearAll ? NSColor(calibratedWhite: 0.3, alpha: 1) : NSColor.secondaryLabelColor])
         let cx = cr.maxX - clearAttr.size().width
         clearAttr.draw(at: NSPoint(x: cx, y: cr.minY + 4))
 
