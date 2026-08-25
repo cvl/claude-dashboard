@@ -1505,8 +1505,8 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         let inputW = sendX - padX - 6
         inputMinH = inputH
 
-        // Border wrapper
-        let inputBorder = NSView(frame: NSRect(x: padX, y: inputAreaY, width: inputW, height: inputH))
+        // Border wrapper (click-through to scroll view inside)
+        let inputBorder = FlippedView(frame: NSRect(x: padX, y: inputAreaY, width: inputW, height: inputH))
         inputBorder.wantsLayer = true
         inputBorder.layer?.cornerRadius = 8
         inputBorder.layer?.borderWidth = 1
@@ -1524,8 +1524,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         sc.autoresizingMask = [.width, .height]
         inputBorder.addSubview(sc)
 
-        let tv = ChatInputTextView()
+        let tv = ChatInputTextView(frame: NSRect(x: 0, y: 0, width: sc.contentSize.width, height: inputH))
         tv.font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        tv.minSize = NSSize(width: 0, height: inputH)
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         tv.drawsBackground = false
         tv.isRichText = false
         tv.isVerticallyResizable = true
