@@ -1555,15 +1555,21 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         inputTV = tv
         inputScroll = sc
 
-        let sb = HoverIconButton(frame: NSRect(x: sendX, y: inputAreaY, width: sendW, height: inputH))
+        let sb = PointerButton(frame: NSRect(x: sendX, y: inputAreaY, width: sendW, height: inputH))
         sb.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .medium))
+        sb.imagePosition = .imageOnly
+        sb.isBordered = true
+        sb.showsBorderOnlyWhileMouseInside = true
+        sb.bezelStyle = .accessoryBarAction
         sb.contentTintColor = .controlAccentColor
         sb.target = self
         sb.action = #selector(sendClicked(_:))
         sb.autoresizingMask = [.minXMargin]
+        sb.wantsLayer = true
+        sb.layer?.cornerRadius = 6
         addSubview(sb)
-        sendButton = sb as? NSButton
+        sendButton = sb
 
         // Members strip below input
         let mvY = bounds.height - membersH
