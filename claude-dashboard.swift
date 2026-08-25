@@ -1758,20 +1758,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         let chipH: CGFloat = 24
         for (i, m) in members.enumerated() where m.name != "human" {
             let stateColor = m.state.color
-
-            // Tag text
-            let tagText = m.agentType == "codex" ? "CX" : "CL"
-            let tagColor: NSColor = m.agentType == "codex"
-                ? NSColor(calibratedRed: 0.6, green: 0.4, blue: 0.15, alpha: 1)
-                : NSColor(calibratedRed: 0.2, green: 0.45, blue: 0.8, alpha: 1)
-
             let nameAttr = NSAttributedString(string: m.name, attributes: [
                 .font: NSFont.systemFont(ofSize: 11, weight: .medium),
                 .foregroundColor: NSColor(calibratedWhite: 0.25, alpha: 1)])
-            let tagAttr = NSAttributedString(string: tagText, attributes: [
-                .font: NSFont.systemFont(ofSize: 7, weight: .semibold), .foregroundColor: tagColor])
-            let tagW = tagAttr.size().width + 4
-            let chipW = nameAttr.size().width + tagW + 28
+            let chipW = nameAttr.size().width + 24
 
             let chip = NSView(frame: NSRect(x: x, y: 3, width: chipW, height: chipH))
             chip.wantsLayer = true
@@ -1788,17 +1778,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             dot.layer?.cornerRadius = dotSize / 2
             chip.addSubview(dot)
 
-            // Tag pill
-            let tagPill = NSView(frame: NSRect(x: 14, y: (chipH - 12) / 2, width: tagW, height: 12))
-            tagPill.wantsLayer = true
-            tagPill.layer?.backgroundColor = tagColor.withAlphaComponent(0.12).cgColor
-            tagPill.layer?.cornerRadius = 3
-            chip.addSubview(tagPill)
-            let tagLabel = NSTextField(labelWithAttributedString: tagAttr)
-            tagLabel.frame = NSRect(x: 2, y: 0, width: tagW - 4, height: 12)
-            tagPill.addSubview(tagLabel)
-
-            // Clickable button — transparent, covers whole chip
+            // Clickable button
             let btn = PointerButton(frame: NSRect(x: 0, y: 0, width: chipW, height: chipH))
             btn.title = ""
             btn.isBordered = false
@@ -1808,9 +1788,9 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             btn.hoverBackground = NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1)
             chip.addSubview(btn)
 
-            // Name label (not on button — positioned after tag)
+            // Name label
             let nameLabel = NSTextField(labelWithAttributedString: nameAttr)
-            nameLabel.frame = NSRect(x: 14 + tagW + 3, y: (chipH - nameAttr.size().height) / 2, width: nameAttr.size().width, height: nameAttr.size().height)
+            nameLabel.frame = NSRect(x: 14, y: (chipH - nameAttr.size().height) / 2, width: nameAttr.size().width, height: nameAttr.size().height)
             chip.addSubview(nameLabel)
 
             mv.addSubview(chip)
@@ -1888,7 +1868,18 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             let sender = msg.senderType == "human" ? "You" : "\(msg.senderName)"
             let dm = msg.recipient != nil ? " → \(msg.recipient!)" : ""
 
-            // Sender + time
+            // Tag + Sender + time
+            if msg.senderType != "human" {
+                let tagText = msg.senderType == "codex" ? "CX" : "CL"
+                let tagColor: NSColor = msg.senderType == "codex"
+                    ? NSColor(calibratedRed: 0.6, green: 0.4, blue: 0.15, alpha: 1)
+                    : NSColor(calibratedRed: 0.2, green: 0.45, blue: 0.8, alpha: 1)
+                full.append(NSAttributedString(string: tagText, attributes: [
+                    .font: NSFont.systemFont(ofSize: 9, weight: .semibold),
+                    .foregroundColor: tagColor,
+                    .backgroundColor: tagColor.withAlphaComponent(0.12)]))
+                full.append(NSAttributedString(string: " "))
+            }
             full.append(NSAttributedString(string: "\(sender)\(dm)", attributes: [
                 .font: font, .foregroundColor: senderColor]))
             full.append(NSAttributedString(string: "  \(timeStr)\n", attributes: [
