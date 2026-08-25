@@ -1608,11 +1608,13 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         inputTV = tv
         inputScroll = sc
 
-        let sb = PointerButton(frame: NSRect(x: sendX, y: inputAreaY, width: sendW, height: inputH))
+        let sb = TintHoverButton(frame: NSRect(x: sendX, y: inputAreaY, width: sendW, height: inputH))
         sb.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .medium))
         sb.imagePosition = .imageOnly
         sb.isBordered = false
+        sb.normalTint = .controlAccentColor
+        sb.hoverTint = NSColor(calibratedRed: 0.0, green: 0.3, blue: 0.8, alpha: 1)
         sb.contentTintColor = .controlAccentColor
         sb.target = self
         sb.action = #selector(sendClicked(_:))
@@ -1918,6 +1920,26 @@ class ChatMessageTextView: NSTextView {
 }
 
 /// Button with pointer cursor + rounded hover background, works on non-key windows
+class TintHoverButton: NSButton {
+    var normalTint: NSColor = .controlAccentColor
+    var hoverTint: NSColor = .systemBlue
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        contentTintColor = hoverTint
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        contentTintColor = normalTint
+    }
+}
+
 class PointerButton: NSButton {
     var hoverBackground: NSColor?
     var normalBackground = NSColor(calibratedWhite: 0.96, alpha: 1)
