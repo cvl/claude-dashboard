@@ -968,11 +968,8 @@ func dockIcon(_ color: NSColor) -> NSImage {
     let img = NSImage(size: NSSize(width: s, height: s), flipped: false) { _ in
         let bg = NSBezierPath(roundedRect: NSRect(x: 4, y: 4, width: s - 8, height: s - 8),
                               xRadius: r, yRadius: r)
-        NSColor(white: 0.95, alpha: 1).setFill()
+        NSColor.windowBackgroundColor.setFill()
         bg.fill()
-        NSColor(white: 0.85, alpha: 1).setStroke()
-        bg.lineWidth = 1
-        bg.stroke()
         NSColor(white: 0.3, alpha: 1).setStroke()
         bg.lineWidth = 1.5
         bg.stroke()
@@ -1102,14 +1099,11 @@ class TabSidebarView: NSView {
             // Background — only for active/drop target
             let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
             if isDropTarget {
-                NSColor.systemBlue.withAlphaComponent(0.1).setFill()
+                NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
                 bg.fill()
             } else if isActive {
-                NSColor.white.setFill()
+                NSColor.controlAccentColor.withAlphaComponent(0.08).setFill()
                 bg.fill()
-                NSColor(white: 0.0, alpha: 0.08).setStroke()
-                bg.lineWidth = 0.5
-                bg.stroke()
             }
 
             let hasWorking = workingTabIds.contains(tab.id)
@@ -1225,11 +1219,8 @@ class NotificationPanelView: NSView {
 
             // Background
             let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-            NSColor.white.setFill()
+            NSColor.controlBackgroundColor.setFill()
             bg.fill()
-            NSColor(white: 0.0, alpha: 0.08).setStroke()
-            bg.lineWidth = 0.5
-            bg.stroke()
 
             // Accent — orange for input needed, blue for finished
             let accentColor = notif.isInputNeeded ? NSColor.systemOrange : NSColor.systemBlue
@@ -1610,10 +1601,8 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
 
             let chip = NSView(frame: NSRect(x: x, y: 3, width: chipW, height: chipH))
             chip.wantsLayer = true
-            chip.layer?.backgroundColor = NSColor(white: 0.5, alpha: 0.1).cgColor
-            chip.layer?.cornerRadius = 6
-            chip.layer?.borderWidth = 1
-            chip.layer?.borderColor = typeColor.withAlphaComponent(0.4).cgColor
+            chip.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+            chip.layer?.cornerRadius = chipH / 2
 
             // State dot
             let dotSize: CGFloat = 8
@@ -2388,7 +2377,7 @@ class DashboardView: NSView {
         let tip = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                            styleMask: [.borderless], backing: .buffered, defer: false)
         tip.isOpaque = false
-        tip.backgroundColor = NSColor(white: 0.95, alpha: 0.95)
+        tip.backgroundColor = NSColor.windowBackgroundColor
         tip.hasShadow = true
         tip.level = .floating
         tip.contentView!.wantsLayer = true
@@ -2464,14 +2453,13 @@ class DashboardView: NSView {
         for (i, s) in ss.enumerated() {
             let rect = cardRect(at: i)
 
-            // Card background — white card with subtle border
+            // Card background — native hover style
             let isHovered = hoveredCardType == "session" && hoveredCardIndex == i
-            let bg = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
-            NSColor.white.setFill()
-            bg.fill()
-            NSColor(white: 0.0, alpha: isHovered ? 0.12 : 0.06).setStroke()
-            bg.lineWidth = 0.5
-            bg.stroke()
+            let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+            if isHovered {
+                NSColor.controlAccentColor.withAlphaComponent(0.08).setFill()
+                bg.fill()
+            }
 
             // Left accent bar
             NSGraphicsContext.saveGraphicsState()
@@ -2554,12 +2542,11 @@ class DashboardView: NSView {
             for (i, t) in terminals.enumerated() {
                 let rect = termCardRect(at: i)
                 let isHovered = hoveredCardType == "terminal" && hoveredCardIndex == i
-                let bg = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
-                NSColor.white.setFill()
-                bg.fill()
-                NSColor(white: 0.0, alpha: isHovered ? 0.12 : 0.06).setStroke()
-                bg.lineWidth = 0.5
-                bg.stroke()
+                let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+                if isHovered {
+                    NSColor.controlAccentColor.withAlphaComponent(0.08).setFill()
+                    bg.fill()
+                }
 
                 // Left accent
                 let accentColor: NSColor = t.isAlive ? .systemTeal : .systemRed
@@ -2616,12 +2603,11 @@ class DashboardView: NSView {
             for (i, item) in pinnedItems.enumerated() {
                 let rect = pinnedCardRect(at: i)
                 let isHovered = hoveredCardType == "pinned" && hoveredCardIndex == i
-                let bg = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
-                NSColor.white.setFill()
-                bg.fill()
-                NSColor(white: 0.0, alpha: isHovered ? 0.12 : 0.06).setStroke()
-                bg.lineWidth = 0.5
-                bg.stroke()
+                let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+                if isHovered {
+                    NSColor.controlAccentColor.withAlphaComponent(0.08).setFill()
+                    bg.fill()
+                }
 
                 // Left accent — use allSessions for state lookup (not tab-filtered)
                 let accentColor: NSColor
@@ -2906,8 +2892,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.level = alwaysOnTop ? .floating : .normal
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.appearance = NSAppearance(named: .aqua)  // force light mode
-        panel.backgroundColor = .white
+        panel.appearance = NSAppearance(named: .aqua)
 
         let visual = NSVisualEffectView(frame: panel.contentView!.bounds)
         visual.material = .sidebar
