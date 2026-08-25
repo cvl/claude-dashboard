@@ -1757,10 +1757,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         let chipH: CGFloat = 24
         for (i, m) in members.enumerated() where m.name != "human" {
             let stateColor = m.state.color
-            let nameAttr = NSAttributedString(string: m.name, attributes: [
-                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-                .foregroundColor: NSColor(calibratedWhite: 0.25, alpha: 1)])
-            let chipW = ceil(nameAttr.size().width) + 24
+            let testLabel = NSTextField(labelWithString: m.name)
+            testLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+            testLabel.sizeToFit()
+            let chipW = testLabel.frame.width + 22
 
             let chip = NSView(frame: NSRect(x: x, y: 3, width: chipW, height: chipH))
             chip.wantsLayer = true
@@ -1788,8 +1788,16 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             chip.addSubview(btn)
 
             // Name label
-            let nameLabel = NSTextField(labelWithAttributedString: nameAttr)
-            nameLabel.frame = NSRect(x: 14, y: (chipH - nameAttr.size().height) / 2, width: ceil(nameAttr.size().width) + 2, height: ceil(nameAttr.size().height))
+            let nameLabel = NSTextField(labelWithString: m.name)
+            nameLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+            nameLabel.textColor = NSColor(calibratedWhite: 0.25, alpha: 1)
+            nameLabel.isBezeled = false
+            nameLabel.drawsBackground = false
+            nameLabel.isEditable = false
+            nameLabel.isSelectable = false
+            nameLabel.lineBreakMode = .byClipping
+            nameLabel.sizeToFit()
+            nameLabel.frame.origin = NSPoint(x: 14, y: (chipH - nameLabel.frame.height) / 2)
             chip.addSubview(nameLabel)
 
             mv.addSubview(chip)
