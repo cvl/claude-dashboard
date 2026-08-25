@@ -2705,16 +2705,21 @@ class DashboardView: NSView {
             // Source tag before name
             let tagText = s.source == "codex" ? "CX" : "CL"
             let tagColor: NSColor = s.source == "codex"
-                ? NSColor(calibratedRed: 0.65, green: 0.45, blue: 0.2, alpha: isDead ? 0.4 : 0.7)
-                : NSColor(calibratedRed: 0.25, green: 0.5, blue: 0.85, alpha: isDead ? 0.4 : 0.7)
+                ? NSColor(calibratedRed: 0.6, green: 0.4, blue: 0.15, alpha: isDead ? 0.5 : 1.0)
+                : NSColor(calibratedRed: 0.2, green: 0.45, blue: 0.8, alpha: isDead ? 0.5 : 1.0)
+            let tagFont = NSFont.systemFont(ofSize: 9, weight: .semibold)
             let tagAttr = NSAttributedString(string: tagText, attributes: [
-                .font: NSFont.systemFont(ofSize: 8, weight: .semibold), .foregroundColor: tagColor])
-            let tagW = tagAttr.size().width + 6
-            let tagH: CGFloat = 14
-            let tagBg = NSBezierPath(roundedRect: NSRect(x: tx, y: rect.minY + 9, width: tagW, height: tagH), xRadius: 3, yRadius: 3)
-            tagColor.withAlphaComponent(isDead ? 0.06 : 0.12).setFill()
+                .font: tagFont, .foregroundColor: tagColor])
+            let tagTextSize = tagAttr.size()
+            let tagPadX: CGFloat = 4
+            let tagPadY: CGFloat = 2
+            let tagW = tagTextSize.width + tagPadX * 2
+            let tagH = tagTextSize.height + tagPadY * 2
+            let tagY = rect.minY + 8
+            let tagBg = NSBezierPath(roundedRect: NSRect(x: tx, y: tagY, width: tagW, height: tagH), xRadius: 3, yRadius: 3)
+            tagColor.withAlphaComponent(isDead ? 0.08 : 0.15).setFill()
             tagBg.fill()
-            tagAttr.draw(at: NSPoint(x: tx + 3, y: rect.minY + 9))
+            tagAttr.draw(at: NSPoint(x: tx + tagPadX, y: tagY + tagPadY))
             tx += tagW + 5
 
             // Row 1: name + time
@@ -2853,16 +2858,21 @@ class DashboardView: NSView {
                 if pSrc != "terminal" {
                     let pTagText = pSrc == "codex" ? "CX" : "CL"
                     let pTagColor: NSColor = pSrc == "codex"
-                        ? NSColor(calibratedRed: 0.65, green: 0.45, blue: 0.2, alpha: pIsDead ? 0.4 : 0.7)
-                        : NSColor(calibratedRed: 0.25, green: 0.5, blue: 0.85, alpha: pIsDead ? 0.4 : 0.7)
+                        ? NSColor(calibratedRed: 0.6, green: 0.4, blue: 0.15, alpha: pIsDead ? 0.5 : 1.0)
+                        : NSColor(calibratedRed: 0.2, green: 0.45, blue: 0.8, alpha: pIsDead ? 0.5 : 1.0)
+                    let pTagFont = NSFont.systemFont(ofSize: 9, weight: .semibold)
                     let pTagAttr = NSAttributedString(string: pTagText, attributes: [
-                        .font: NSFont.systemFont(ofSize: 8, weight: .semibold), .foregroundColor: pTagColor])
-                    let pTagW = pTagAttr.size().width + 6
-                    let pTagH: CGFloat = 14
-                    let pTagBg = NSBezierPath(roundedRect: NSRect(x: tx, y: rect.minY + 9, width: pTagW, height: pTagH), xRadius: 3, yRadius: 3)
-                    pTagColor.withAlphaComponent(pIsDead ? 0.06 : 0.12).setFill()
+                        .font: pTagFont, .foregroundColor: pTagColor])
+                    let pTagSize = pTagAttr.size()
+                    let pTagPadX: CGFloat = 4
+                    let pTagPadY: CGFloat = 2
+                    let pTagW = pTagSize.width + pTagPadX * 2
+                    let pTagH = pTagSize.height + pTagPadY * 2
+                    let pTagY = rect.minY + 8
+                    let pTagBg = NSBezierPath(roundedRect: NSRect(x: tx, y: pTagY, width: pTagW, height: pTagH), xRadius: 3, yRadius: 3)
+                    pTagColor.withAlphaComponent(pIsDead ? 0.08 : 0.15).setFill()
                     pTagBg.fill()
-                    pTagAttr.draw(at: NSPoint(x: tx + 3, y: rect.minY + 9))
+                    pTagAttr.draw(at: NSPoint(x: tx + pTagPadX, y: pTagY + pTagPadY))
                     tx += pTagW + 5
                 }
 
