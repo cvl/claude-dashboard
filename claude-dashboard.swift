@@ -3229,8 +3229,11 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 "`cdash chat send \"msg\" --to name` for DM. " +
                 "Check now and before breaking changes."
             try? intro.write(toFile: injectPath, atomically: true, encoding: .utf8)
-            // Enable chat panel
+            // Open chat panel and switch to that channel
             if !self.showChat { self.showChat = true }
+            self.chatView.activeProject = project
+            self.chatView.updateChannelLabel()
+            self.lastChatFingerprint = ""
             self.pollChat()
         }
         dashView.onRemoveClick = { [weak self] s in
