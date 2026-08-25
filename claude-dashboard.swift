@@ -1761,7 +1761,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             let nameAttr = NSAttributedString(string: m.name, attributes: [
                 .font: NSFont.systemFont(ofSize: 11, weight: .medium),
                 .foregroundColor: NSColor(calibratedWhite: 0.25, alpha: 1)])
-            let chipW = nameAttr.size().width + 24
+            let chipW = ceil(nameAttr.size().width) + 24
 
             let chip = NSView(frame: NSRect(x: x, y: 3, width: chipW, height: chipH))
             chip.wantsLayer = true
@@ -1790,7 +1790,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
 
             // Name label
             let nameLabel = NSTextField(labelWithAttributedString: nameAttr)
-            nameLabel.frame = NSRect(x: 14, y: (chipH - nameAttr.size().height) / 2, width: nameAttr.size().width, height: nameAttr.size().height)
+            nameLabel.frame = NSRect(x: 14, y: (chipH - nameAttr.size().height) / 2, width: ceil(nameAttr.size().width) + 2, height: ceil(nameAttr.size().height))
             chip.addSubview(nameLabel)
 
             mv.addSubview(chip)
