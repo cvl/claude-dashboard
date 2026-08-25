@@ -1251,6 +1251,10 @@ class NotificationPanelView: NSView {
                 NSBezierPath(rect: NSRect(x: 0, y: rect.minY, width: bounds.width, height: itemH)).fill()
             }
 
+            // Top border
+            NSColor(calibratedWhite: 0.88, alpha: 1).setFill()
+            NSBezierPath(rect: NSRect(x: 0, y: rect.minY, width: bounds.width, height: 1)).fill()
+
             // Accent dot
             let accentColor: NSColor = notif.isInputNeeded ?
                 NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 1) : .controlAccentColor
@@ -1285,9 +1289,6 @@ class NotificationPanelView: NSView {
                 .font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor(calibratedWhite: 0.6, alpha: 1)])
             xAttr.draw(at: NSPoint(x: xr.minX, y: xr.minY))
 
-            // Bottom border
-            NSColor(calibratedWhite: 0.88, alpha: 1).setFill()
-            NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 1, width: bounds.width, height: 1)).fill()
         }
     }
 
