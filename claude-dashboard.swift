@@ -3657,6 +3657,17 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func moveItemToTab(tabId: String, itemId: String) {
+        // If session is in a chat channel for its old tab, remove it
+        if itemId.hasPrefix("session:") {
+            let sid = String(itemId.dropFirst(8))
+            if let session = currentSessions.first(where: { $0.sessionId == sid }) {
+                // Find old tab
+                let oldTab = tabs.first(where: { $0.sessionIds.contains(sid) })
+                let oldChannel = oldTab?.name ?? "main"
+                let _ = shell("/usr/bin/sqlite3", chatDbPath,
+                    "DELETE FROM sessions WHERE project_id='\(oldChannel.replacingOccurrences(of: "'", with: "''"))' AND display_name='\(session.name.replacingOccurrences(of: "'", with: "''"))'")
+            }
+        }
         // Remove item from all tabs first
         for i in 0..<tabs.count {
             tabs[i].sessionIds.removeAll { "session:\($0)" == itemId }
