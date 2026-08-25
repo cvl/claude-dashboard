@@ -1518,9 +1518,12 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         inputTV.isRichText = false
         inputTV.isVerticallyResizable = true
         inputTV.isHorizontallyResizable = false
-        inputTV.textContainerInset = NSSize(width: 4, height: 3)
+        inputTV.textContainerInset = NSSize(width: 4, height: 4)
         inputTV.textContainer?.widthTracksTextView = true
         inputTV.textContainer?.lineFragmentPadding = 2
+        inputTV.textContainer?.size = NSSize(width: inputW - 12, height: 10000)
+        inputTV.maxSize = NSSize(width: inputW, height: 10000)
+        inputTV.minSize = NSSize(width: 0, height: inputH)
         inputTV.delegate = self
         inputScroll.documentView = inputTV
         addSubview(inputScroll)
@@ -1700,10 +1703,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     @objc func memberClicked(_ sender: NSButton) {
         guard sender.tag < members.count else { return }
         let name = members[sender.tag].name
-        if let field = inputField {
-            field.stringValue = "@\(name) "
-            field.becomeFirstResponder()
-            field.currentEditor()?.moveToEndOfLine(nil)
+        if let tv = inputTextView {
+            tv.string = "@\(name) "
+            tv.window?.makeFirstResponder(tv)
+            tv.setSelectedRange(NSRange(location: tv.string.count, length: 0))
         }
     }
 
