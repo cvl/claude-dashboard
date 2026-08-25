@@ -1450,6 +1450,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     private let membersH: CGFloat = 36
 
     private var inputField: NSTextField?
+    private var inputWrapper: NSView?
     private var inputBaseY: CGFloat = 0
     private var scrollView: NSScrollView?
     private var contentView: NSView?
@@ -1501,10 +1502,21 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         let sendX = bounds.width - padX - sendW
         let inputW = sendX - padX - 6
 
-        let tf = NSTextField(frame: NSRect(x: padX, y: inputAreaY, width: inputW, height: inputH))
+        // Wrapper view for border styling (since we need non-rounded bezel for wrapping)
+        let inputWrap = NSView(frame: NSRect(x: padX, y: inputAreaY, width: inputW, height: inputH))
+        inputWrap.wantsLayer = true
+        inputWrap.layer?.backgroundColor = NSColor.white.cgColor
+        inputWrap.layer?.cornerRadius = 6
+        inputWrap.layer?.borderWidth = 0.5
+        inputWrap.layer?.borderColor = NSColor(calibratedWhite: 0.78, alpha: 1).cgColor
+        addSubview(inputWrap)
+        inputWrapper = inputWrap
+
+        let tf = NSTextField(frame: NSRect(x: 4, y: 2, width: inputW - 8, height: inputH - 4))
         tf.font = NSFont.systemFont(ofSize: 13, weight: .regular)
         tf.placeholderString = "@name to DM, Tab ↹"
-        tf.bezelStyle = .roundedBezel
+        tf.isBezeled = false
+        tf.drawsBackground = false
         tf.focusRingType = .none
         tf.usesSingleLineMode = false
         tf.cell?.wraps = true
@@ -1512,7 +1524,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         tf.lineBreakMode = .byWordWrapping
         tf.maximumNumberOfLines = 5
         tf.delegate = self
-        addSubview(tf)
+        inputWrap.addSubview(tf)
         inputField = tf
         inputBaseY = inputAreaY
 
@@ -1605,9 +1617,11 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         }
         inputField?.stringValue = ""
         // Reset input height
-        if let tf = inputField, tf.frame.height > inputH {
-            let dy = tf.frame.height - inputH
-            tf.frame = NSRect(x: tf.frame.minX, y: tf.frame.minY + dy, width: tf.frame.width, height: inputH)
+        if let wrap = inputWrapper, wrap.frame.height > inputH {
+            let dy = wrap.frame.height - inputH
+            wrap.frame = NSRect(x: wrap.frame.minX, y: wrap.frame.minY + dy,
+                                width: wrap.frame.width, height: inputH)
+            inputField?.frame = NSRect(x: 4, y: 2, width: inputField!.frame.width, height: inputH - 4)
             scrollView?.frame.size.height += dy
         }
     }
@@ -1615,18 +1629,17 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     var onSendDM: ((String, String, String) -> Void)?  // (project, message, target)
 
     func controlTextDidChange(_ obj: Notification) {
-        guard let tf = inputField else { return }
-        // Recalculate height based on content
+        guard let tf = inputField, let wrap = inputWrapper else { return }
         let cell = tf.cell!
-        let cellSize = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: tf.frame.width - 8, height: 1000))
-        let newH = max(inputH, min(cellSize.height + 6, inputH * 4))
-        if abs(newH - tf.frame.height) > 1 {
-            let dy = newH - tf.frame.height
-            tf.frame = NSRect(x: tf.frame.minX, y: tf.frame.minY - dy, width: tf.frame.width, height: newH)
-            // Shrink scroll view above
-            if let sv = scrollView {
-                sv.frame.size.height -= dy
-            }
+        let cellSize = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: tf.frame.width, height: 1000))
+        let newWrapH = max(inputH, min(cellSize.height + 8, inputH * 4))
+        let oldWrapH = wrap.frame.height
+        if abs(newWrapH - oldWrapH) > 1 {
+            let dy = newWrapH - oldWrapH
+            wrap.frame = NSRect(x: wrap.frame.minX, y: wrap.frame.minY - dy,
+                                width: wrap.frame.width, height: newWrapH)
+            tf.frame = NSRect(x: 4, y: 2, width: tf.frame.width, height: newWrapH - 4)
+            if let sv = scrollView { sv.frame.size.height -= dy }
         }
     }
 
