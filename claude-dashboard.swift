@@ -1544,6 +1544,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         arrow.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Channels")
         arrow.imageScaling = .scaleProportionallyDown
         arrow.isBordered = false
+        arrow.focusRingType = .none
         arrow.contentTintColor = .secondaryLabelColor
         arrow.target = self
         arrow.action = #selector(channelArrowClicked(_:))
@@ -1870,19 +1871,25 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         }
 
         tv.textContainerInset = NSSize(width: padX, height: 4)
+        (tv as! ChatMessageTextView).topPadding = 4
         tv.textStorage?.setAttributedString(full)
         tv.sizeToFit()
 
-        // Ensure document is at least as tall as visible area so content sits at bottom
+        // Measure actual text height
+        let lm = tv.layoutManager!
+        lm.ensureLayout(for: tv.textContainer!)
+        let textH = lm.usedRect(for: tv.textContainer!).height + 8
         let visibleH = sv.contentSize.height
-        if tv.frame.height < visibleH {
-            tv.setFrameSize(NSSize(width: tv.frame.width, height: visibleH))
-        }
 
-        // Scroll to bottom
-        let maxY = tv.frame.height - visibleH
-        sv.contentView.scroll(to: NSPoint(x: 0, y: maxY))
-        sv.reflectScrolledClipView(sv.contentView)
+        if textH < visibleH {
+            // Push text to bottom via top padding
+            (tv as! ChatMessageTextView).topPadding = visibleH - textH
+            tv.setFrameSize(NSSize(width: tv.frame.width, height: visibleH))
+        } else {
+            (tv as! ChatMessageTextView).topPadding = 4
+            tv.sizeToFit()
+            tv.scrollToEndOfDocument(nil)
+        }
     }
 }
 
@@ -1920,9 +1927,15 @@ class AttachedChildWindow: NSWindow {
 
 /// Message display — selectable but doesn't grab focus on its own
 class ChatMessageTextView: NSTextView {
+    var topPadding: CGFloat = 4
+
     override var acceptsFirstResponder: Bool { false }
     override func becomeFirstResponder() -> Bool { false }
-    // Still allows text selection via mouse drag
+
+    override var textContainerOrigin: NSPoint {
+        NSPoint(x: textContainerInset.width, y: topPadding)
+    }
+
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         super.mouseDown(with: event)
