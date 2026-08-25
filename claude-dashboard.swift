@@ -1251,9 +1251,9 @@ class NotificationPanelView: NSView {
                 NSBezierPath(rect: NSRect(x: 0, y: rect.minY, width: bounds.width, height: itemH)).fill()
             }
 
-            // Top border (first item gets one too)
-            NSColor(calibratedWhite: 0.9, alpha: 1).setFill()
-            NSBezierPath(rect: NSRect(x: 0, y: rect.minY - 0.5, width: bounds.width, height: 0.5)).fill()
+            // Top border
+            NSColor(calibratedWhite: 0.88, alpha: 1).setFill()
+            NSBezierPath(rect: NSRect(x: 0, y: rect.minY, width: bounds.width, height: 1)).fill()
 
             // Accent dot
             let accentColor: NSColor = notif.isInputNeeded ?
@@ -1290,8 +1290,8 @@ class NotificationPanelView: NSView {
             xAttr.draw(at: NSPoint(x: xr.minX, y: xr.minY))
 
             // Bottom border
-            NSColor(calibratedWhite: 0.9, alpha: 1).setFill()
-            NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 0.5, width: bounds.width, height: 0.5)).fill()
+            NSColor(calibratedWhite: 0.88, alpha: 1).setFill()
+            NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 1, width: bounds.width, height: 1)).fill()
         }
     }
 
@@ -2628,8 +2628,8 @@ class DashboardView: NSView {
             NSGraphicsContext.restoreGraphicsState()
 
             // Full-width separator
-            NSColor(calibratedWhite: 0.9, alpha: 1).setFill()
-            NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 0.5, width: bounds.width, height: 0.5)).fill()
+            NSColor(calibratedWhite: 0.88, alpha: 1).setFill()
+            NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 1, width: bounds.width, height: 1)).fill()
 
             // Buttons are NSButton subviews managed by rebuildButtons()
         }
