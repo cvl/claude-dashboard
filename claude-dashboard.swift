@@ -1399,12 +1399,12 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     var onAddChannel: (() -> Void)?
     var onRemoveChannel: ((String) -> Void)?
 
-    private let font = NSFont.systemFont(ofSize: 11, weight: .medium)
-    private let smallFont = NSFont.systemFont(ofSize: 9, weight: .regular)
-    private let bodyFont = NSFont.systemFont(ofSize: 11, weight: .regular)
-    private let padX: CGFloat = 8
-    private let padY: CGFloat = 6
-    private let inputH: CGFloat = 32
+    private let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+    private let smallFont = NSFont.systemFont(ofSize: 10, weight: .regular)
+    private let bodyFont = NSFont.systemFont(ofSize: 12, weight: .regular)
+    private let padX: CGFloat = 10
+    private let padY: CGFloat = 8
+    private let inputH: CGFloat = 30
     private let headerH: CGFloat = 22
     private let membersH: CGFloat = 30
 
@@ -1456,10 +1456,13 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         // Input field
         let tfY = bounds.height - inputH - membersH - padY
         let tf = NSTextField(frame: NSRect(x: padX, y: tfY, width: bounds.width - padX * 2 - 32, height: inputH))
-        tf.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        tf.font = NSFont.systemFont(ofSize: 13, weight: .regular)
         tf.placeholderString = "@name to DM, Tab to complete"
         tf.bezelStyle = .roundedBezel
         tf.usesSingleLineMode = true
+        tf.lineBreakMode = .byTruncatingTail
+        // Center text vertically via cell
+        if let cell = tf.cell as? NSTextFieldCell { cell.wraps = false; cell.isScrollable = true }
         tf.autoresizingMask = [.width]
         tf.delegate = self
         addSubview(tf)
@@ -1592,21 +1595,22 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         var x: CGFloat = padX
         let chipH: CGFloat = 24
         for (i, m) in members.enumerated() where m.name != "human" {
-            let typeColor: NSColor = m.agentType == "claude" ? .systemGreen :
-                                     m.agentType == "codex" ? .systemBlue : .systemGray
             let stateColor = m.state.color
             let nameAttr = NSAttributedString(string: m.name, attributes: [
-                .font: font, .foregroundColor: NSColor.labelColor])
-            let chipW = nameAttr.size().width + 26  // dot + padding
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor(calibratedWhite: 0.25, alpha: 1)])
+            let chipW = nameAttr.size().width + 30
 
             let chip = NSView(frame: NSRect(x: x, y: 3, width: chipW, height: chipH))
             chip.wantsLayer = true
-            chip.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+            chip.layer?.backgroundColor = NSColor(calibratedWhite: 0.96, alpha: 1).cgColor
             chip.layer?.cornerRadius = chipH / 2
+            chip.layer?.borderWidth = 0.5
+            chip.layer?.borderColor = NSColor(calibratedWhite: 0.82, alpha: 1).cgColor
 
             // State dot
-            let dotSize: CGFloat = 8
-            let dot = NSView(frame: NSRect(x: 6, y: (chipH - dotSize) / 2, width: dotSize, height: dotSize))
+            let dotSize: CGFloat = 6
+            let dot = NSView(frame: NSRect(x: 8, y: (chipH - dotSize) / 2, width: dotSize, height: dotSize))
             dot.wantsLayer = true
             dot.layer?.backgroundColor = stateColor.cgColor
             dot.layer?.cornerRadius = dotSize / 2
@@ -1614,8 +1618,9 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
 
             // Clickable button
             let btn = NSButton(frame: NSRect(x: 0, y: 0, width: chipW, height: chipH))
-            let btnAttr = NSAttributedString(string: "    \(m.name)", attributes: [
-                .font: font, .foregroundColor: NSColor.labelColor])
+            let btnAttr = NSAttributedString(string: "     \(m.name)", attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor(calibratedWhite: 0.25, alpha: 1)])
             btn.attributedTitle = btnAttr
             btn.isBordered = false
             btn.tag = i
@@ -1624,7 +1629,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
             chip.addSubview(btn)
 
             mv.addSubview(chip)
-            x += chipW + 4
+            x += chipW + 6
         }
     }
 
@@ -1826,18 +1831,19 @@ class DashboardView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
 
-    private let cardH: CGFloat = 40
-    private let termCardH: CGFloat = 32
+    private let cardH: CGFloat = 46
+    private let termCardH: CGFloat = 46
     private let sectionHeaderH: CGFloat = 28
     private let gap: CGFloat = 0
     private let padX: CGFloat = 16
-    private let padY: CGFloat = 10
+    private let padY: CGFloat = 8
     private var noteButtons: [NSButton] = []
     var resumeButtons: [NSButton] = []
     private var pinButtons: [NSButton] = []
     private var termPinButtons: [NSButton] = []
     private var pinnedNoteButtons: [NSButton] = []
     private var pinnedPinButtons: [NSButton] = []
+    private var pinnedResumeButtons: [NSButton] = []
 
     // Hover state
     private var hoveredCardType: String = ""  // "session", "terminal", "pinned", ""
@@ -1860,7 +1866,7 @@ class DashboardView: NSView {
         return padY + sessH + gap
     }
 
-    private let pinnedCardH: CGFloat = 30
+    private let pinnedCardH: CGFloat = 46
 
     private var pinnedTopY: CGFloat {
         var h = terminalsTopY
@@ -2231,36 +2237,36 @@ class DashboardView: NSView {
         resumeButtons.removeAll()
         pinButtons.removeAll()
 
+        let btnSize: CGFloat = 22
+        let btnY: (NSRect) -> CGFloat = { rect in rect.minY + (self.cardH - btnSize) / 2 }
         for (i, s) in sessions.enumerated() {
             let rect = cardRect(at: i)
+            let by = btnY(rect)
+            var bx = rect.maxX - 8
 
-            // Pin button — positioned after state label (where close button used to be)
-            let isPinned = pinnedItems.contains { $0.id == s.sessionId }
-            let maxNameW = rect.maxX - 88 - (rect.minX + 14) - 80
-            let (dispName, _) = truncate(s.name, font: Self.fontBold12, maxWidth: maxNameW)
-            let nameW = NSAttributedString(string: dispName, attributes: [
-                .font: Self.fontBold12]).size().width
-            let stateW = NSAttributedString(string: s.state.label, attributes: [
-                .font: Self.fontSemi9]).size().width
-            let pinX = min(rect.minX + 14 + nameW + 10 + stateW + 6, rect.maxX - 90)
-            let pb = makeIconButton(frame: NSRect(x: pinX, y: rect.minY + 8, width: 20, height: 20),
-                icon: isPinned ? "pin.fill" : "pin",
-                tint: isPinned ? .systemBlue : .secondaryLabelColor,
-                tooltip: isPinned ? "Unpin" : "Pin")
-            pb.tag = i; pb.target = self; pb.action = #selector(pinBtnClicked(_:))
-            addSubview(pb); pinButtons.append(pb)
+            // Notes (rightmost)
+            bx -= btnSize
+            let nb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
+                icon: s.hasNotes ? "doc.text.fill" : "doc.text", tooltip: "Open notes")
+            nb.tag = i; nb.target = self; nb.action = #selector(notesBtnClicked(_:))
+            addSubview(nb); noteButtons.append(nb)
 
-            // Resume button
-            let rb = makeIconButton(frame: NSRect(x: rect.maxX - 56, y: rect.minY + 14, width: 24, height: 24),
+            // Resume
+            bx -= btnSize + 2
+            let rb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
                 icon: "play.fill", tooltip: "Copy resume command")
             rb.tag = i; rb.target = self; rb.action = #selector(resumeBtnClicked(_:))
             addSubview(rb); resumeButtons.append(rb)
 
-            // Notes button
-            let nb = makeIconButton(frame: NSRect(x: rect.maxX - 30, y: rect.minY + 14, width: 24, height: 24),
-                icon: s.hasNotes ? "doc.text.fill" : "doc.text", tooltip: "Open notes")
-            nb.tag = i; nb.target = self; nb.action = #selector(notesBtnClicked(_:))
-            addSubview(nb); noteButtons.append(nb)
+            // Pin
+            bx -= btnSize + 2
+            let isPinned = pinnedItems.contains { $0.id == s.sessionId }
+            let pb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
+                icon: isPinned ? "pin.fill" : "pin",
+                tint: isPinned ? .controlAccentColor : NSColor(calibratedWhite: 0.6, alpha: 1),
+                tooltip: isPinned ? "Unpin" : "Pin")
+            pb.tag = i; pb.target = self; pb.action = #selector(pinBtnClicked(_:))
+            addSubview(pb); pinButtons.append(pb)
         }
     }
 
@@ -2299,40 +2305,50 @@ class DashboardView: NSView {
         onUnpin?(pinnedItems[sender.tag].id)
     }
 
+    @objc func pinnedResumeBtnClicked(_ sender: NSButton) {
+        guard sender.tag < pinnedItems.count else { return }
+        let item = pinnedItems[sender.tag]
+        if let s = allSessions.first(where: { $0.sessionId == item.id }) {
+            onResumeClick?(s)
+        }
+    }
+
     func rebuildPinnedButtons() {
         pinnedNoteButtons.forEach { $0.removeFromSuperview() }
         pinnedPinButtons.forEach { $0.removeFromSuperview() }
+        pinnedResumeButtons.forEach { $0.removeFromSuperview() }
         pinnedNoteButtons.removeAll()
         pinnedPinButtons.removeAll()
+        pinnedResumeButtons.removeAll()
+        let btnSize: CGFloat = 22
         for (i, item) in pinnedItems.enumerated() {
             let rect = pinnedCardRect(at: i)
+            let by = rect.minY + (pinnedCardH - btnSize) / 2
+            var bx = rect.maxX - 8
 
-            // Pin toggle — positioned after name + status label
-            let pinnedBtnName = item.name.count > 19 ? String(item.name.prefix(18)) + "…" : item.name
-            let nameW = NSAttributedString(string: pinnedBtnName, attributes: [
-                .font: Self.fontBold12]).size().width
-            let stateLabel: String
+            // Notes (rightmost, sessions only)
             if item.type == "session" {
-                stateLabel = (allSessions.first(where: { $0.sessionId == item.id })?.state ?? .dead).label
-            } else {
-                stateLabel = (allTerminals.first(where: { $0.name == item.id })?.isAlive ?? false) ? "ACTIVE" : "CLOSED"
-            }
-            let stateW = NSAttributedString(string: stateLabel, attributes: [
-                .font: Self.fontSemi9]).size().width
-            let pinX = min(rect.minX + 14 + nameW + 8 + stateW + 6, rect.maxX - 50)
-            let pb = makeIconButton(frame: NSRect(x: pinX, y: rect.minY + 2, width: 20, height: 20),
-                icon: "pin.fill", tint: .systemBlue, tooltip: "Unpin")
-            pb.tag = i; pb.target = self; pb.action = #selector(pinnedPinBtnClicked(_:))
-            addSubview(pb); pinnedPinButtons.append(pb)
-
-            // Notes button (sessions only)
-            if item.type == "session" {
+                bx -= btnSize
                 let hasNotes = allSessions.first(where: { $0.sessionId == item.id })?.hasNotes ?? false
-                let nb = makeIconButton(frame: NSRect(x: rect.maxX - 26, y: rect.minY + 8, width: 20, height: 20),
+                let nb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
                     icon: hasNotes ? "doc.text.fill" : "doc.text", tooltip: "Open notes")
                 nb.tag = i; nb.target = self; nb.action = #selector(pinnedNoteBtnClicked(_:))
                 addSubview(nb); pinnedNoteButtons.append(nb)
+
+                // Resume
+                bx -= btnSize + 2
+                let rb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
+                    icon: "play.fill", tooltip: "Copy resume command")
+                rb.tag = i; rb.target = self; rb.action = #selector(pinnedResumeBtnClicked(_:))
+                addSubview(rb); pinnedResumeButtons.append(rb)
             }
+
+            // Pin
+            bx -= btnSize + 2
+            let pb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
+                icon: "pin.fill", tint: .controlAccentColor, tooltip: "Unpin")
+            pb.tag = i; pb.target = self; pb.action = #selector(pinnedPinBtnClicked(_:))
+            addSubview(pb); pinnedPinButtons.append(pb)
         }
     }
 
@@ -2456,59 +2472,54 @@ class DashboardView: NSView {
         for (i, s) in ss.enumerated() {
             let rect = cardRect(at: i)
 
-            // Hover background
+            // Hover — full width, light blue
             let isHovered = hoveredCardType == "session" && hoveredCardIndex == i
             if isHovered {
-                let bg = NSBezierPath(roundedRect: rect.insetBy(dx: 4, dy: 0), xRadius: 6, yRadius: 6)
-                NSColor(calibratedWhite: 0.0, alpha: 0.04).setFill()
-                bg.fill()
+                NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
+                NSBezierPath(rect: rect).fill()
             }
 
-            // State dot — small, subtle
+            // State dot
             let dotSize: CGFloat = 6
-            let dotY = rect.minY + 10
+            let dotY = rect.minY + 13
             s.state.color.setFill()
-            NSBezierPath(ovalIn: NSRect(x: rect.minX + 6, y: dotY, width: dotSize, height: dotSize)).fill()
+            NSBezierPath(ovalIn: NSRect(x: padX, y: dotY, width: dotSize, height: dotSize)).fill()
 
-            let tx = rect.minX + 18
-            let rightEdge = rect.maxX - 52
+            let tx = padX + 14
+            let rightEdge = rect.maxX - 68
 
-            // Name + path on single row
+            // Row 1: name + time
             let charLimitName = s.name.count > 22 ? String(s.name.prefix(21)) + "…" : s.name
-            let maxNameW = rightEdge - tx - 80
+            let maxNameW = rightEdge - tx - 60
             let (displayName, wasTruncated) = truncate(charLimitName, font: Self.fontBold12, maxWidth: maxNameW)
             let nameTruncated = wasTruncated || s.name.count > 22
             if nameTruncated { newTruncated[i] = s.name }
             let nameAttr = NSAttributedString(string: displayName, attributes: [
                 .font: Self.fontBold12,
                 .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)])
-            nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 5))
+            nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
 
-            // Path — secondary, after name
-            let pathStr = shortPath(s.cwd)
-            let pathAttr = NSAttributedString(string: pathStr, attributes: [
-                .font: Self.fontReg9,
-                .foregroundColor: NSColor(calibratedWhite: 0.43, alpha: 1)])
-            let pathX = tx
-            let maxPathW = rightEdge - pathX
-            let pathClip = NSRect(x: pathX, y: rect.minY + 22, width: maxPathW, height: 14)
-            NSGraphicsContext.saveGraphicsState()
-            NSBezierPath(rect: pathClip).addClip()
-            pathAttr.draw(at: NSPoint(x: pathX, y: rect.minY + 22))
-            NSGraphicsContext.restoreGraphicsState()
-
-            // Time — right-aligned
             let timeDate = s.hookTs > 0 ? Date(timeIntervalSince1970: Double(s.hookTs)) : s.lastActive
             let durAttr = NSAttributedString(string: timeAgo(timeDate), attributes: [
                 .font: Self.fontReg9,
                 .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
-            durAttr.draw(at: NSPoint(x: rect.maxX - durAttr.size().width - 8, y: rect.minY + 5))
+            durAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 6, y: rect.minY + 10))
 
-            // Separator
-            if i < ss.count - 1 {
-                NSColor(calibratedWhite: 0.85, alpha: 1).setFill()
-                NSBezierPath(rect: NSRect(x: tx, y: rect.maxY - 0.5, width: rect.maxX - tx - 8, height: 0.5)).fill()
-            }
+            // Row 2: path
+            let pathStr = shortPath(s.cwd)
+            let pathAttr = NSAttributedString(string: pathStr, attributes: [
+                .font: Self.fontReg9,
+                .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
+            let maxPathW = rightEdge - tx
+            let pathClip = NSRect(x: tx, y: rect.minY + 26, width: maxPathW, height: 14)
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: pathClip).addClip()
+            pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 26))
+            NSGraphicsContext.restoreGraphicsState()
+
+            // Full-width separator
+            NSColor(calibratedWhite: 0.9, alpha: 1).setFill()
+            NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 0.5, width: bounds.width, height: 0.5)).fill()
 
             // Buttons are NSButton subviews managed by rebuildButtons()
         }
@@ -2589,16 +2600,24 @@ class DashboardView: NSView {
                     accentColor = alive ? .systemTeal : .systemRed
                     stateLabel = alive ? "ACTIVE" : "CLOSED"
                 }
-                // State dot
-                let dotSize: CGFloat = 7
-                accentColor.setFill()
-                NSBezierPath(ovalIn: NSRect(x: rect.minX + 4, y: rect.midY - dotSize / 2, width: dotSize, height: dotSize)).fill()
+                // Hover — same as sessions
+                if isHovered {
+                    NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
+                    NSBezierPath(rect: rect).fill()
+                }
 
-                let tx = rect.minX + 18
+                // State dot
+                let dotSize: CGFloat = 6
+                accentColor.setFill()
+                NSBezierPath(ovalIn: NSRect(x: padX, y: rect.minY + 13, width: dotSize, height: dotSize)).fill()
+
+                let tx = padX + 14
+
+                // Row 1: name + time (same as sessions)
                 let pinnedDispName = item.name.count > 22 ? String(item.name.prefix(21)) + "…" : item.name
                 let nameAttr = NSAttributedString(string: pinnedDispName, attributes: [
                     .font: Self.fontBold12, .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)])
-                nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 7))
+                nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
 
                 let pinnedSession = allSessions.first(where: { $0.sessionId == item.id })
                 let pinnedTime: Date
@@ -2609,13 +2628,21 @@ class DashboardView: NSView {
                 }
                 let timeAttr = NSAttributedString(string: timeAgo(pinnedTime), attributes: [
                     .font: Self.fontReg9, .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
-                timeAttr.draw(at: NSPoint(x: rect.maxX - 56 - timeAttr.size().width, y: rect.minY + 9))
+                timeAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 6, y: rect.minY + 10))
 
-                // Separator
-                if i < pinnedItems.count - 1 {
-                    NSColor(calibratedWhite: 0.85, alpha: 1).setFill()
-                    NSBezierPath(rect: NSRect(x: tx, y: rect.maxY - 0.5, width: rect.maxX - tx - 8, height: 0.5)).fill()
-                }
+                // Row 2: path
+                let pathAttr = NSAttributedString(string: shortPath(item.cwd), attributes: [
+                    .font: Self.fontReg9, .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
+                let maxPW = rect.maxX - 68 - tx
+                let pClip = NSRect(x: tx, y: rect.minY + 26, width: maxPW, height: 14)
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(rect: pClip).addClip()
+                pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 26))
+                NSGraphicsContext.restoreGraphicsState()
+
+                // Full-width separator
+                NSColor(calibratedWhite: 0.9, alpha: 1).setFill()
+                NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 0.5, width: bounds.width, height: 0.5)).fill()
                 // Buttons are added in rebuildPinnedButtons
             }
         }
