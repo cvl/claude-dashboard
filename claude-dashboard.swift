@@ -1132,6 +1132,13 @@ class TabSidebarView: NSView {
         let py = addRect.midY - plus.size().height / 2
         plus.draw(at: NSPoint(x: px, y: py))
     }
+
+    override func resetCursorRects() {
+        for i in 0..<tabs.count {
+            addCursorRect(tabRect(at: i), cursor: .pointingHand)
+        }
+        addCursorRect(addBtnRect(), cursor: .pointingHand)
+    }
 }
 
 // MARK: - Notification Panel
@@ -1459,25 +1466,27 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         contentView = cv
 
         // Input field + send button
-        let sendW: CGFloat = 28
+        let sendW: CGFloat = 20
         let tfY = bounds.height - inputH - membersH - padY
         let sendX = bounds.width - padX - sendW
-        let tfW = sendX - padX - 4
+        let tfW = sendX - padX - 6
         let tf = NSTextField(frame: NSRect(x: padX, y: tfY, width: tfW, height: inputH))
         tf.font = NSFont.systemFont(ofSize: 13, weight: .regular)
-        let sendBtn = NSButton(frame: NSRect(x: sendX, y: tfY + 1, width: sendW, height: inputH - 2))
         tf.placeholderString = "@name to DM, Tab to complete"
         tf.bezelStyle = .roundedBezel
+        tf.focusRingType = .none
         tf.usesSingleLineMode = true
         tf.lineBreakMode = .byTruncatingTail
         tf.autoresizingMask = [.width]
         tf.delegate = self
         addSubview(tf)
         inputField = tf
-        sendBtn.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")
-        sendBtn.imageScaling = .scaleProportionallyUpOrDown
+        let sendBtn = NSButton(frame: NSRect(x: sendX, y: tfY, width: sendW, height: inputH))
+        let sendConfig = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+        sendBtn.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")?.withSymbolConfiguration(sendConfig)
+        sendBtn.imageScaling = .scaleNone
         sendBtn.isBordered = false
-        sendBtn.contentTintColor = .systemBlue
+        sendBtn.contentTintColor = .controlAccentColor
         sendBtn.target = self
         sendBtn.action = #selector(sendClicked(_:))
         sendBtn.autoresizingMask = [.minXMargin]
@@ -1675,68 +1684,61 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         onRemoveFromChat?(members[sender.tag].name)
     }
 
+    private var chatTextView: NSTextView?
+
     func refreshMessages() {
-        guard let cv = contentView, let sv = scrollView else { return }
-        // Remove old message views
-        cv.subviews.forEach { $0.removeFromSuperview() }
+        guard let sv = scrollView else { return }
 
-        let w = sv.contentSize.width
-        var y: CGFloat = 4
-
-        for msg in messages {
-            let df = DateFormatter()
-            df.dateFormat = "HH:mm"
-            let timeStr = df.string(from: Date(timeIntervalSince1970: Double(msg.timestamp)))
-
-            let senderColor: NSColor = msg.senderType == "claude" ? .systemGreen :
-                                       msg.senderType == "codex" ? .systemBlue : .systemGray
-            let sender = msg.senderType == "human" ? "You" : "\(msg.senderType)/\(msg.senderName)"
-            let dm = msg.recipient != nil ? " → \(msg.recipient!)" : ""
-
-            // Sender line
-            let senderStr = NSAttributedString(string: "\(sender)\(dm)", attributes: [
-                .font: font, .foregroundColor: senderColor])
-            let timeAttr = NSAttributedString(string: "  \(timeStr)", attributes: [
-                .font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor])
-
-            let headerLabel = NSTextField(labelWithAttributedString: {
-                let m = NSMutableAttributedString()
-                m.append(senderStr)
-                m.append(timeAttr)
-                return m
-            }())
-            headerLabel.isSelectable = true
-            headerLabel.frame = NSRect(x: padX + 4, y: y, width: w - padX * 2 - 8, height: 14)
-            cv.addSubview(headerLabel)
-            y += 15
-
-            // Body
-            let bodyLabel = NSTextField(wrappingLabelWithString: msg.body)
-            bodyLabel.font = bodyFont
-            bodyLabel.textColor = .labelColor
-            bodyLabel.isSelectable = true
-            bodyLabel.preferredMaxLayoutWidth = w - padX * 2 - 12
-            bodyLabel.frame = NSRect(x: padX + 4, y: y, width: w - padX * 2 - 8, height: 0)
-            bodyLabel.sizeToFit()
-            cv.addSubview(bodyLabel)
-            y += bodyLabel.frame.height + 2
-
-            // Accent line
-            let accent = NSView(frame: NSRect(x: padX, y: headerLabel.frame.minY,
-                                              width: 2, height: bodyLabel.frame.maxY - headerLabel.frame.minY))
-            accent.wantsLayer = true
-            accent.layer?.backgroundColor = senderColor.cgColor
-            cv.addSubview(accent)
-
-            y += 8
+        // Use a single NSTextView for full cross-message text selection
+        let tv: NSTextView
+        if let existing = chatTextView {
+            tv = existing
+        } else {
+            tv = NSTextView(frame: NSRect(x: 0, y: 0, width: sv.contentSize.width, height: 0))
+            tv.isEditable = false
+            tv.isSelectable = true
+            tv.drawsBackground = false
+            tv.textContainerInset = NSSize(width: padX, height: 4)
+            tv.textContainer?.lineFragmentPadding = 0
+            tv.autoresizingMask = [.width]
+            tv.isVerticallyResizable = true
+            tv.isHorizontallyResizable = false
+            tv.textContainer?.widthTracksTextView = true
+            sv.documentView = tv
+            chatTextView = tv
         }
 
-        cv.frame = NSRect(x: 0, y: 0, width: w, height: max(y, sv.contentSize.height))
+        let full = NSMutableAttributedString()
+        let df = DateFormatter()
+        df.dateFormat = "HH:mm"
 
-        // Auto-scroll to bottom (newest messages)
-        let maxScroll = max(0, cv.frame.height - sv.contentSize.height)
-        sv.contentView.scroll(to: NSPoint(x: 0, y: maxScroll))
-        sv.reflectScrolledClipView(sv.contentView)
+        for (i, msg) in messages.enumerated() {
+            let timeStr = df.string(from: Date(timeIntervalSince1970: Double(msg.timestamp)))
+            let senderColor: NSColor = msg.senderType == "claude" ?
+                NSColor(calibratedRed: 0.25, green: 0.72, blue: 0.35, alpha: 1) :
+                msg.senderType == "codex" ? .controlAccentColor :
+                NSColor(calibratedWhite: 0.4, alpha: 1)
+            let sender = msg.senderType == "human" ? "You" : "\(msg.senderName)"
+            let dm = msg.recipient != nil ? " → \(msg.recipient!)" : ""
+
+            // Sender + time
+            full.append(NSAttributedString(string: "\(sender)\(dm)", attributes: [
+                .font: font, .foregroundColor: senderColor]))
+            full.append(NSAttributedString(string: "  \(timeStr)\n", attributes: [
+                .font: smallFont, .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)]))
+            // Body
+            full.append(NSAttributedString(string: msg.body, attributes: [
+                .font: bodyFont, .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)]))
+            if i < messages.count - 1 {
+                full.append(NSAttributedString(string: "\n\n"))
+            }
+        }
+
+        tv.textStorage?.setAttributedString(full)
+        tv.sizeToFit()
+
+        // Auto-scroll to bottom
+        tv.scrollToEndOfDocument(nil)
     }
 }
 
