@@ -1189,6 +1189,27 @@ class NotificationPanelView: NSView {
         NSRect(x: itemRect.maxX - 16, y: itemRect.minY + 4, width: 12, height: 12)
     }
 
+    private var hoveredNotifIdx: Int? = nil
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways], owner: self))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let loc = convert(event.locationInWindow, from: nil)
+        var found: Int? = nil
+        for (i, _) in notifications.enumerated() {
+            if itemRect(at: i).contains(loc) { found = i; break }
+        }
+        if found != hoveredNotifIdx { hoveredNotifIdx = found; needsDisplay = true }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if hoveredNotifIdx != nil { hoveredNotifIdx = nil; needsDisplay = true }
+    }
+
     override func mouseDown(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
 
@@ -1224,6 +1245,16 @@ class NotificationPanelView: NSView {
         for (i, notif) in notifications.enumerated() {
             let rect = itemRect(at: i)
 
+            // Hover
+            if hoveredNotifIdx == i {
+                NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
+                NSBezierPath(rect: NSRect(x: 0, y: rect.minY, width: bounds.width, height: itemH)).fill()
+            }
+
+            // Top border (first item gets one too)
+            NSColor(calibratedWhite: 0.9, alpha: 1).setFill()
+            NSBezierPath(rect: NSRect(x: 0, y: rect.minY - 0.5, width: bounds.width, height: 0.5)).fill()
+
             // Accent dot
             let accentColor: NSColor = notif.isInputNeeded ?
                 NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 1) : .controlAccentColor
@@ -1258,11 +1289,9 @@ class NotificationPanelView: NSView {
                 .font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor(calibratedWhite: 0.6, alpha: 1)])
             xAttr.draw(at: NSPoint(x: xr.minX, y: xr.minY))
 
-            // Separator
-            if i < notifications.count - 1 {
-                NSColor(calibratedWhite: 0.9, alpha: 1).setFill()
-                NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 0.5, width: bounds.width, height: 0.5)).fill()
-            }
+            // Bottom border
+            NSColor(calibratedWhite: 0.9, alpha: 1).setFill()
+            NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 0.5, width: bounds.width, height: 0.5)).fill()
         }
     }
 
@@ -1400,7 +1429,7 @@ struct ChatMember {
     let state: State  // working/idle/needsInput/dead
 }
 
-class ChatPanelView: NSView, NSTextFieldDelegate {
+class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     var messages: [ChatMessage] = [] { didSet { needsDisplay = true } }
     var activeProject: String = ""
     var projects: [String] = []
@@ -1420,7 +1449,9 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     private let headerH: CGFloat = 22
     private let membersH: CGFloat = 36
 
-    private var inputField: NSTextField?
+    private var inputField: NSTextField?  // unused, kept for compat
+    private var inputTextView: NSTextView?
+    private var inputScrollView: NSScrollView?
     private var scrollView: NSScrollView?
     private var contentView: NSView?
     private var channelLabel: NSTextField?
@@ -1465,24 +1496,39 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         scrollView = sv
         contentView = cv
 
-        // Input field + send button
-        let sendW: CGFloat = 20
-        let tfY = bounds.height - inputH - membersH - padY
+        // Input — NSScrollView + NSTextView for multiline expansion
+        let sendW: CGFloat = 22
+        let inputAreaY = bounds.height - inputH - membersH - padY
         let sendX = bounds.width - padX - sendW
-        let tfW = sendX - padX - 6
-        let tf = NSTextField(frame: NSRect(x: padX, y: tfY, width: tfW, height: inputH))
-        tf.font = NSFont.systemFont(ofSize: 13, weight: .regular)
-        tf.placeholderString = "@name to DM, Tab to complete"
-        tf.bezelStyle = .roundedBezel
-        tf.focusRingType = .none
-        tf.usesSingleLineMode = true
-        tf.lineBreakMode = .byTruncatingTail
-        tf.autoresizingMask = [.width]
-        tf.delegate = self
-        addSubview(tf)
-        inputField = tf
-        let sendBtn = NSButton(frame: NSRect(x: sendX, y: tfY, width: sendW, height: inputH))
-        let sendConfig = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+        let inputW = sendX - padX - 6
+
+        let inputScroll = NSScrollView(frame: NSRect(x: padX, y: inputAreaY, width: inputW, height: inputH))
+        inputScroll.hasVerticalScroller = false
+        inputScroll.autoresizingMask = [.width]
+        inputScroll.drawsBackground = true
+        inputScroll.backgroundColor = NSColor(calibratedWhite: 0.96, alpha: 1)
+        inputScroll.wantsLayer = true
+        inputScroll.layer?.cornerRadius = 6
+        inputScroll.layer?.borderWidth = 0.5
+        inputScroll.layer?.borderColor = NSColor(calibratedWhite: 0.8, alpha: 1).cgColor
+
+        let inputTV = NSTextView(frame: NSRect(x: 0, y: 0, width: inputW, height: inputH))
+        inputTV.font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        inputTV.drawsBackground = false
+        inputTV.isRichText = false
+        inputTV.isVerticallyResizable = true
+        inputTV.isHorizontallyResizable = false
+        inputTV.textContainerInset = NSSize(width: 4, height: 3)
+        inputTV.textContainer?.widthTracksTextView = true
+        inputTV.textContainer?.lineFragmentPadding = 2
+        inputTV.delegate = self
+        inputScroll.documentView = inputTV
+        addSubview(inputScroll)
+        inputTextView = inputTV
+        inputScrollView = inputScroll
+
+        let sendBtn = NSButton(frame: NSRect(x: sendX, y: inputAreaY + 1, width: sendW, height: inputH - 2))
+        let sendConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
         sendBtn.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")?.withSymbolConfiguration(sendConfig)
         sendBtn.imageScaling = .scaleNone
         sendBtn.isBordered = false
@@ -1550,8 +1596,9 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     }
 
     @objc func sendClicked(_ sender: Any) {
-        guard let text = inputField?.stringValue, !text.isEmpty else { return }
-        // Parse @name at start — route as DM
+        guard let tv = inputTextView else { return }
+        let text = tv.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
         var msg = text
         var target: String? = nil
         if msg.hasPrefix("@") {
@@ -1567,28 +1614,27 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         } else {
             onSend?(activeProject, msg)
         }
-        inputField?.stringValue = ""
+        tv.string = ""
     }
 
     var onSendDM: ((String, String, String) -> Void)?  // (project, message, target)
 
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+    // NSTextViewDelegate — Enter sends, Shift+Enter for newline, Tab autocompletes
+    func textView(_ textView: NSTextView, doCommandBy sel: Selector) -> Bool {
         if sel == #selector(insertNewline(_:)) {
-            sendClicked(control)
+            if NSEvent.modifierFlags.contains(.shift) { return false }  // Shift+Enter = newline
+            sendClicked(textView)
             return true
         }
-        // Tab — autocomplete @name
         if sel == #selector(insertTab(_:)) {
-            guard let field = inputField, field.stringValue.contains("@") else { return false }
-            let text = field.stringValue
+            let text = textView.string
             guard let atIdx = text.lastIndex(of: "@") else { return false }
             let partial = String(text[text.index(after: atIdx)...]).lowercased()
             if partial.isEmpty { return false }
             if let match = sessionNames.first(where: { $0.lowercased().hasPrefix(partial) && $0 != "human" }) {
                 let prefix = String(text[...atIdx])
-                field.stringValue = prefix + match + " "
-                // Move cursor to end
-                field.currentEditor()?.moveToEndOfLine(nil)
+                textView.string = prefix + match + " "
+                textView.setSelectedRange(NSRange(location: textView.string.count, length: 0))
             }
             return true
         }
@@ -1641,6 +1687,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
             btn.target = self
             btn.action = #selector(memberClicked(_:))
             chip.addSubview(btn)
+
+            // Pointer cursor on chip
+            let ta = NSTrackingArea(rect: chip.bounds, options: [.mouseEnteredAndExited, .activeAlways, .cursorUpdate], owner: chip)
+            chip.addTrackingArea(ta)
 
             mv.addSubview(chip)
             x += chipW + 6
