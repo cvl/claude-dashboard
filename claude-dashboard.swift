@@ -1646,6 +1646,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     // NSTextFieldDelegate — Enter sends, Tab autocompletes
     func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
         if sel == #selector(insertNewline(_:)) {
+            if NSEvent.modifierFlags.contains(.shift) { return false } // shift+enter = newline
             sendClicked(control)
             return true
         }
