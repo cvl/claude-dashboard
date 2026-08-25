@@ -968,8 +968,11 @@ func dockIcon(_ color: NSColor) -> NSImage {
     let img = NSImage(size: NSSize(width: s, height: s), flipped: false) { _ in
         let bg = NSBezierPath(roundedRect: NSRect(x: 4, y: 4, width: s - 8, height: s - 8),
                               xRadius: r, yRadius: r)
-        NSColor(white: 0.15, alpha: 1).setFill()
+        NSColor(white: 0.95, alpha: 1).setFill()
         bg.fill()
+        NSColor(white: 0.85, alpha: 1).setStroke()
+        bg.lineWidth = 1
+        bg.stroke()
         NSColor(white: 0.3, alpha: 1).setStroke()
         bg.lineWidth = 1.5
         bg.stroke()
@@ -1099,10 +1102,10 @@ class TabSidebarView: NSView {
             // Background — only for active/drop target
             let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
             if isDropTarget {
-                NSColor.systemBlue.withAlphaComponent(0.3).setFill()
+                NSColor.systemBlue.withAlphaComponent(0.15).setFill()
                 bg.fill()
             } else if isActive {
-                NSColor(white: 0.5, alpha: 0.12).setFill()
+                NSColor(white: 0.0, alpha: 0.06).setFill()
                 bg.fill()
             }
 
@@ -1114,7 +1117,7 @@ class TabSidebarView: NSView {
             }
 
             // Label
-            let font = NSFont.monospacedSystemFont(ofSize: 9, weight: isActive ? .bold : .medium)
+            let font = NSFont.systemFont(ofSize: 9, weight: isActive ? .semibold : .regular)
             let color: NSColor = isActive ? .labelColor : .secondaryLabelColor
             let attr = NSAttributedString(string: tab.name, attributes: [
                 .font: font, .foregroundColor: color])
@@ -1126,7 +1129,7 @@ class TabSidebarView: NSView {
         // + button
         let addRect = addBtnRect()
         let plus = NSAttributedString(string: "+", attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: 14, weight: .medium),
+            .font: NSFont.systemFont(ofSize: 14, weight: .medium),
             .foregroundColor: NSColor.secondaryLabelColor])
         let px = addRect.midX - plus.size().width / 2
         let py = addRect.midY - plus.size().height / 2
@@ -1155,8 +1158,8 @@ class NotificationPanelView: NSView {
     private let gap: CGFloat = 4
     private let padX: CGFloat = 6
     private let padY: CGFloat = 6
-    private let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
-    private let smallFont = NSFont.monospacedSystemFont(ofSize: 8, weight: .regular)
+    private let font = NSFont.systemFont(ofSize: 10, weight: .medium)
+    private let smallFont = NSFont.systemFont(ofSize: 9, weight: .regular)
     private let clearH: CGFloat = 20
 
     override var isFlipped: Bool { true }
@@ -1219,7 +1222,7 @@ class NotificationPanelView: NSView {
 
             // Background
             let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-            NSColor(white: 0.5, alpha: 0.08).setFill()
+            NSColor(white: 0.0, alpha: 0.04).setFill()
             bg.fill()
 
             // Accent — orange for input needed, blue for finished
@@ -1399,9 +1402,9 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     var onAddChannel: (() -> Void)?
     var onRemoveChannel: ((String) -> Void)?
 
-    private let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
-    private let smallFont = NSFont.monospacedSystemFont(ofSize: 8, weight: .regular)
-    private let bodyFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+    private let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+    private let smallFont = NSFont.systemFont(ofSize: 9, weight: .regular)
+    private let bodyFont = NSFont.systemFont(ofSize: 11, weight: .regular)
     private let padX: CGFloat = 8
     private let padY: CGFloat = 6
     private let inputH: CGFloat = 32
@@ -1420,7 +1423,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     func setupViews() {
         // Channel header — label + arrow button
         let label = NSTextField(labelWithString: "# main")
-        label.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .bold)
+        label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         label.textColor = .labelColor
         label.frame = NSRect(x: padX, y: padY, width: bounds.width - padX - 30, height: 18)
         label.autoresizingMask = [.width]
@@ -1456,7 +1459,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         // Input field
         let tfY = bounds.height - inputH - membersH - padY
         let tf = NSTextField(frame: NSRect(x: padX, y: tfY, width: bounds.width - padX * 2 - 32, height: inputH))
-        tf.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        tf.font = NSFont.systemFont(ofSize: 12, weight: .regular)
         tf.placeholderString = "@name to DM, Tab to complete"
         tf.bezelStyle = .roundedBezel
         tf.usesSingleLineMode = true
@@ -2371,7 +2374,7 @@ class DashboardView: NSView {
         hoverTip?.orderOut(nil)
         hoverTip = nil
 
-        let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+        let font = NSFont.systemFont(ofSize: 10, weight: .medium)
         let padH: CGFloat = 6, padV: CGFloat = 3
         let textSize = (fullName as NSString).size(withAttributes: [.font: font])
         let size = NSSize(width: textSize.width + padH * 2, height: textSize.height + padV * 2)
@@ -2379,7 +2382,7 @@ class DashboardView: NSView {
         let tip = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                            styleMask: [.borderless], backing: .buffered, defer: false)
         tip.isOpaque = false
-        tip.backgroundColor = NSColor(white: 0.15, alpha: 0.92)
+        tip.backgroundColor = NSColor(white: 0.95, alpha: 0.95)
         tip.hasShadow = true
         tip.level = .floating
         tip.contentView!.wantsLayer = true
@@ -2435,11 +2438,11 @@ class DashboardView: NSView {
     }
 
     // ── Fonts (cached) ──
-    private static let fontBold12  = NSFont.monospacedSystemFont(ofSize: 12, weight: .bold)
-    private static let fontSemi9   = NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold)
-    private static let fontReg10   = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
-    private static let fontReg12   = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    private static let fontReg9    = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
+    private static let fontBold12  = NSFont.systemFont(ofSize: 12, weight: .semibold)
+    private static let fontSemi9   = NSFont.systemFont(ofSize: 9, weight: .medium)
+    private static let fontReg10   = NSFont.systemFont(ofSize: 10, weight: .regular)
+    private static let fontReg12   = NSFont.systemFont(ofSize: 12, weight: .regular)
+    private static let fontReg9    = NSFont.systemFont(ofSize: 9, weight: .regular)
 
     // ── Draw ──
     override func draw(_ dirtyRect: NSRect) {
@@ -2457,7 +2460,7 @@ class DashboardView: NSView {
 
             // Card background
             let isHovered = hoveredCardType == "session" && hoveredCardIndex == i
-            let bgAlpha: CGFloat = isHovered ? 0.15 : 0.08
+            let bgAlpha: CGFloat = isHovered ? 0.08 : 0.04
             let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
             NSColor(white: 0.5, alpha: bgAlpha).setFill()
             bg.fill()
@@ -2544,7 +2547,7 @@ class DashboardView: NSView {
                 let rect = termCardRect(at: i)
                 let isHovered = hoveredCardType == "terminal" && hoveredCardIndex == i
                 let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-                NSColor(white: 0.5, alpha: isHovered ? 0.12 : 0.05).setFill()
+                NSColor(white: 0.0, alpha: isHovered ? 0.06 : 0.03).setFill()
                 bg.fill()
 
                 // Left accent
@@ -2603,7 +2606,7 @@ class DashboardView: NSView {
                 let rect = pinnedCardRect(at: i)
                 let isHovered = hoveredCardType == "pinned" && hoveredCardIndex == i
                 let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-                NSColor(white: 0.5, alpha: isHovered ? 0.12 : 0.05).setFill()
+                NSColor(white: 0.0, alpha: isHovered ? 0.06 : 0.03).setFill()
                 bg.fill()
 
                 // Left accent — use allSessions for state lookup (not tab-filtered)
@@ -2891,7 +2894,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         let visual = NSVisualEffectView(frame: panel.contentView!.bounds)
-        visual.material = .hudWindow
+        visual.material = .popover
         visual.blendingMode = .behindWindow
         visual.state = .active
         visual.autoresizingMask = [.width, .height]
@@ -3486,7 +3489,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func showToast(_ message: String, near button: NSView) {
         let label = NSTextField(labelWithString: message)
-        label.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+        label.font = .systemFont(ofSize: 11, weight: .medium)
         label.textColor = .white
         label.backgroundColor = .clear
         label.isBezeled = false
@@ -3806,9 +3809,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let a = NSMutableAttributedString()
             a.append(NSAttributedString(string: "\(s.state.emoji)  "))
             a.append(NSAttributedString(string: s.name, attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold)]))
+                .font: NSFont.systemFont(ofSize: 12, weight: .semibold)]))
             a.append(NSAttributedString(string: "  \(s.state.label)", attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium),
+                .font: NSFont.systemFont(ofSize: 10, weight: .medium),
                 .foregroundColor: s.state.color]))
             row.attributedTitle = a
             menu.addItem(row)
