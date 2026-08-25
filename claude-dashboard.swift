@@ -1608,7 +1608,8 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         inputTV = tv
         inputScroll = sc
 
-        let sb = TintHoverButton(frame: NSRect(x: sendX, y: inputAreaY, width: sendW, height: inputH))
+        let btnH: CGFloat = 24
+        let sb = TintHoverButton(frame: NSRect(x: sendX, y: inputAreaY + (inputH - btnH) / 2, width: sendW, height: btnH))
         sb.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .medium))
         sb.imagePosition = .imageOnly
