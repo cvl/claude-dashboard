@@ -1037,7 +1037,13 @@ class TabSidebarView: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways], owner: self))
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeAlways], owner: self))
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        let loc = convert(event.locationInWindow, from: nil)
+        let overClickable = tabs.indices.contains(where: { tabRect(at: $0).contains(loc) }) || addBtnRect().contains(loc)
+        if overClickable { NSCursor.pointingHand.set() }
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -1047,14 +1053,10 @@ class TabSidebarView: NSView {
             if tabRect(at: i).contains(loc) { found = i; break }
         }
         if found != hoveredTabIdx { hoveredTabIdx = found; needsDisplay = true }
-        // Set cursor
-        let overClickable = found != nil || addBtnRect().contains(loc)
-        if overClickable { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
     }
 
     override func mouseExited(with event: NSEvent) {
         if hoveredTabIdx != nil { hoveredTabIdx = nil; needsDisplay = true }
-        NSCursor.arrow.set()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1215,7 +1217,13 @@ class NotificationPanelView: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways], owner: self))
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeAlways], owner: self))
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        let loc = convert(event.locationInWindow, from: nil)
+        let overClickable = notifications.indices.contains(where: { itemRect(at: $0).contains(loc) }) || clearRect().contains(loc)
+        if overClickable { NSCursor.pointingHand.set() }
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -1225,12 +1233,10 @@ class NotificationPanelView: NSView {
             if itemRect(at: i).contains(loc) { found = i; break }
         }
         if found != hoveredNotifIdx { hoveredNotifIdx = found; needsDisplay = true }
-        if found != nil || clearRect().contains(loc) { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
     }
 
     override func mouseExited(with event: NSEvent) {
         if hoveredNotifIdx != nil { hoveredNotifIdx = nil; needsDisplay = true }
-        NSCursor.arrow.set()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1555,9 +1561,11 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         inputTV = tv
         inputScroll = sc
 
-        let sb = HoverIconButton(frame: NSRect(x: sendX, y: inputAreaY, width: sendW, height: inputH))
+        let sb = PointerButton(frame: NSRect(x: sendX, y: inputAreaY, width: sendW, height: inputH))
         sb.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .medium))
+        sb.imagePosition = .imageOnly
+        sb.isBordered = false
         sb.contentTintColor = .controlAccentColor
         sb.target = self
         sb.action = #selector(sendClicked(_:))
