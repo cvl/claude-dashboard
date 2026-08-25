@@ -1445,7 +1445,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     private let bodyFont = NSFont.systemFont(ofSize: 12, weight: .regular)
     private let padX: CGFloat = 10
     private let padY: CGFloat = 8
-    private let inputH: CGFloat = 24
+    private let inputH: CGFloat = 52
     private let headerH: CGFloat = 22
     private let membersH: CGFloat = 36
 
@@ -1506,14 +1506,12 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         inputMinH = inputH
 
         let sc = NSScrollView(frame: NSRect(x: padX, y: inputAreaY, width: inputW, height: inputH))
-        sc.hasVerticalScroller = false
+        sc.hasVerticalScroller = true
+        sc.autohidesScrollers = true
         sc.hasHorizontalScroller = false
-        sc.drawsBackground = false
-        sc.wantsLayer = true
-        sc.layer?.backgroundColor = NSColor(calibratedWhite: 0.97, alpha: 1).cgColor
-        sc.layer?.cornerRadius = 6
-        sc.layer?.borderWidth = 1
-        sc.layer?.borderColor = NSColor(calibratedWhite: 0.75, alpha: 1).cgColor
+        sc.borderType = .bezelBorder
+        sc.drawsBackground = true
+        sc.backgroundColor = .white
 
         let tv = NSTextView()
         tv.font = NSFont.systemFont(ofSize: 13, weight: .regular)
@@ -1619,15 +1617,12 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             onSend?(activeProject, msg)
         }
         inputTV?.string = ""
-        resizeInput()
     }
 
     var onSendDM: ((String, String, String) -> Void)?  // (project, message, target)
 
     // NSTextViewDelegate
-    func textDidChange(_ notification: Notification) {
-        resizeInput()
-    }
+    func textDidChange(_ notification: Notification) {}
 
     func textView(_ textView: NSTextView, doCommandBy sel: Selector) -> Bool {
         if sel == #selector(insertNewline(_:)) {
@@ -1650,24 +1645,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         return false
     }
 
-    var onResizePanel: ((CGFloat) -> Void)?  // expand panel by delta
-
-    private func resizeInput() {
-        guard let tv = inputTV, let sc = inputScroll else { return }
-        let lm = tv.layoutManager!
-        let tc = tv.textContainer!
-        lm.ensureLayout(for: tc)
-        let usedH = lm.usedRect(for: tc).height + tv.textContainerInset.height * 2
-        let maxH = inputMinH * 4
-        let newH = max(inputMinH, min(ceil(usedH), maxH))
-        let oldH = sc.frame.height
-        if abs(newH - oldH) > 1 {
-            let dy = newH - oldH
-            sc.frame.size.height = newH
-            // Expand panel downward
-            onResizePanel?(dy)
-        }
-    }
+    // No dynamic resize — fixed input with scroll for overflow
 
     func updateProjects(_ newProjects: [String]) {
         projects = newProjects
@@ -3206,13 +3184,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                           "send", "--project", project, "--name", "human",
                           "--type", "human", "--message", message, "--to", target)
             self?.pollChat()
-        }
-        chatView.onResizePanel = { [weak self] dy in
-            guard let self, let cp = self.chatPanel as? NSWindow else { return }
-            var f = cp.frame
-            f.size.height += dy
-            f.origin.y -= dy
-            cp.setFrame(f, display: true)
         }
         chatView.onRemoveFromChat = { [weak self] name in
             guard let self, !chatView.activeProject.isEmpty else { return }
