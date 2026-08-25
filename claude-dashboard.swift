@@ -1216,7 +1216,9 @@ class NotificationPanelView: NSView {
     }
 
     private func clearRect() -> NSRect {
-        NSRect(x: padX, y: padY, width: max(0, bounds.width - padX * 2), height: clearH)
+        let text = NSAttributedString(string: "Clear all", attributes: [.font: smallFont])
+        let w = text.size().width + 12
+        return NSRect(x: bounds.width - padX - w, y: padY, width: w, height: clearH)
     }
 
     private func closeRect(for itemRect: NSRect) -> NSRect {
@@ -1324,7 +1326,7 @@ class NotificationPanelView: NSView {
         }
         let clearAttr = NSAttributedString(string: "Clear all", attributes: [
             .font: smallFont, .foregroundColor: hoveredClearAll ? NSColor(calibratedWhite: 0.3, alpha: 1) : NSColor.secondaryLabelColor])
-        let cx = cr.maxX - clearAttr.size().width
+        let cx = cr.midX - clearAttr.size().width / 2
         clearAttr.draw(at: NSPoint(x: cx, y: cr.minY + 4))
 
         for (i, notif) in notifications.enumerated() {
