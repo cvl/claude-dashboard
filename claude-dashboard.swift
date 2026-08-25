@@ -1449,9 +1449,8 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     private let headerH: CGFloat = 22
     private let membersH: CGFloat = 36
 
-    private var inputField: NSTextField?  // unused, kept for compat
-    private var inputTextView: NSTextView?
-    private var inputScrollView: NSScrollView?
+    private var inputField: NSTextField?
+    private var inputBaseY: CGFloat = 0
     private var scrollView: NSScrollView?
     private var contentView: NSView?
     private var channelLabel: NSTextField?
@@ -1511,10 +1510,11 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         tf.cell?.wraps = true
         tf.cell?.isScrollable = false
         tf.lineBreakMode = .byWordWrapping
-        tf.maximumNumberOfLines = 4
+        tf.maximumNumberOfLines = 5
         tf.delegate = self
         addSubview(tf)
         inputField = tf
+        inputBaseY = inputAreaY
 
         let sendBtn = NSButton(frame: NSRect(x: sendX, y: inputAreaY + 1, width: sendW, height: inputH - 2))
         let sendConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
@@ -1585,7 +1585,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     }
 
     @objc func sendClicked(_ sender: Any) {
-        let text = (inputField?.stringValue ?? inputTextView?.string ?? "")
+        let text = (inputField?.stringValue ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         var msg = text
@@ -1604,10 +1604,31 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             onSend?(activeProject, msg)
         }
         inputField?.stringValue = ""
-        inputTextView?.string = ""
+        // Reset input height
+        if let tf = inputField, tf.frame.height > inputH {
+            let dy = tf.frame.height - inputH
+            tf.frame = NSRect(x: tf.frame.minX, y: tf.frame.minY + dy, width: tf.frame.width, height: inputH)
+            scrollView?.frame.size.height += dy
+        }
     }
 
     var onSendDM: ((String, String, String) -> Void)?  // (project, message, target)
+
+    func controlTextDidChange(_ obj: Notification) {
+        guard let tf = inputField else { return }
+        // Recalculate height based on content
+        let cell = tf.cell!
+        let cellSize = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: tf.frame.width - 8, height: 1000))
+        let newH = max(inputH, min(cellSize.height + 6, inputH * 4))
+        if abs(newH - tf.frame.height) > 1 {
+            let dy = newH - tf.frame.height
+            tf.frame = NSRect(x: tf.frame.minX, y: tf.frame.minY - dy, width: tf.frame.width, height: newH)
+            // Shrink scroll view above
+            if let sv = scrollView {
+                sv.frame.size.height -= dy
+            }
+        }
+    }
 
     // NSTextFieldDelegate — Enter sends, Tab autocompletes
     func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
