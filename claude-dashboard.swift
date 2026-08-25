@@ -1635,17 +1635,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         addSubview(sb)
         sendButton = sb as? NSButton
 
-        // Members strip below input — horizontal scroll
+        // Members strip below input
         let mvY = bounds.height - membersH
-        let mvScroll = NSScrollView(frame: NSRect(x: 0, y: mvY, width: bounds.width, height: membersH))
-        mvScroll.hasHorizontalScroller = false
-        mvScroll.hasVerticalScroller = false
-        mvScroll.drawsBackground = false
-        mvScroll.borderType = .noBorder
-        mvScroll.autoresizingMask = [.width]
-        let mv = FlippedView(frame: NSRect(x: 0, y: 0, width: bounds.width, height: membersH))
-        mvScroll.documentView = mv
-        addSubview(mvScroll)
+        let mv = FlippedView(frame: NSRect(x: 0, y: mvY, width: 2000, height: membersH))
+        addSubview(mv)
         membersView = mv
     }
 
@@ -1762,14 +1755,12 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         mv.subviews.forEach { $0.removeFromSuperview() }
         var x: CGFloat = padX
         let chipH: CGFloat = 24
-        let maxChipW = (mv.superview?.frame.width ?? bounds.width) - padX * 2
         for (i, m) in members.enumerated() where m.name != "human" {
             let stateColor = m.state.color
-            let truncName = m.name.count > 16 ? String(m.name.prefix(15)) + "…" : m.name
-            let nameAttr = NSAttributedString(string: truncName, attributes: [
+            let nameAttr = NSAttributedString(string: m.name, attributes: [
                 .font: NSFont.systemFont(ofSize: 11, weight: .medium),
                 .foregroundColor: NSColor(calibratedWhite: 0.25, alpha: 1)])
-            let chipW = min(ceil(nameAttr.size().width) + 24, maxChipW)
+            let chipW = ceil(nameAttr.size().width) + 24
 
             let chip = NSView(frame: NSRect(x: x, y: 3, width: chipW, height: chipH))
             chip.wantsLayer = true
@@ -1804,8 +1795,6 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             mv.addSubview(chip)
             x += chipW + 6
         }
-        // Resize document view to fit all chips
-        mv.setFrameSize(NSSize(width: max(x, mv.superview?.frame.width ?? x), height: membersH))
     }
 
     @objc func memberClicked(_ sender: NSButton) {
