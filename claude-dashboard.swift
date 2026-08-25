@@ -1449,9 +1449,11 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     private let headerH: CGFloat = 22
     private let membersH: CGFloat = 36
 
-    private var inputField: NSTextField?
-    private var inputWrapper: NSView?
-    private var inputBaseY: CGFloat = 0
+    private var inputField: NSTextField?  // legacy compat
+    private var inputTV: NSTextView?
+    private var inputScroll: NSScrollView?
+    private var sendButton: NSButton?
+    private var inputMinH: CGFloat = 0
     private var scrollView: NSScrollView?
     private var contentView: NSView?
     private var channelLabel: NSTextField?
@@ -1496,48 +1498,50 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         scrollView = sv
         contentView = cv
 
-        // Input — simple NSTextField (reliable width constraint)
+        // Input — NSTextView in NSScrollView for proper multiline + expansion
         let sendW: CGFloat = 22
         let inputAreaY = bounds.height - inputH - membersH - padY
         let sendX = bounds.width - padX - sendW
         let inputW = sendX - padX - 6
+        inputMinH = inputH
 
-        // Wrapper view for border styling (since we need non-rounded bezel for wrapping)
-        let inputWrap = NSView(frame: NSRect(x: padX, y: inputAreaY, width: inputW, height: inputH))
-        inputWrap.wantsLayer = true
-        inputWrap.layer?.backgroundColor = NSColor.white.cgColor
-        inputWrap.layer?.cornerRadius = 6
-        inputWrap.layer?.borderWidth = 0.5
-        inputWrap.layer?.borderColor = NSColor(calibratedWhite: 0.78, alpha: 1).cgColor
-        addSubview(inputWrap)
-        inputWrapper = inputWrap
+        let sc = NSScrollView(frame: NSRect(x: padX, y: inputAreaY, width: inputW, height: inputH))
+        sc.hasVerticalScroller = false
+        sc.hasHorizontalScroller = false
+        sc.drawsBackground = false
+        sc.wantsLayer = true
+        sc.layer?.backgroundColor = NSColor.white.cgColor
+        sc.layer?.cornerRadius = 6
+        sc.layer?.borderWidth = 0.5
+        sc.layer?.borderColor = NSColor(calibratedWhite: 0.78, alpha: 1).cgColor
 
-        let tf = NSTextField(frame: NSRect(x: 4, y: 2, width: inputW - 8, height: inputH - 4))
-        tf.font = NSFont.systemFont(ofSize: 13, weight: .regular)
-        tf.placeholderString = "@name to DM, Tab ↹"
-        tf.isBezeled = false
-        tf.drawsBackground = false
-        tf.focusRingType = .none
-        tf.usesSingleLineMode = false
-        tf.cell?.wraps = true
-        tf.cell?.isScrollable = false
-        tf.lineBreakMode = .byWordWrapping
-        tf.maximumNumberOfLines = 5
-        tf.delegate = self
-        inputWrap.addSubview(tf)
-        inputField = tf
-        inputBaseY = inputAreaY
+        let tv = NSTextView()
+        tv.font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        tv.drawsBackground = false
+        tv.isRichText = false
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.autoresizingMask = [.width]
+        tv.textContainerInset = NSSize(width: 2, height: 4)
+        tv.textContainer?.widthTracksTextView = true
+        tv.textContainer?.lineFragmentPadding = 4
+        tv.delegate = self
+        sc.documentView = tv
+        addSubview(sc)
+        inputTV = tv
+        inputScroll = sc
 
-        let sendBtn = NSButton(frame: NSRect(x: sendX, y: inputAreaY + 1, width: sendW, height: inputH - 2))
+        let sb = NSButton(frame: NSRect(x: sendX, y: inputAreaY + 1, width: sendW, height: inputH - 2))
         let sendConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
-        sendBtn.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")?.withSymbolConfiguration(sendConfig)
-        sendBtn.imageScaling = .scaleNone
-        sendBtn.isBordered = false
-        sendBtn.contentTintColor = .controlAccentColor
-        sendBtn.target = self
-        sendBtn.action = #selector(sendClicked(_:))
-        sendBtn.autoresizingMask = [.minXMargin]
-        addSubview(sendBtn)
+        sb.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")?.withSymbolConfiguration(sendConfig)
+        sb.imageScaling = .scaleNone
+        sb.isBordered = false
+        sb.contentTintColor = .controlAccentColor
+        sb.target = self
+        sb.action = #selector(sendClicked(_:))
+        sb.autoresizingMask = [.minXMargin]
+        addSubview(sb)
+        sendButton = sb
 
         // Members strip below input
         let mvY = bounds.height - membersH
@@ -1597,8 +1601,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     }
 
     @objc func sendClicked(_ sender: Any) {
-        let text = (inputField?.stringValue ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = (inputTV?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         var msg = text
         var target: String? = nil
@@ -1615,55 +1618,53 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         } else {
             onSend?(activeProject, msg)
         }
-        inputField?.stringValue = ""
-        // Reset input height
-        if let wrap = inputWrapper, wrap.frame.height > inputH {
-            let dy = wrap.frame.height - inputH
-            wrap.frame = NSRect(x: wrap.frame.minX, y: wrap.frame.minY + dy,
-                                width: wrap.frame.width, height: inputH)
-            inputField?.frame = NSRect(x: 4, y: 2, width: inputField!.frame.width, height: inputH - 4)
-            scrollView?.frame.size.height += dy
-        }
+        inputTV?.string = ""
+        resizeInput()
     }
 
     var onSendDM: ((String, String, String) -> Void)?  // (project, message, target)
 
-    func controlTextDidChange(_ obj: Notification) {
-        guard let tf = inputField, let wrap = inputWrapper else { return }
-        let cell = tf.cell!
-        let cellSize = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: tf.frame.width, height: 1000))
-        let newWrapH = max(inputH, min(cellSize.height + 8, inputH * 4))
-        let oldWrapH = wrap.frame.height
-        if abs(newWrapH - oldWrapH) > 1 {
-            let dy = newWrapH - oldWrapH
-            wrap.frame = NSRect(x: wrap.frame.minX, y: wrap.frame.minY - dy,
-                                width: wrap.frame.width, height: newWrapH)
-            tf.frame = NSRect(x: 4, y: 2, width: tf.frame.width, height: newWrapH - 4)
-            if let sv = scrollView { sv.frame.size.height -= dy }
-        }
+    // NSTextViewDelegate
+    func textDidChange(_ notification: Notification) {
+        resizeInput()
     }
 
-    // NSTextFieldDelegate — Enter sends, Tab autocompletes
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+    func textView(_ textView: NSTextView, doCommandBy sel: Selector) -> Bool {
         if sel == #selector(insertNewline(_:)) {
-            if NSEvent.modifierFlags.contains(.shift) { return false } // shift+enter = newline
-            sendClicked(control)
+            if NSEvent.modifierFlags.contains(.shift) { return false }
+            sendClicked(textView)
             return true
         }
         if sel == #selector(insertTab(_:)) {
-            guard let field = inputField else { return false }
-            let text = field.stringValue
+            let text = textView.string
             guard let atIdx = text.lastIndex(of: "@") else { return false }
             let partial = String(text[text.index(after: atIdx)...]).lowercased()
             if partial.isEmpty { return false }
             if let match = sessionNames.first(where: { $0.lowercased().hasPrefix(partial) && $0 != "human" }) {
                 let prefix = String(text[...atIdx])
-                field.stringValue = prefix + match + " "
-                field.currentEditor()?.moveToEndOfLine(nil)
+                textView.string = prefix + match + " "
+                textView.setSelectedRange(NSRange(location: textView.string.count, length: 0))
             }
             return true
         }
         return false
+    }
+
+    private func resizeInput() {
+        guard let tv = inputTV, let sc = inputScroll, let msgSV = scrollView else { return }
+        let lm = tv.layoutManager!
+        let tc = tv.textContainer!
+        lm.ensureLayout(for: tc)
+        let usedH = lm.usedRect(for: tc).height + tv.textContainerInset.height * 2
+        let maxH = inputMinH * 4
+        let newH = max(inputMinH, min(ceil(usedH), maxH))
+        let oldH = sc.frame.height
+        if abs(newH - oldH) > 1 {
+            let dy = newH - oldH
+            sc.frame = NSRect(x: sc.frame.minX, y: sc.frame.minY - dy,
+                              width: sc.frame.width, height: newH)
+            msgSV.frame.size.height -= dy
+        }
     }
 
     func updateProjects(_ newProjects: [String]) {
@@ -1725,10 +1726,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     @objc func memberClicked(_ sender: NSButton) {
         guard sender.tag < members.count else { return }
         let name = members[sender.tag].name
-        if let field = inputField {
-            field.stringValue = "@\(name) "
-            field.window?.makeFirstResponder(field)
-            field.currentEditor()?.moveToEndOfLine(nil)
+        if let tv = inputTV {
+            tv.string = "@\(name) "
+            tv.window?.makeFirstResponder(tv)
+            tv.setSelectedRange(NSRange(location: tv.string.count, length: 0))
         }
     }
 
