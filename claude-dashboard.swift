@@ -1034,16 +1034,33 @@ class TabSidebarView: NSView {
         padY + CGFloat(tabs.count + 1) * (tabH + gap)
     }
 
+    private var cursorAreas: [NSTrackingArea] = []
+    private var hoverArea: NSTrackingArea?
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach { removeTrackingArea($0) }
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeAlways], owner: self))
+        // Cursor: per-rect with .activeInActiveApp (not .activeInActiveApp!)
+        for a in cursorAreas { removeTrackingArea(a) }
+        cursorAreas.removeAll()
+        for i in 0..<tabs.count {
+            let a = NSTrackingArea(rect: tabRect(at: i).intersection(visibleRect),
+                options: [.cursorUpdate, .activeInActiveApp], owner: self)
+            addTrackingArea(a); cursorAreas.append(a)
+        }
+        let addA = NSTrackingArea(rect: addBtnRect().intersection(visibleRect),
+            options: [.cursorUpdate, .activeInActiveApp], owner: self)
+        addTrackingArea(addA); cursorAreas.append(addA)
+        // Hover tracking
+        if let h = hoverArea { removeTrackingArea(h) }
+        hoverArea = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp], owner: self)
+        addTrackingArea(hoverArea!)
     }
 
     override func cursorUpdate(with event: NSEvent) {
-        let loc = convert(event.locationInWindow, from: nil)
-        let overClickable = tabs.indices.contains(where: { tabRect(at: $0).contains(loc) }) || addBtnRect().contains(loc)
-        if overClickable { NSCursor.pointingHand.set() }
+        guard let ea = event.trackingArea, cursorAreas.contains(where: { $0 === ea }) else {
+            super.cursorUpdate(with: event); return
+        }
+        NSCursor.pointingHand.set()
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -1213,17 +1230,29 @@ class NotificationPanelView: NSView {
     }
 
     private var hoveredNotifIdx: Int? = nil
+    private var notifCursorAreas: [NSTrackingArea] = []
+    private var notifHoverArea: NSTrackingArea?
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach { removeTrackingArea($0) }
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeAlways], owner: self))
+        for a in notifCursorAreas { removeTrackingArea(a) }
+        notifCursorAreas.removeAll()
+        for i in 0..<notifications.count {
+            let r = itemRect(at: i).intersection(visibleRect)
+            guard !r.isNull, !r.isEmpty else { continue }
+            let a = NSTrackingArea(rect: r, options: [.cursorUpdate, .activeInActiveApp], owner: self)
+            addTrackingArea(a); notifCursorAreas.append(a)
+        }
+        if let h = notifHoverArea { removeTrackingArea(h) }
+        notifHoverArea = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp], owner: self)
+        addTrackingArea(notifHoverArea!)
     }
 
     override func cursorUpdate(with event: NSEvent) {
-        let loc = convert(event.locationInWindow, from: nil)
-        let overClickable = notifications.indices.contains(where: { itemRect(at: $0).contains(loc) }) || clearRect().contains(loc)
-        if overClickable { NSCursor.pointingHand.set() }
+        guard let ea = event.trackingArea, notifCursorAreas.contains(where: { $0 === ea }) else {
+            super.cursorUpdate(with: event); return
+        }
+        NSCursor.pointingHand.set()
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -1883,7 +1912,7 @@ class HoverIconButton: NSView {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
         addTrackingArea(NSTrackingArea(rect: bounds,
-            options: [.mouseEnteredAndExited, .cursorUpdate, .activeAlways], owner: self))
+            options: [.mouseEnteredAndExited, .cursorUpdate, .activeInActiveApp], owner: self))
     }
 
     override func cursorUpdate(with event: NSEvent) {
@@ -1938,7 +1967,7 @@ class PointerButton: NSButton {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
         addTrackingArea(NSTrackingArea(rect: bounds,
-            options: [.mouseEnteredAndExited, .cursorUpdate, .activeAlways], owner: self))
+            options: [.mouseEnteredAndExited, .cursorUpdate, .activeInActiveApp], owner: self))
     }
 
     override func cursorUpdate(with event: NSEvent) {
@@ -2150,7 +2179,7 @@ class DashboardView: NSView {
         super.updateTrackingAreas()
         if let t = hoverTracker { removeTrackingArea(t) }
         hoverTracker = NSTrackingArea(rect: bounds,
-            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways],
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp],
             owner: self, userInfo: nil)
         addTrackingArea(hoverTracker!)
     }
@@ -2578,7 +2607,7 @@ class DashboardView: NSView {
             addCursorRect(cardRect(at: i), cursor: .pointingHand)
             if truncatedNames[i] != nil {
                 let ta = NSTrackingArea(rect: cardRect(at: i),
-                    options: [.mouseEnteredAndExited, .activeAlways],
+                    options: [.mouseEnteredAndExited, .activeInActiveApp],
                     owner: self, userInfo: ["idx": i])
                 addTrackingArea(ta)
                 trackingAreas2.append(ta)
@@ -3252,7 +3281,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView.tabSidebar = tabSidebar
 
         // Keep tab panel attached to main panel
-        panel.addChildWindow(tabPanel, ordered: .below)
+        panel.addChildWindow(tabPanel, ordered: .above)
 
         // Notification panel — floating to the left of tabs
         notifPanel = AttachedChildWindow(
@@ -3275,7 +3304,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         notifView = NotificationPanelView(frame: notifPanel.contentView!.bounds)
         notifView.autoresizingMask = [.width, .height]
         notifPanel.contentView!.addSubview(notifView)
-        panel.addChildWindow(notifPanel, ordered: .below)
+        panel.addChildWindow(notifPanel, ordered: .above)
         notifPanel.orderOut(nil)
 
         notifView.onClickNotification = { [weak self] notif in
@@ -3322,7 +3351,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         chatView.autoresizingMask = [.width, .height]
         chatPanel.contentView!.addSubview(chatView)
         chatView.setupViews()
-        panel.addChildWindow(chatPanel, ordered: .below)
+        panel.addChildWindow(chatPanel, ordered: .above)
         chatPanel.orderOut(nil)
 
         chatView.onSend = { [weak self] project, message in
