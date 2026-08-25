@@ -1873,20 +1873,16 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         tv.textStorage?.setAttributedString(full)
         tv.sizeToFit()
 
-        // Push messages to bottom — set top origin offset
-        let lm = tv.layoutManager!
-        lm.ensureLayout(for: tv.textContainer!)
-        let textH = lm.usedRect(for: tv.textContainer!).height + 8
+        // Ensure document is at least as tall as visible area so content sits at bottom
         let visibleH = sv.contentSize.height
-        if textH < visibleH {
-            tv.textContainerInset = NSSize(width: padX, height: 4)
-            tv.setFrameOrigin(NSPoint(x: 0, y: visibleH - textH))
-            tv.setFrameSize(NSSize(width: tv.frame.width, height: textH))
-        } else {
-            tv.setFrameOrigin(.zero)
-            tv.sizeToFit()
-            tv.scrollToEndOfDocument(nil)
+        if tv.frame.height < visibleH {
+            tv.setFrameSize(NSSize(width: tv.frame.width, height: visibleH))
         }
+
+        // Scroll to bottom
+        let maxY = tv.frame.height - visibleH
+        sv.contentView.scroll(to: NSPoint(x: 0, y: maxY))
+        sv.reflectScrolledClipView(sv.contentView)
     }
 }
 
