@@ -1875,18 +1875,20 @@ class HoverIconButton: NSView {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
         addTrackingArea(NSTrackingArea(rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+            options: [.mouseEnteredAndExited, .cursorUpdate, .activeAlways], owner: self))
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.pointingHand.set()
     }
 
     override func mouseEntered(with event: NSEvent) {
         isHovered = true
-        NSCursor.pointingHand.set()
         needsDisplay = true
     }
 
     override func mouseExited(with event: NSEvent) {
         isHovered = false
-        NSCursor.arrow.set()
         needsDisplay = true
     }
 
