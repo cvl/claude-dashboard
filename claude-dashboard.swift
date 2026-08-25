@@ -1509,9 +1509,16 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         sc.hasVerticalScroller = true
         sc.autohidesScrollers = true
         sc.hasHorizontalScroller = false
-        sc.borderType = .lineBorder
+        sc.borderType = .noBorder
         sc.drawsBackground = true
         sc.backgroundColor = .white
+        // Rounded border on clipView — scroll view's clipView draws on top of any scroll view layer
+        sc.contentView.wantsLayer = true
+        sc.contentView.layer?.cornerRadius = 8
+        sc.contentView.layer?.borderWidth = 1
+        sc.contentView.layer?.borderColor = NSColor(calibratedWhite: 0.78, alpha: 1).cgColor
+        sc.contentView.layer?.masksToBounds = true
+        sc.contentView.layer?.backgroundColor = NSColor.white.cgColor
         addSubview(sc)
 
         let tv = ChatInputTextView(frame: NSRect(x: 0, y: 0, width: sc.contentSize.width, height: inputH))
