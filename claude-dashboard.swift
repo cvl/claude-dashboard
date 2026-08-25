@@ -85,7 +85,7 @@ enum State: String, CaseIterable {
         case .working:    return NSColor(calibratedRed: 0.25, green: 0.72, blue: 0.35, alpha: 1)
         case .needsInput: return NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 1)
         case .idle:       return NSColor(calibratedWhite: 0.78, alpha: 1)
-        case .dead:       return NSColor(calibratedWhite: 0.88, alpha: 1)
+        case .dead:       return NSColor(calibratedRed: 0.85, green: 0.35, blue: 0.35, alpha: 1)
         }
     }
     var emoji: String {
@@ -1406,7 +1406,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     private let padY: CGFloat = 8
     private let inputH: CGFloat = 30
     private let headerH: CGFloat = 22
-    private let membersH: CGFloat = 30
+    private let membersH: CGFloat = 36
 
     private var inputField: NSTextField?
     private var scrollView: NSScrollView?
@@ -1453,22 +1453,21 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         scrollView = sv
         contentView = cv
 
-        // Input field
+        // Input field + send button
+        let sendW: CGFloat = 30
         let tfY = bounds.height - inputH - membersH - padY
-        let tf = NSTextField(frame: NSRect(x: padX, y: tfY, width: bounds.width - padX * 2 - 32, height: inputH))
+        let sendBtn = NSButton(frame: NSRect(x: bounds.width - padX - sendW, y: tfY + 1, width: sendW, height: inputH - 2))
+        let tfW = bounds.width - padX * 2 - sendW - 4
+        let tf = NSTextField(frame: NSRect(x: padX, y: tfY, width: tfW, height: inputH))
         tf.font = NSFont.systemFont(ofSize: 13, weight: .regular)
         tf.placeholderString = "@name to DM, Tab to complete"
         tf.bezelStyle = .roundedBezel
         tf.usesSingleLineMode = true
         tf.lineBreakMode = .byTruncatingTail
-        // Center text vertically via cell
-        if let cell = tf.cell as? NSTextFieldCell { cell.wraps = false; cell.isScrollable = true }
         tf.autoresizingMask = [.width]
         tf.delegate = self
         addSubview(tf)
         inputField = tf
-
-        let sendBtn = NSButton(frame: NSRect(x: bounds.width - padX - 28, y: tfY, width: 28, height: inputH))
         sendBtn.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")
         sendBtn.imageScaling = .scaleProportionallyUpOrDown
         sendBtn.isBordered = false
@@ -1604,7 +1603,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
             let chip = NSView(frame: NSRect(x: x, y: 3, width: chipW, height: chipH))
             chip.wantsLayer = true
             chip.layer?.backgroundColor = NSColor(calibratedWhite: 0.96, alpha: 1).cgColor
-            chip.layer?.cornerRadius = chipH / 2
+            chip.layer?.cornerRadius = 6
             chip.layer?.borderWidth = 0.5
             chip.layer?.borderColor = NSColor(calibratedWhite: 0.82, alpha: 1).cgColor
 
@@ -2422,13 +2421,15 @@ class DashboardView: NSView {
     private func makeIconButton(frame: NSRect, icon: String, tint: NSColor? = NSColor(calibratedWhite: 0.6, alpha: 1), tooltip: String) -> NSButton {
         let btn = NSButton(frame: frame)
         btn.bezelStyle = .accessoryBarAction
-        btn.isBordered = false
-        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+        btn.isBordered = true
+        btn.showsBorderOnlyWhileMouseInside = true
+        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
         btn.image = NSImage(systemSymbolName: icon, accessibilityDescription: tooltip)?.withSymbolConfiguration(config)
         btn.imagePosition = .imageOnly
         btn.contentTintColor = tint
         btn.toolTip = tooltip
-        btn.showsBorderOnlyWhileMouseInside = true
+        btn.wantsLayer = true
+        btn.layer?.cornerRadius = 4
         return btn
     }
 
@@ -2539,35 +2540,40 @@ class DashboardView: NSView {
             for (i, t) in terminals.enumerated() {
                 let rect = termCardRect(at: i)
                 let isHovered = hoveredCardType == "terminal" && hoveredCardIndex == i
-                let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
                 if isHovered {
-                    NSColor.controlAccentColor.withAlphaComponent(0.08).setFill()
-                    bg.fill()
+                    NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
+                    NSBezierPath(rect: rect).fill()
                 }
 
-                // State dot
+                // State dot — same position as sessions
                 let dotColor: NSColor = t.isAlive ? .systemTeal : NSColor(calibratedWhite: 0.78, alpha: 1)
-                let dotSize: CGFloat = 7
+                let dotSize: CGFloat = 6
                 dotColor.setFill()
-                NSBezierPath(ovalIn: NSRect(x: rect.minX + 4, y: rect.midY - dotSize / 2, width: dotSize, height: dotSize)).fill()
+                NSBezierPath(ovalIn: NSRect(x: padX, y: rect.minY + 13, width: dotSize, height: dotSize)).fill()
 
-                let tx = rect.minX + 18
+                let tx = padX + 14
 
+                // Row 1: name + time (same as sessions)
                 let nameAttr = NSAttributedString(string: t.name, attributes: [
                     .font: Self.fontBold12,
                     .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)])
                 nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
 
+                let statusText = t.isAlive ? "active" : "closed"
+                let statusAttr = NSAttributedString(string: statusText, attributes: [
+                    .font: Self.fontReg9,
+                    .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
+                statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 6, y: rect.minY + 10))
+
+                // Row 2: path
                 let pathAttr = NSAttributedString(string: shortPath(t.cwd), attributes: [
                     .font: Self.fontReg9,
                     .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
-                pathAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 8, y: rect.minY + 10))
+                pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 26))
 
-                // Separator
-                if i < terminals.count - 1 {
-                    NSColor(calibratedWhite: 0.85, alpha: 1).setFill()
-                    NSBezierPath(rect: NSRect(x: tx, y: rect.maxY - 0.5, width: rect.maxX - tx - 8, height: 0.5)).fill()
-                }
+                // Full-width separator
+                NSColor(calibratedWhite: 0.9, alpha: 1).setFill()
+                NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 0.5, width: bounds.width, height: 0.5)).fill()
             }
         }
 
