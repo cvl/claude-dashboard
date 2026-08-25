@@ -996,6 +996,7 @@ class TabSidebarView: NSView {
     var activeTabId: String = "main" { didSet { needsDisplay = true } }
     var dropTargetTabId: String? { didSet { needsDisplay = true } }
     var workingTabIds: Set<String> = [] { didSet { needsDisplay = true } }
+    private var hoveredTabIdx: Int? = nil
 
     var onTabSelect: ((String) -> Void)?
     var onTabAdd: (() -> Void)?
@@ -1041,11 +1042,20 @@ class TabSidebarView: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
-        let overClickable = tabs.indices.contains(where: { tabRect(at: $0).contains(loc) }) || addBtnRect().contains(loc)
+        var found: Int? = nil
+        for i in 0..<tabs.count {
+            if tabRect(at: i).contains(loc) { found = i; break }
+        }
+        if found != hoveredTabIdx { hoveredTabIdx = found; needsDisplay = true }
+        // Set cursor
+        let overClickable = found != nil || addBtnRect().contains(loc)
         if overClickable { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
     }
 
-    override func mouseExited(with event: NSEvent) { NSCursor.arrow.set() }
+    override func mouseExited(with event: NSEvent) {
+        if hoveredTabIdx != nil { hoveredTabIdx = nil; needsDisplay = true }
+        NSCursor.arrow.set()
+    }
 
     override func mouseDown(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
@@ -1110,10 +1120,13 @@ class TabSidebarView: NSView {
             let isActive = tab.id == activeTabId
             let isDropTarget = tab.id == dropTargetTabId
 
-            // Background — only for active/drop target
+            // Background
             let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
             if isDropTarget {
                 NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
+                bg.fill()
+            } else if hoveredTabIdx == i && !isActive {
+                NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
                 bg.fill()
             } else if isActive {
                 NSColor.controlAccentColor.withAlphaComponent(0.08).setFill()
@@ -1464,28 +1477,6 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
 
     override var isFlipped: Bool { true }
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        trackingAreas.forEach { removeTrackingArea($0) }
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways], owner: self))
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        let loc = convert(event.locationInWindow, from: nil)
-        if let sb = sendButton, sb.frame.contains(loc) {
-            NSCursor.pointingHand.set(); return
-        }
-        if let mv = membersView {
-            let mvLoc = mv.convert(loc, from: self)
-            if mv.subviews.contains(where: { $0.frame.contains(mvLoc) }) {
-                NSCursor.pointingHand.set(); return
-            }
-        }
-        NSCursor.arrow.set()
-    }
-
-    override func mouseExited(with event: NSEvent) { NSCursor.arrow.set() }
-
     func setupViews() {
         // Channel header — label + arrow button
         let label = NSTextField(labelWithString: "# main")
@@ -1523,7 +1514,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         contentView = cv
 
         // Input — NSTextView in NSScrollView for proper multiline + expansion
-        let sendW: CGFloat = 22
+        let sendW: CGFloat = 30
         let inputAreaY = bounds.height - inputH - membersH - padY
         let sendX = bounds.width - padX - sendW
         let inputW = sendX - padX - 6
@@ -1564,7 +1555,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         inputTV = tv
         inputScroll = sc
 
-        let sb = NSButton(frame: NSRect(x: sendX, y: inputAreaY, width: sendW, height: inputH))
+        let sb = PointerButton(frame: NSRect(x: sendX, y: inputAreaY, width: sendW, height: inputH))
         let sendConfig = NSImage.SymbolConfiguration(pointSize: 18, weight: .medium)
         sb.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")?.withSymbolConfiguration(sendConfig)
         sb.imageScaling = .scaleNone
@@ -1717,8 +1708,8 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             dot.layer?.cornerRadius = dotSize / 2
             chip.addSubview(dot)
 
-            // Clickable button
-            let btn = NSButton(frame: NSRect(x: 0, y: 0, width: chipW, height: chipH))
+            // Clickable button with pointer cursor
+            let btn = PointerButton(frame: NSRect(x: 0, y: 0, width: chipW, height: chipH))
             let btnAttr = NSAttributedString(string: "     \(m.name)", attributes: [
                 .font: NSFont.systemFont(ofSize: 11, weight: .medium),
                 .foregroundColor: NSColor(calibratedWhite: 0.25, alpha: 1)])
@@ -1727,11 +1718,8 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             btn.tag = i
             btn.target = self
             btn.action = #selector(memberClicked(_:))
+            btn.hoverBackground = NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1)
             chip.addSubview(btn)
-
-            // Pointer cursor on chip
-            let ta = NSTrackingArea(rect: chip.bounds, options: [.mouseEnteredAndExited, .activeAlways, .cursorUpdate], owner: chip)
-            chip.addTrackingArea(ta)
 
             mv.addSubview(chip)
             x += chipW + 6
@@ -1873,6 +1861,36 @@ class ChatMessageTextView: NSTextView {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         super.mouseDown(with: event)
+    }
+}
+
+class PointerButton: NSButton {
+    var hoverBackground: NSColor?
+    var normalBackground = NSColor(calibratedWhite: 0.96, alpha: 1)
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(rect: bounds,
+            options: [.mouseEnteredAndExited, .cursorUpdate, .activeAlways], owner: self))
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.pointingHand.set()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        NSCursor.pointingHand.set()
+        if let bg = hoverBackground {
+            superview?.layer?.backgroundColor = bg.cgColor
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        NSCursor.arrow.set()
+        if hoverBackground != nil {
+            superview?.layer?.backgroundColor = normalBackground.cgColor
+        }
     }
 }
 
@@ -2085,7 +2103,6 @@ class DashboardView: NSView {
             hoveredCardType = newType; hoveredCardIndex = newIdx
             needsDisplay = true
         }
-        if !newType.isEmpty { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -2488,10 +2505,11 @@ class DashboardView: NSView {
     private var trackingAreas2: [NSTrackingArea] = []
 
     override func resetCursorRects() {
-        // Cursor rects handled in mouseMoved with activeAlways tracking
         for ta in trackingAreas2 { removeTrackingArea(ta) }
         trackingAreas2.removeAll()
+
         for i in 0..<sessions.count {
+            addCursorRect(cardRect(at: i), cursor: .pointingHand)
             if truncatedNames[i] != nil {
                 let ta = NSTrackingArea(rect: cardRect(at: i),
                     options: [.mouseEnteredAndExited, .activeAlways],
@@ -2500,8 +2518,13 @@ class DashboardView: NSView {
                 trackingAreas2.append(ta)
             }
         }
+        for i in 0..<terminals.count {
+            addCursorRect(termCardRect(at: i), cursor: .pointingHand)
+        }
+        for i in 0..<pinnedItems.count {
+            addCursorRect(pinnedCardRect(at: i), cursor: .pointingHand)
+        }
     }
-
 
     override func mouseEntered(with event: NSEvent) {
         guard let idx = event.trackingArea?.userInfo?["idx"] as? Int,
@@ -3164,7 +3187,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Keep tab panel attached to main panel
         panel.addChildWindow(tabPanel, ordered: .below)
-        tabPanel.disableCursorRects()
 
         // Notification panel — floating to the left of tabs
         notifPanel = AttachedChildWindow(
@@ -3188,7 +3210,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         notifView.autoresizingMask = [.width, .height]
         notifPanel.contentView!.addSubview(notifView)
         panel.addChildWindow(notifPanel, ordered: .below)
-        notifPanel.disableCursorRects()
         notifPanel.orderOut(nil)
 
         notifView.onClickNotification = { [weak self] notif in
@@ -3236,7 +3257,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         chatPanel.contentView!.addSubview(chatView)
         chatView.setupViews()
         panel.addChildWindow(chatPanel, ordered: .below)
-        chatPanel.disableCursorRects()
         chatPanel.orderOut(nil)
 
         chatView.onSend = { [weak self] project, message in
@@ -3347,7 +3367,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         layoutViews()
         panel.center()
-        panel.disableCursorRects()  // cursors handled via mouseMoved
         panel.makeKeyAndOrderFront(nil)
 
         // Main menu — needed for Cmd+A, Cmd+C, etc. in text views
