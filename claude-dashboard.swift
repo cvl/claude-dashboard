@@ -1510,10 +1510,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         sc.hasHorizontalScroller = false
         sc.drawsBackground = false
         sc.wantsLayer = true
-        sc.layer?.backgroundColor = NSColor.white.cgColor
+        sc.layer?.backgroundColor = NSColor(calibratedWhite: 0.97, alpha: 1).cgColor
         sc.layer?.cornerRadius = 6
-        sc.layer?.borderWidth = 0.5
-        sc.layer?.borderColor = NSColor(calibratedWhite: 0.78, alpha: 1).cgColor
+        sc.layer?.borderWidth = 1
+        sc.layer?.borderColor = NSColor(calibratedWhite: 0.75, alpha: 1).cgColor
 
         let tv = NSTextView()
         tv.font = NSFont.systemFont(ofSize: 13, weight: .regular)
@@ -1650,8 +1650,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         return false
     }
 
+    var onResizePanel: ((CGFloat) -> Void)?  // expand panel by delta
+
     private func resizeInput() {
-        guard let tv = inputTV, let sc = inputScroll, let msgSV = scrollView else { return }
+        guard let tv = inputTV, let sc = inputScroll else { return }
         let lm = tv.layoutManager!
         let tc = tv.textContainer!
         lm.ensureLayout(for: tc)
@@ -1661,9 +1663,9 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         let oldH = sc.frame.height
         if abs(newH - oldH) > 1 {
             let dy = newH - oldH
-            sc.frame = NSRect(x: sc.frame.minX, y: sc.frame.minY - dy,
-                              width: sc.frame.width, height: newH)
-            msgSV.frame.size.height -= dy
+            sc.frame.size.height = newH
+            // Expand panel downward
+            onResizePanel?(dy)
         }
     }
 
@@ -3205,6 +3207,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                           "--type", "human", "--message", message, "--to", target)
             self?.pollChat()
         }
+        chatView.onResizePanel = { [weak self] dy in
+            guard let self, let cp = self.chatPanel as? NSWindow else { return }
+            var f = cp.frame
+            f.size.height += dy
+            f.origin.y -= dy
+            cp.setFrame(f, display: true)
+        }
         chatView.onRemoveFromChat = { [weak self] name in
             guard let self, !chatView.activeProject.isEmpty else { return }
             let _ = shell("/usr/bin/sqlite3", chatDbPath,
@@ -3300,6 +3309,18 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         layoutViews()
         panel.center()
         panel.makeKeyAndOrderFront(nil)
+
+        // Main menu — needed for Cmd+A, Cmd+C, etc. in text views
+        let mainMenu = NSMenu()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        editItem.submenu = editMenu
+        mainMenu.addItem(editItem)
+        NSApp.mainMenu = mainMenu
 
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.modifierFlags.contains(.command) else { return event }
