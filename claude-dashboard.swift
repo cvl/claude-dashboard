@@ -82,10 +82,10 @@ enum State: String, CaseIterable {
     }
     var color: NSColor {
         switch self {
-        case .working:    return .systemGreen
-        case .needsInput: return .systemOrange
-        case .idle:       return .systemGray
-        case .dead:       return .systemRed
+        case .working:    return NSColor(calibratedRed: 0.25, green: 0.72, blue: 0.35, alpha: 1)
+        case .needsInput: return NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 1)
+        case .idle:       return NSColor(calibratedWhite: 0.78, alpha: 1)
+        case .dead:       return NSColor(calibratedWhite: 0.88, alpha: 1)
         }
     }
     var emoji: String {
@@ -953,9 +953,9 @@ func restoreTerminalLayout() {
 // MARK: - Menu bar icon
 
 func dot(_ color: NSColor) -> NSImage {
-    let img = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+    let img = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { _ in
         color.setFill()
-        NSBezierPath(ovalIn: NSRect(x: 5, y: 5, width: 8, height: 8)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 5, y: 5, width: 6, height: 6)).fill()
         return true
     }
     img.isTemplate = false
@@ -1155,9 +1155,9 @@ class NotificationPanelView: NSView {
     private let gap: CGFloat = 4
     private let padX: CGFloat = 6
     private let padY: CGFloat = 6
-    private let font = NSFont.systemFont(ofSize: 10, weight: .medium)
-    private let smallFont = NSFont.systemFont(ofSize: 9, weight: .regular)
-    private let clearH: CGFloat = 20
+    private let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+    private let smallFont = NSFont.systemFont(ofSize: 11, weight: .regular)
+    private let clearH: CGFloat = 22
 
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -2403,17 +2403,16 @@ class DashboardView: NSView {
     // mouseExited is in the hover tracking section above
 
     // ── Button helper ──
-    private func makeIconButton(frame: NSRect, icon: String, tint: NSColor? = .secondaryLabelColor, tooltip: String) -> NSButton {
+    private func makeIconButton(frame: NSRect, icon: String, tint: NSColor? = NSColor(calibratedWhite: 0.6, alpha: 1), tooltip: String) -> NSButton {
         let btn = NSButton(frame: frame)
-        btn.bezelStyle = .recessed
+        btn.bezelStyle = .accessoryBarAction
         btn.isBordered = false
-        btn.image = NSImage(systemSymbolName: icon, accessibilityDescription: tooltip)
+        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+        btn.image = NSImage(systemSymbolName: icon, accessibilityDescription: tooltip)?.withSymbolConfiguration(config)
         btn.imagePosition = .imageOnly
         btn.contentTintColor = tint
         btn.toolTip = tooltip
-        // Hover: show background
         btn.showsBorderOnlyWhileMouseInside = true
-        btn.isBordered = true
         return btn
     }
 
@@ -2465,11 +2464,11 @@ class DashboardView: NSView {
                 bg.fill()
             }
 
-            // State dot
-            let dotSize: CGFloat = 8
-            let dotY = rect.midY - dotSize / 2
+            // State dot — small, subtle
+            let dotSize: CGFloat = 6
+            let dotY = rect.minY + 10
             s.state.color.setFill()
-            NSBezierPath(ovalIn: NSRect(x: rect.minX + 4, y: dotY, width: dotSize, height: dotSize)).fill()
+            NSBezierPath(ovalIn: NSRect(x: rect.minX + 6, y: dotY, width: dotSize, height: dotSize)).fill()
 
             let tx = rect.minX + 18
             let rightEdge = rect.maxX - 52
@@ -2839,16 +2838,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.appearance = NSAppearance(named: .aqua)
 
-        let visual = NSVisualEffectView(frame: panel.contentView!.bounds)
-        visual.material = .sidebar
-        visual.blendingMode = .behindWindow
-        visual.state = .active
-        visual.appearance = NSAppearance(named: .aqua)
-        visual.autoresizingMask = [.width, .height]
-        panel.contentView!.addSubview(visual)
+        panel.contentView!.wantsLayer = true
+        panel.contentView!.layer?.backgroundColor = NSColor.white.cgColor
 
         dashView = DashboardView(frame: panel.contentView!.bounds)
         dashView.autoresizingMask = [.width, .height]
+        dashView.wantsLayer = true
+        dashView.layer?.backgroundColor = NSColor.white.cgColor
         panel.contentView!.addSubview(dashView)
         dashView.onSessionClick = { [weak self] s in
             revealSession(s)
@@ -2993,15 +2989,11 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         tabPanel.isMovableByWindowBackground = false
         tabPanel.appearance = NSAppearance(named: .aqua)
 
-        let tabVisual = NSVisualEffectView(frame: tabPanel.contentView!.bounds)
-        tabVisual.material = .sidebar
-        tabVisual.blendingMode = .behindWindow
-        tabVisual.state = .active
-        tabVisual.autoresizingMask = [.width, .height]
-        tabVisual.wantsLayer = true
-        tabVisual.layer?.cornerRadius = 8
-        tabVisual.layer?.masksToBounds = true
-        tabPanel.contentView!.addSubview(tabVisual)
+        tabPanel.contentView!.wantsLayer = true
+        tabPanel.contentView!.layer?.backgroundColor = NSColor(calibratedWhite: 0.97, alpha: 1).cgColor
+        tabPanel.contentView!.layer?.cornerRadius = 8
+        tabPanel.contentView!.layer?.masksToBounds = true
+        let tabVisual = tabPanel.contentView!
 
         tabSidebar = TabSidebarView(frame: tabPanel.contentView!.bounds)
         tabSidebar.autoresizingMask = [.width, .height]
@@ -3022,15 +3014,12 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         notifPanel.level = panel.level
         notifPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        let notifVisual = NSVisualEffectView(frame: notifPanel.contentView!.bounds)
-        notifVisual.material = .sidebar
-        notifVisual.blendingMode = .behindWindow
-        notifVisual.state = .active
-        notifVisual.autoresizingMask = [.width, .height]
-        notifVisual.wantsLayer = true
-        notifVisual.layer?.cornerRadius = 8
-        notifVisual.layer?.masksToBounds = true
-        notifPanel.contentView!.addSubview(notifVisual)
+        notifPanel.contentView!.wantsLayer = true
+        notifPanel.contentView!.layer?.backgroundColor = NSColor.white.cgColor
+        notifPanel.contentView!.layer?.cornerRadius = 10
+        notifPanel.contentView!.layer?.masksToBounds = true
+        notifPanel.contentView!.layer?.borderWidth = 0.5
+        notifPanel.contentView!.layer?.borderColor = NSColor(calibratedWhite: 0.85, alpha: 1).cgColor
 
         notifView = NotificationPanelView(frame: notifPanel.contentView!.bounds)
         notifView.autoresizingMask = [.width, .height]
@@ -3071,15 +3060,12 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         chatPanel.level = panel.level
         chatPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        let chatVisual = NSVisualEffectView(frame: chatPanel.contentView!.bounds)
-        chatVisual.material = .sidebar
-        chatVisual.blendingMode = .behindWindow
-        chatVisual.state = .active
-        chatVisual.autoresizingMask = [.width, .height]
-        chatVisual.wantsLayer = true
-        chatVisual.layer?.cornerRadius = 8
-        chatVisual.layer?.masksToBounds = true
-        chatPanel.contentView!.addSubview(chatVisual)
+        chatPanel.contentView!.wantsLayer = true
+        chatPanel.contentView!.layer?.backgroundColor = NSColor.white.cgColor
+        chatPanel.contentView!.layer?.cornerRadius = 10
+        chatPanel.contentView!.layer?.masksToBounds = true
+        chatPanel.contentView!.layer?.borderWidth = 0.5
+        chatPanel.contentView!.layer?.borderColor = NSColor(calibratedWhite: 0.85, alpha: 1).cgColor
 
         chatView = ChatPanelView(frame: chatPanel.contentView!.bounds)
         chatView.autoresizingMask = [.width, .height]
