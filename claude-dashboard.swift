@@ -1762,12 +1762,14 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         mv.subviews.forEach { $0.removeFromSuperview() }
         var x: CGFloat = padX
         let chipH: CGFloat = 24
+        let maxChipW = (mv.superview?.frame.width ?? bounds.width) - padX * 2
         for (i, m) in members.enumerated() where m.name != "human" {
             let stateColor = m.state.color
-            let nameAttr = NSAttributedString(string: m.name, attributes: [
+            let truncName = m.name.count > 16 ? String(m.name.prefix(15)) + "…" : m.name
+            let nameAttr = NSAttributedString(string: truncName, attributes: [
                 .font: NSFont.systemFont(ofSize: 11, weight: .medium),
                 .foregroundColor: NSColor(calibratedWhite: 0.25, alpha: 1)])
-            let chipW = ceil(nameAttr.size().width) + 24
+            let chipW = min(ceil(nameAttr.size().width) + 24, maxChipW)
 
             let chip = NSView(frame: NSRect(x: x, y: 3, width: chipW, height: chipH))
             chip.wantsLayer = true
