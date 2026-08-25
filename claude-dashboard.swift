@@ -1496,39 +1496,25 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         scrollView = sv
         contentView = cv
 
-        // Input — NSScrollView + NSTextView for multiline expansion
+        // Input — simple NSTextField (reliable width constraint)
         let sendW: CGFloat = 22
         let inputAreaY = bounds.height - inputH - membersH - padY
         let sendX = bounds.width - padX - sendW
         let inputW = sendX - padX - 6
 
-        let inputScroll = NSScrollView(frame: NSRect(x: padX, y: inputAreaY, width: inputW, height: inputH))
-        inputScroll.hasVerticalScroller = false
-        inputScroll.autoresizingMask = [.width]
-        inputScroll.drawsBackground = true
-        inputScroll.backgroundColor = NSColor(calibratedWhite: 0.96, alpha: 1)
-        inputScroll.wantsLayer = true
-        inputScroll.layer?.cornerRadius = 6
-        inputScroll.layer?.borderWidth = 0.5
-        inputScroll.layer?.borderColor = NSColor(calibratedWhite: 0.8, alpha: 1).cgColor
-
-        let inputTV = NSTextView(frame: NSRect(x: 0, y: 0, width: inputW, height: inputH))
-        inputTV.font = NSFont.systemFont(ofSize: 13, weight: .regular)
-        inputTV.drawsBackground = false
-        inputTV.isRichText = false
-        inputTV.isVerticallyResizable = true
-        inputTV.isHorizontallyResizable = false
-        inputTV.textContainerInset = NSSize(width: 4, height: 4)
-        inputTV.textContainer?.widthTracksTextView = true
-        inputTV.textContainer?.lineFragmentPadding = 2
-        inputTV.textContainer?.size = NSSize(width: inputW - 12, height: 10000)
-        inputTV.maxSize = NSSize(width: inputW, height: 10000)
-        inputTV.minSize = NSSize(width: 0, height: inputH)
-        inputTV.delegate = self
-        inputScroll.documentView = inputTV
-        addSubview(inputScroll)
-        inputTextView = inputTV
-        inputScrollView = inputScroll
+        let tf = NSTextField(frame: NSRect(x: padX, y: inputAreaY, width: inputW, height: inputH))
+        tf.font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        tf.placeholderString = "@name to DM, Tab ↹"
+        tf.bezelStyle = .roundedBezel
+        tf.focusRingType = .none
+        tf.usesSingleLineMode = false
+        tf.cell?.wraps = true
+        tf.cell?.isScrollable = false
+        tf.lineBreakMode = .byWordWrapping
+        tf.maximumNumberOfLines = 4
+        tf.delegate = self
+        addSubview(tf)
+        inputField = tf
 
         let sendBtn = NSButton(frame: NSRect(x: sendX, y: inputAreaY + 1, width: sendW, height: inputH - 2))
         let sendConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
@@ -1599,8 +1585,8 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     }
 
     @objc func sendClicked(_ sender: Any) {
-        guard let tv = inputTextView else { return }
-        let text = tv.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = (inputField?.stringValue ?? inputTextView?.string ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         var msg = text
         var target: String? = nil
@@ -1617,27 +1603,28 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         } else {
             onSend?(activeProject, msg)
         }
-        tv.string = ""
+        inputField?.stringValue = ""
+        inputTextView?.string = ""
     }
 
     var onSendDM: ((String, String, String) -> Void)?  // (project, message, target)
 
-    // NSTextViewDelegate — Enter sends, Shift+Enter for newline, Tab autocompletes
-    func textView(_ textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+    // NSTextFieldDelegate — Enter sends, Tab autocompletes
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
         if sel == #selector(insertNewline(_:)) {
-            if NSEvent.modifierFlags.contains(.shift) { return false }  // Shift+Enter = newline
-            sendClicked(textView)
+            sendClicked(control)
             return true
         }
         if sel == #selector(insertTab(_:)) {
-            let text = textView.string
+            guard let field = inputField else { return false }
+            let text = field.stringValue
             guard let atIdx = text.lastIndex(of: "@") else { return false }
             let partial = String(text[text.index(after: atIdx)...]).lowercased()
             if partial.isEmpty { return false }
             if let match = sessionNames.first(where: { $0.lowercased().hasPrefix(partial) && $0 != "human" }) {
                 let prefix = String(text[...atIdx])
-                textView.string = prefix + match + " "
-                textView.setSelectedRange(NSRange(location: textView.string.count, length: 0))
+                field.stringValue = prefix + match + " "
+                field.currentEditor()?.moveToEndOfLine(nil)
             }
             return true
         }
@@ -1703,10 +1690,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     @objc func memberClicked(_ sender: NSButton) {
         guard sender.tag < members.count else { return }
         let name = members[sender.tag].name
-        if let tv = inputTextView {
-            tv.string = "@\(name) "
-            tv.window?.makeFirstResponder(tv)
-            tv.setSelectedRange(NSRange(location: tv.string.count, length: 0))
+        if let field = inputField {
+            field.stringValue = "@\(name) "
+            field.window?.makeFirstResponder(field)
+            field.currentEditor()?.moveToEndOfLine(nil)
         }
     }
 
