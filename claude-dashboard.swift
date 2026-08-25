@@ -2698,16 +2698,31 @@ class DashboardView: NSView {
             s.state.color.setFill()
             NSBezierPath(ovalIn: NSRect(x: padX, y: dotY, width: dotSize, height: dotSize)).fill()
 
-            let tx = padX + 14
+            var tx = padX + 14
             let rightEdge = rect.maxX - 68
+            let isDead = s.state == .dead
+
+            // Source tag before name
+            let tagText = s.source == "codex" ? "CX" : "CL"
+            let tagColor: NSColor = s.source == "codex"
+                ? NSColor(calibratedRed: 0.65, green: 0.45, blue: 0.2, alpha: isDead ? 0.4 : 0.7)
+                : NSColor(calibratedRed: 0.25, green: 0.5, blue: 0.85, alpha: isDead ? 0.4 : 0.7)
+            let tagAttr = NSAttributedString(string: tagText, attributes: [
+                .font: NSFont.systemFont(ofSize: 8, weight: .semibold), .foregroundColor: tagColor])
+            let tagW = tagAttr.size().width + 6
+            let tagH: CGFloat = 14
+            let tagBg = NSBezierPath(roundedRect: NSRect(x: tx, y: rect.minY + 9, width: tagW, height: tagH), xRadius: 3, yRadius: 3)
+            tagColor.withAlphaComponent(isDead ? 0.06 : 0.12).setFill()
+            tagBg.fill()
+            tagAttr.draw(at: NSPoint(x: tx + 3, y: rect.minY + 9))
+            tx += tagW + 5
 
             // Row 1: name + time
-            let charLimitName = s.name.count > 22 ? String(s.name.prefix(21)) + "…" : s.name
+            let charLimitName = s.name.count > 20 ? String(s.name.prefix(19)) + "…" : s.name
             let maxNameW = rightEdge - tx - 60
             let (displayName, wasTruncated) = truncate(charLimitName, font: Self.fontBold12, maxWidth: maxNameW)
-            let nameTruncated = wasTruncated || s.name.count > 22
+            let nameTruncated = wasTruncated || s.name.count > 20
             if nameTruncated { newTruncated[i] = s.name }
-            let isDead = s.state == .dead
             let nameColor: NSColor = isDead ?
                 NSColor(calibratedWhite: 0.55, alpha: 1) :
                 NSColor(calibratedWhite: 0.11, alpha: 1)
@@ -2720,15 +2735,6 @@ class DashboardView: NSView {
                 .font: Self.fontReg9,
                 .foregroundColor: NSColor(calibratedWhite: isDead ? 0.7 : 0.56, alpha: 1)])
             durAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 6, y: rect.minY + 10))
-
-            // Source label under icons
-            let sourceText = s.source == "codex" ? "codex" : "claude"
-            let sourceAttr = NSAttributedString(string: sourceText, attributes: [
-                .font: NSFont.systemFont(ofSize: 8, weight: .medium),
-                .foregroundColor: NSColor(calibratedWhite: isDead ? 0.82 : 0.72, alpha: 1)])
-            let iconsCenter = rect.maxX - 42
-            let srcX = iconsCenter - sourceAttr.size().width / 2
-            sourceAttr.draw(at: NSPoint(x: srcX, y: rect.minY + 32))
 
             // Row 2: path
             let pathStr = shortPath(s.cwd)
@@ -2838,11 +2844,30 @@ class DashboardView: NSView {
                 accentColor.setFill()
                 NSBezierPath(ovalIn: NSRect(x: padX, y: rect.minY + 13, width: dotSize, height: dotSize)).fill()
 
-                let tx = padX + 14
-
-                // Row 1: name + time (same as sessions)
-                let pinnedDispName = item.name.count > 22 ? String(item.name.prefix(21)) + "…" : item.name
+                var tx = padX + 14
                 let pIsDead = accentColor == NSColor(calibratedRed: 0.85, green: 0.35, blue: 0.35, alpha: 1)
+
+                // Source tag
+                let pinnedSession = allSessions.first(where: { $0.sessionId == item.id })
+                let pSrc = pinnedSession?.source ?? (item.type == "terminal" ? "terminal" : "claude")
+                if pSrc != "terminal" {
+                    let pTagText = pSrc == "codex" ? "CX" : "CL"
+                    let pTagColor: NSColor = pSrc == "codex"
+                        ? NSColor(calibratedRed: 0.65, green: 0.45, blue: 0.2, alpha: pIsDead ? 0.4 : 0.7)
+                        : NSColor(calibratedRed: 0.25, green: 0.5, blue: 0.85, alpha: pIsDead ? 0.4 : 0.7)
+                    let pTagAttr = NSAttributedString(string: pTagText, attributes: [
+                        .font: NSFont.systemFont(ofSize: 8, weight: .semibold), .foregroundColor: pTagColor])
+                    let pTagW = pTagAttr.size().width + 6
+                    let pTagH: CGFloat = 14
+                    let pTagBg = NSBezierPath(roundedRect: NSRect(x: tx, y: rect.minY + 9, width: pTagW, height: pTagH), xRadius: 3, yRadius: 3)
+                    pTagColor.withAlphaComponent(pIsDead ? 0.06 : 0.12).setFill()
+                    pTagBg.fill()
+                    pTagAttr.draw(at: NSPoint(x: tx + 3, y: rect.minY + 9))
+                    tx += pTagW + 5
+                }
+
+                // Row 1: name + time
+                let pinnedDispName = item.name.count > 20 ? String(item.name.prefix(19)) + "…" : item.name
                 let pNameColor: NSColor = pIsDead ?
                     NSColor(calibratedWhite: 0.55, alpha: 1) :
                     NSColor(calibratedWhite: 0.11, alpha: 1)
@@ -2850,7 +2875,6 @@ class DashboardView: NSView {
                     .font: Self.fontBold12, .foregroundColor: pNameColor])
                 nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
 
-                let pinnedSession = allSessions.first(where: { $0.sessionId == item.id })
                 let pinnedTime: Date
                 if let ps = pinnedSession {
                     pinnedTime = ps.hookTs > 0 ? Date(timeIntervalSince1970: Double(ps.hookTs)) : ps.lastActive
@@ -2860,14 +2884,6 @@ class DashboardView: NSView {
                 let timeAttr = NSAttributedString(string: timeAgo(pinnedTime), attributes: [
                     .font: Self.fontReg9, .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
                 timeAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 6, y: rect.minY + 10))
-
-                // Source label under icons
-                let pSrc = pinnedSession?.source ?? (item.type == "terminal" ? "terminal" : "claude")
-                let pSrcAttr = NSAttributedString(string: pSrc, attributes: [
-                    .font: NSFont.systemFont(ofSize: 8, weight: .medium),
-                    .foregroundColor: NSColor(calibratedWhite: pIsDead ? 0.82 : 0.72, alpha: 1)])
-                let pIconsCenter = rect.maxX - 42
-                pSrcAttr.draw(at: NSPoint(x: pIconsCenter - pSrcAttr.size().width / 2, y: rect.minY + 32))
 
                 // Row 2: path
                 let pathAttr = NSAttributedString(string: shortPath(item.cwd), attributes: [
