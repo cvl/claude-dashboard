@@ -1409,7 +1409,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
     private let bodyFont = NSFont.systemFont(ofSize: 12, weight: .regular)
     private let padX: CGFloat = 10
     private let padY: CGFloat = 8
-    private let inputH: CGFloat = 30
+    private let inputH: CGFloat = 24
     private let headerH: CGFloat = 22
     private let membersH: CGFloat = 36
 
