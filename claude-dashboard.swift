@@ -1505,18 +1505,24 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         let inputW = sendX - padX - 6
         inputMinH = inputH
 
-        let sc = NSScrollView(frame: NSRect(x: padX, y: inputAreaY, width: inputW, height: inputH))
+        // Border wrapper
+        let inputBorder = NSView(frame: NSRect(x: padX, y: inputAreaY, width: inputW, height: inputH))
+        inputBorder.wantsLayer = true
+        inputBorder.layer?.cornerRadius = 8
+        inputBorder.layer?.borderWidth = 1
+        inputBorder.layer?.borderColor = NSColor(calibratedWhite: 0.78, alpha: 1).cgColor
+        inputBorder.layer?.backgroundColor = NSColor.white.cgColor
+        inputBorder.layer?.masksToBounds = true
+        addSubview(inputBorder)
+
+        let sc = NSScrollView(frame: inputBorder.bounds)
         sc.hasVerticalScroller = true
         sc.autohidesScrollers = true
         sc.hasHorizontalScroller = false
         sc.borderType = .noBorder
-        sc.drawsBackground = true
-        sc.backgroundColor = .white
-        sc.wantsLayer = true
-        sc.layer?.cornerRadius = 8
-        sc.layer?.borderWidth = 1
-        sc.layer?.borderColor = NSColor(calibratedWhite: 0.78, alpha: 1).cgColor
-        sc.layer?.masksToBounds = true
+        sc.drawsBackground = false
+        sc.autoresizingMask = [.width, .height]
+        inputBorder.addSubview(sc)
 
         let tv = ChatInputTextView()
         tv.font = NSFont.systemFont(ofSize: 13, weight: .regular)
