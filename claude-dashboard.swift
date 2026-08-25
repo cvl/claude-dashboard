@@ -1861,7 +1861,9 @@ class AttachedChildWindow: NSWindow {
 class ChatMessageTextView: NSTextView {
     override var acceptsFirstResponder: Bool { false }
     override func becomeFirstResponder() -> Bool { false }
-    // Still allows text selection via mouse drag
+    override func resetCursorRects() {
+        // Don't set I-beam cursor — prevents fighting with sibling button cursors
+    }
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         super.mouseDown(with: event)
