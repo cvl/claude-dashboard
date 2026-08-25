@@ -3662,7 +3662,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         guard !chatView.activeProject.isEmpty else { return }
         // Load members and feed names for autocomplete
-        let mbrs = loadChatMembers(project: chatView.activeProject)
+        var mbrs = loadChatMembers(project: chatView.activeProject)
+        // Fix state from live session data (chat db PID is stale)
+        for i in 0..<mbrs.count {
+            if let live = currentSessions.first(where: { $0.name == mbrs[i].name }) {
+                mbrs[i] = ChatMember(name: mbrs[i].name, agentType: mbrs[i].agentType, state: live.state)
+            }
+        }
         chatView.members = mbrs
         chatView.sessionNames = mbrs.map(\.name)
         let msgs = loadChatMessages(project: chatView.activeProject)
