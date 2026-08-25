@@ -992,7 +992,7 @@ private extension NSBezierPath {
 // MARK: - Tab Sidebar View
 
 class TabSidebarView: NSView {
-    var tabs: [TabBucket] = [] { didSet { needsDisplay = true; updateTrackingAreas() } }
+    var tabs: [TabBucket] = [] { didSet { needsDisplay = true; rebuildClickTargets() } }
     var activeTabId: String = "main" { didSet { needsDisplay = true } }
     var dropTargetTabId: String? { didSet { needsDisplay = true } }
     var workingTabIds: Set<String> = [] { didSet { needsDisplay = true } }
@@ -1034,41 +1034,72 @@ class TabSidebarView: NSView {
         padY + CGFloat(tabs.count + 1) * (tabH + gap)
     }
 
-    private var cursorAreas: [NSTrackingArea] = []
     private var hoverArea: NSTrackingArea?
+    private var clickTargets: [PointerButton] = []
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        let cursorOpts: NSTrackingArea.Options = [.mouseEnteredAndExited, .cursorUpdate, .activeInActiveApp]
-        for a in cursorAreas { removeTrackingArea(a) }
-        cursorAreas.removeAll()
-        for i in 0..<tabs.count {
-            let r = tabRect(at: i).intersection(visibleRect)
-            guard !r.isNull, !r.isEmpty else { continue }
-            let a = NSTrackingArea(rect: r, options: cursorOpts, owner: self)
-            addTrackingArea(a); cursorAreas.append(a)
-        }
-        let addR = addBtnRect().intersection(visibleRect)
-        if !addR.isNull, !addR.isEmpty {
-            let addA = NSTrackingArea(rect: addR, options: cursorOpts, owner: self)
-            addTrackingArea(addA); cursorAreas.append(addA)
-        }
-        // Hover tracking
         if let h = hoverArea { removeTrackingArea(h) }
         hoverArea = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp], owner: self)
         addTrackingArea(hoverArea!)
     }
 
-    override func cursorUpdate(with event: NSEvent) {
-        guard let ea = event.trackingArea, cursorAreas.contains(where: { $0 === ea }) else {
-            super.cursorUpdate(with: event); return
+    private func rebuildClickTargets() {
+        clickTargets.forEach { $0.removeFromSuperview() }
+        clickTargets.removeAll()
+
+        for (i, tab) in tabs.enumerated() {
+            let button = PointerButton(frame: tabRect(at: i))
+            button.isBordered = false
+            button.title = ""
+            button.focusRingType = .none
+            button.tag = i
+            button.target = self
+            button.action = #selector(tabClicked(_:))
+            button.toolTip = tab.name
+            button.menu = contextMenu(for: tab)
+            addSubview(button)
+            clickTargets.append(button)
         }
-        NSCursor.pointingHand.set()
+
+        let addButton = PointerButton(frame: addBtnRect())
+        addButton.isBordered = false
+        addButton.title = ""
+        addButton.focusRingType = .none
+        addButton.target = self
+        addButton.action = #selector(addTabClicked(_:))
+        addButton.toolTip = "Add tab"
+        addSubview(addButton)
+        clickTargets.append(addButton)
     }
 
-    override func mouseEntered(with event: NSEvent) {
-        guard let area = event.trackingArea, cursorAreas.contains(where: { $0 === area }) else { return }
-        NSCursor.pointingHand.set()
+    private func contextMenu(for tab: TabBucket) -> NSMenu {
+        let menu = NSMenu()
+        let renameItem = NSMenuItem(title: "Rename", action: #selector(contextRename(_:)), keyEquivalent: "")
+        renameItem.target = self
+        renameItem.representedObject = tab.id
+        menu.addItem(renameItem)
+        if tab.id != "main" {
+            let deleteItem = NSMenuItem(title: "Delete", action: #selector(contextDelete(_:)), keyEquivalent: "")
+            deleteItem.target = self
+            deleteItem.representedObject = tab.id
+            menu.addItem(deleteItem)
+        }
+        return menu
+    }
+
+    @objc private func tabClicked(_ sender: NSButton) {
+        guard sender.tag < tabs.count else { return }
+        let tab = tabs[sender.tag]
+        if NSApp.currentEvent?.clickCount == 2 {
+            onTabRename?(tab.id, tab.name)
+        } else {
+            onTabSelect?(tab.id)
+        }
+    }
+
+    @objc private func addTabClicked(_ sender: NSButton) {
+        onTabAdd?()
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -1081,57 +1112,8 @@ class TabSidebarView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
-        if let area = event.trackingArea, cursorAreas.contains(where: { $0 === area }) {
-            NSCursor.arrow.set(); return
-        }
         guard event.trackingArea === hoverArea else { return }
         if hoveredTabIdx != nil { hoveredTabIdx = nil; needsDisplay = true }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        let loc = convert(event.locationInWindow, from: nil)
-        if addBtnRect().contains(loc) {
-            onTabAdd?()
-            return
-        }
-        for (i, tab) in tabs.enumerated() {
-            if tabRect(at: i).contains(loc) {
-                onTabSelect?(tab.id)
-                return
-            }
-        }
-    }
-
-    // Double-click to rename
-    override func mouseUp(with event: NSEvent) {
-        guard event.clickCount == 2 else { return }
-        let loc = convert(event.locationInWindow, from: nil)
-        for (i, tab) in tabs.enumerated() {
-            guard tabRect(at: i).contains(loc) else { continue }
-            onTabRename?(tab.id, tab.name)
-            return
-        }
-    }
-
-    // Right-click context menu
-    override func rightMouseDown(with event: NSEvent) {
-        let loc = convert(event.locationInWindow, from: nil)
-        for (i, tab) in tabs.enumerated() {
-            guard tabRect(at: i).contains(loc) else { continue }
-            let menu = NSMenu()
-            let renameItem = NSMenuItem(title: "Rename", action: #selector(contextRename(_:)), keyEquivalent: "")
-            renameItem.target = self
-            renameItem.representedObject = tab.id
-            menu.addItem(renameItem)
-            if tab.id != "main" {
-                let deleteItem = NSMenuItem(title: "Delete", action: #selector(contextDelete(_:)), keyEquivalent: "")
-                deleteItem.target = self
-                deleteItem.representedObject = tab.id
-                menu.addItem(deleteItem)
-            }
-            NSMenu.popUpContextMenu(menu, with: event, for: self)
-            return
-        }
     }
 
     @objc func contextRename(_ sender: NSMenuItem) {
@@ -1205,7 +1187,7 @@ struct DashNotification {
 }
 
 class NotificationPanelView: NSView {
-    var notifications: [DashNotification] = [] { didSet { needsDisplay = true; updateTrackingAreas() } }
+    var notifications: [DashNotification] = [] { didSet { needsDisplay = true; rebuildClickTargets() } }
     var onClickNotification: ((DashNotification) -> Void)?
     var onDismissNotification: ((String) -> Void)?
     var onClearAll: (() -> Void)?
@@ -1230,11 +1212,11 @@ class NotificationPanelView: NSView {
 
     private func itemRect(at index: Int) -> NSRect {
         let y = padY + clearH + gap + CGFloat(index) * (itemH + gap)
-        return NSRect(x: padX, y: y, width: bounds.width - padX * 2, height: itemH)
+        return NSRect(x: padX, y: y, width: max(0, bounds.width - padX * 2), height: itemH)
     }
 
     private func clearRect() -> NSRect {
-        NSRect(x: padX, y: padY, width: bounds.width - padX * 2, height: clearH)
+        NSRect(x: padX, y: padY, width: max(0, bounds.width - padX * 2), height: clearH)
     }
 
     private func closeRect(for itemRect: NSRect) -> NSRect {
@@ -1242,40 +1224,74 @@ class NotificationPanelView: NSView {
     }
 
     private var hoveredNotifIdx: Int? = nil
-    private var notifCursorAreas: [NSTrackingArea] = []
     private var notifHoverArea: NSTrackingArea?
+    private var clickTargets: [PointerButton] = []
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        layoutClickTargets()
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        let cursorOpts: NSTrackingArea.Options = [.mouseEnteredAndExited, .cursorUpdate, .activeInActiveApp]
-        for a in notifCursorAreas { removeTrackingArea(a) }
-        notifCursorAreas.removeAll()
-        let clear = clearRect().intersection(visibleRect)
-        if !clear.isNull, !clear.isEmpty {
-            let a = NSTrackingArea(rect: clear, options: cursorOpts, owner: self)
-            addTrackingArea(a); notifCursorAreas.append(a)
-        }
-        for i in 0..<notifications.count {
-            let r = itemRect(at: i).intersection(visibleRect)
-            guard !r.isNull, !r.isEmpty else { continue }
-            let a = NSTrackingArea(rect: r, options: cursorOpts, owner: self)
-            addTrackingArea(a); notifCursorAreas.append(a)
-        }
         if let h = notifHoverArea { removeTrackingArea(h) }
         notifHoverArea = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp], owner: self)
         addTrackingArea(notifHoverArea!)
     }
 
-    override func cursorUpdate(with event: NSEvent) {
-        guard let ea = event.trackingArea, notifCursorAreas.contains(where: { $0 === ea }) else {
-            super.cursorUpdate(with: event); return
+    private func rebuildClickTargets() {
+        clickTargets.forEach { $0.removeFromSuperview() }
+        clickTargets.removeAll()
+
+        guard !notifications.isEmpty else { return }
+
+        let clearButton = PointerButton(frame: clearRect())
+        clearButton.isBordered = false
+        clearButton.title = ""
+        clearButton.focusRingType = .none
+        clearButton.target = self
+        clearButton.action = #selector(clearAllClicked(_:))
+        clearButton.toolTip = "Clear all notifications"
+        addSubview(clearButton)
+        clickTargets.append(clearButton)
+
+        for (i, notification) in notifications.enumerated() {
+            let button = PointerButton(frame: itemRect(at: i))
+            button.isBordered = false
+            button.title = ""
+            button.focusRingType = .none
+            button.tag = i
+            button.target = self
+            button.action = #selector(notificationClicked(_:))
+            button.toolTip = notification.sessionName
+            addSubview(button)
+            clickTargets.append(button)
         }
-        NSCursor.pointingHand.set()
     }
 
-    override func mouseEntered(with event: NSEvent) {
-        guard let area = event.trackingArea, notifCursorAreas.contains(where: { $0 === area }) else { return }
-        NSCursor.pointingHand.set()
+    private func layoutClickTargets() {
+        guard clickTargets.count == notifications.count + 1 else { return }
+        clickTargets[0].frame = clearRect()
+        for i in notifications.indices {
+            clickTargets[i + 1].frame = itemRect(at: i)
+        }
+    }
+
+    @objc private func clearAllClicked(_ sender: NSButton) {
+        onClearAll?()
+    }
+
+    @objc private func notificationClicked(_ sender: NSButton) {
+        guard sender.tag < notifications.count else { return }
+        let notification = notifications[sender.tag]
+        if let event = NSApp.currentEvent {
+            let location = convert(event.locationInWindow, from: nil)
+            if closeRect(for: itemRect(at: sender.tag)).contains(location) {
+                onDismissNotification?(notification.id)
+                return
+            }
+        }
+        onClickNotification?(notification)
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -1288,33 +1304,8 @@ class NotificationPanelView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
-        if let area = event.trackingArea, notifCursorAreas.contains(where: { $0 === area }) {
-            NSCursor.arrow.set(); return
-        }
         guard event.trackingArea === notifHoverArea else { return }
         if hoveredNotifIdx != nil { hoveredNotifIdx = nil; needsDisplay = true }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        let loc = convert(event.locationInWindow, from: nil)
-
-        // Clear all
-        if clearRect().contains(loc) {
-            onClearAll?()
-            return
-        }
-
-        for (i, notif) in notifications.enumerated() {
-            let rect = itemRect(at: i)
-            guard rect.contains(loc) else { continue }
-            // X button
-            if closeRect(for: rect).contains(loc) {
-                onDismissNotification?(notif.id)
-            } else {
-                onClickNotification?(notif)
-            }
-            return
-        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -1927,65 +1918,6 @@ class ChatMessageTextView: NSTextView {
 }
 
 /// Button with pointer cursor + rounded hover background, works on non-key windows
-class HoverIconButton: NSView {
-    var image: NSImage? { didSet { needsDisplay = true } }
-    var contentTintColor: NSColor? { didSet { needsDisplay = true } }
-    var target: AnyObject?
-    var action: Selector?
-    var imageScaling: NSImageScaling = .scaleNone
-    private var isHovered = false
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        trackingAreas.forEach { removeTrackingArea($0) }
-        addTrackingArea(NSTrackingArea(rect: bounds,
-            options: [.mouseEnteredAndExited, .cursorUpdate, .activeInActiveApp], owner: self))
-    }
-
-    override func cursorUpdate(with event: NSEvent) {
-        NSCursor.pointingHand.set()
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        isHovered = true
-        needsDisplay = true
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        isHovered = false
-        needsDisplay = true
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        if let target = target, let action = action {
-            NSApp.sendAction(action, to: target, from: self)
-        }
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        if isHovered {
-            let bg = NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 6, yRadius: 6)
-            NSColor(calibratedWhite: 0.0, alpha: 0.06).setFill()
-            bg.fill()
-        }
-        guard let img = image else { return }
-        let tinted: NSImage
-        if let tint = contentTintColor {
-            tinted = img.copy() as! NSImage
-            tinted.lockFocus()
-            tint.set()
-            NSRect(origin: .zero, size: tinted.size).fill(using: .sourceAtop)
-            tinted.unlockFocus()
-        } else {
-            tinted = img
-        }
-        let imgSize = tinted.size
-        let x = (bounds.width - imgSize.width) / 2
-        let y = (bounds.height - imgSize.height) / 2
-        tinted.draw(in: NSRect(x: x, y: y, width: imgSize.width, height: imgSize.height))
-    }
-}
-
 class PointerButton: NSButton {
     var hoverBackground: NSColor?
     var normalBackground = NSColor(calibratedWhite: 0.96, alpha: 1)
@@ -1994,22 +1926,16 @@ class PointerButton: NSButton {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
         addTrackingArea(NSTrackingArea(rect: bounds,
-            options: [.mouseEnteredAndExited, .cursorUpdate, .activeInActiveApp], owner: self))
-    }
-
-    override func cursorUpdate(with event: NSEvent) {
-        NSCursor.pointingHand.set()
+            options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self))
     }
 
     override func mouseEntered(with event: NSEvent) {
-        NSCursor.pointingHand.set()
         if let bg = hoverBackground {
             superview?.layer?.backgroundColor = bg.cgColor
         }
     }
 
     override func mouseExited(with event: NSEvent) {
-        NSCursor.arrow.set()
         if hoverBackground != nil {
             superview?.layer?.backgroundColor = normalBackground.cgColor
         }
@@ -2627,11 +2553,10 @@ class DashboardView: NSView {
     private var trackingAreas2: [NSTrackingArea] = []
 
     override func resetCursorRects() {
+        // Tooltip tracking only — no cursor rects
         for ta in trackingAreas2 { removeTrackingArea(ta) }
         trackingAreas2.removeAll()
-
         for i in 0..<sessions.count {
-            addCursorRect(cardRect(at: i), cursor: .pointingHand)
             if truncatedNames[i] != nil {
                 let ta = NSTrackingArea(rect: cardRect(at: i),
                     options: [.mouseEnteredAndExited, .activeInActiveApp],
@@ -2639,12 +2564,6 @@ class DashboardView: NSView {
                 addTrackingArea(ta)
                 trackingAreas2.append(ta)
             }
-        }
-        for i in 0..<terminals.count {
-            addCursorRect(termCardRect(at: i), cursor: .pointingHand)
-        }
-        for i in 0..<pinnedItems.count {
-            addCursorRect(pinnedCardRect(at: i), cursor: .pointingHand)
         }
     }
 
