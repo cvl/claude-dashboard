@@ -1826,11 +1826,11 @@ class DashboardView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
 
-    private let cardH: CGFloat = 52
-    private let termCardH: CGFloat = 44
-    private let sectionHeaderH: CGFloat = 24
-    private let gap: CGFloat = 8
-    private let padX: CGFloat = 12
+    private let cardH: CGFloat = 40
+    private let termCardH: CGFloat = 32
+    private let sectionHeaderH: CGFloat = 28
+    private let gap: CGFloat = 0
+    private let padX: CGFloat = 16
     private let padY: CGFloat = 10
     private var noteButtons: [NSButton] = []
     var resumeButtons: [NSButton] = []
@@ -1860,7 +1860,7 @@ class DashboardView: NSView {
         return padY + sessH + gap
     }
 
-    private let pinnedCardH: CGFloat = 36
+    private let pinnedCardH: CGFloat = 30
 
     private var pinnedTopY: CGFloat {
         var h = terminalsTopY
@@ -2432,97 +2432,84 @@ class DashboardView: NSView {
         return (ellipsis, true)
     }
 
-    // ── Fonts (cached) ──
-    private static let fontBold12  = NSFont.systemFont(ofSize: 12, weight: .semibold)
-    private static let fontSemi9   = NSFont.systemFont(ofSize: 9, weight: .medium)
-    private static let fontReg10   = NSFont.systemFont(ofSize: 10, weight: .regular)
-    private static let fontReg12   = NSFont.systemFont(ofSize: 12, weight: .regular)
-    private static let fontReg9    = NSFont.systemFont(ofSize: 9, weight: .regular)
+    // ── Fonts — macOS native sizes ──
+    private static let fontBold12  = NSFont.systemFont(ofSize: 13, weight: .medium)
+    private static let fontSemi9   = NSFont.systemFont(ofSize: 11, weight: .regular)
+    private static let fontReg10   = NSFont.systemFont(ofSize: 11, weight: .regular)
+    private static let fontReg12   = NSFont.systemFont(ofSize: 13, weight: .regular)
+    private static let fontReg9    = NSFont.systemFont(ofSize: 10, weight: .regular)
 
     // ── Draw ──
     override func draw(_ dirtyRect: NSRect) {
         let ss = sessions // local snapshot
         if ss.isEmpty {
-            let str = NSAttributedString(string: "No active sessions", attributes: [
-                .font: Self.fontReg12,
-                .foregroundColor: NSColor.secondaryLabelColor])
-            str.draw(at: NSPoint(x: padX, y: 24))
+            let str = NSAttributedString(string: "No sessions", attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .regular),
+                .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
+            let sub = NSAttributedString(string: "\nLaunch with cdash claude", attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)])
+            let m = NSMutableAttributedString(); m.append(str); m.append(sub)
+            m.draw(at: NSPoint(x: padX, y: 20))
         }
 
         var newTruncated: [Int: String] = [:]
         for (i, s) in ss.enumerated() {
             let rect = cardRect(at: i)
 
-            // Card background — native hover style
+            // Hover background
             let isHovered = hoveredCardType == "session" && hoveredCardIndex == i
-            let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
             if isHovered {
-                NSColor.controlAccentColor.withAlphaComponent(0.08).setFill()
+                let bg = NSBezierPath(roundedRect: rect.insetBy(dx: 4, dy: 0), xRadius: 6, yRadius: 6)
+                NSColor(calibratedWhite: 0.0, alpha: 0.04).setFill()
                 bg.fill()
             }
 
-            // Left accent bar
-            NSGraphicsContext.saveGraphicsState()
-            bg.addClip()
+            // State dot
+            let dotSize: CGFloat = 8
+            let dotY = rect.midY - dotSize / 2
             s.state.color.setFill()
-            NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY,
-                                      width: 3, height: cardH)).fill()
-            NSGraphicsContext.restoreGraphicsState()
+            NSBezierPath(ovalIn: NSRect(x: rect.minX + 4, y: dotY, width: dotSize, height: dotSize)).fill()
 
-            let tx = rect.minX + 14
-            let rightEdge = rect.maxX - 62 // leave space for resume + notes buttons
+            let tx = rect.minX + 18
+            let rightEdge = rect.maxX - 52
 
-            // Row 1: name (truncated if needed) + state + duration
-            let charLimitName = s.name.count > 19 ? String(s.name.prefix(18)) + "…" : s.name
-            let maxNameW = rightEdge - tx - 60 // room for state label + pin + duration
+            // Name + path on single row
+            let charLimitName = s.name.count > 22 ? String(s.name.prefix(21)) + "…" : s.name
+            let maxNameW = rightEdge - tx - 80
             let (displayName, wasTruncated) = truncate(charLimitName, font: Self.fontBold12, maxWidth: maxNameW)
-            let nameTruncated = wasTruncated || s.name.count > 19
+            let nameTruncated = wasTruncated || s.name.count > 22
             if nameTruncated { newTruncated[i] = s.name }
             let nameAttr = NSAttributedString(string: displayName, attributes: [
                 .font: Self.fontBold12,
-                .foregroundColor: NSColor.labelColor])
-            nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
+                .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)])
+            nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 5))
 
-            let stateAttr = NSAttributedString(string: s.state.label, attributes: [
-                .font: Self.fontSemi9,
-                .foregroundColor: s.state.color])
-            stateAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 10, y: rect.minY + 10))
-
-            // Time — use hook ts if available, fall back to lastActive
-            let timeDate = s.hookTs > 0 ? Date(timeIntervalSince1970: Double(s.hookTs)) : s.lastActive
-            let durAttr = NSAttributedString(string: timeAgo(timeDate), attributes: [
-                .font: Self.fontReg10,
-                .foregroundColor: NSColor.secondaryLabelColor])
-            durAttr.draw(at: NSPoint(x: rightEdge - durAttr.size().width, y: rect.minY + 9))
-
-            // Row 2: path + source tag (clip path to available width)
+            // Path — secondary, after name
             let pathStr = shortPath(s.cwd)
             let pathAttr = NSAttributedString(string: pathStr, attributes: [
-                .font: Self.fontReg10,
-                .foregroundColor: NSColor.secondaryLabelColor])
-            let maxPathW = rightEdge - tx - 50  // leave room for tag
-            let pathRect = NSRect(x: tx, y: rect.minY + 30, width: min(pathAttr.size().width, maxPathW), height: 14)
+                .font: Self.fontReg9,
+                .foregroundColor: NSColor(calibratedWhite: 0.43, alpha: 1)])
+            let pathX = tx
+            let maxPathW = rightEdge - pathX
+            let pathClip = NSRect(x: pathX, y: rect.minY + 22, width: maxPathW, height: 14)
             NSGraphicsContext.saveGraphicsState()
-            NSBezierPath(rect: pathRect).addClip()
-            pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 30))
+            NSBezierPath(rect: pathClip).addClip()
+            pathAttr.draw(at: NSPoint(x: pathX, y: rect.minY + 22))
             NSGraphicsContext.restoreGraphicsState()
 
-            let tagColor: NSColor = s.source == "codex" ? .systemPurple : .systemBlue
-            let tagText = s.source == "codex" ? "codex" : "claude"
-            let tagAttr = NSAttributedString(string: tagText, attributes: [
+            // Time — right-aligned
+            let timeDate = s.hookTs > 0 ? Date(timeIntervalSince1970: Double(s.hookTs)) : s.lastActive
+            let durAttr = NSAttributedString(string: timeAgo(timeDate), attributes: [
                 .font: Self.fontReg9,
-                .foregroundColor: tagColor])
-            // Draw tag with rounded background
-            let tagSize = tagAttr.size()
-            let tagPad: CGFloat = 4
-            let tagRect = NSRect(x: rightEdge - tagSize.width - tagPad * 2,
-                                 y: rect.minY + 30,
-                                 width: tagSize.width + tagPad * 2,
-                                 height: tagSize.height + 2)
-            let tagBg = NSBezierPath(roundedRect: tagRect, xRadius: 3, yRadius: 3)
-            tagColor.withAlphaComponent(0.1).setFill()
-            tagBg.fill()
-            tagAttr.draw(at: NSPoint(x: tagRect.minX + tagPad, y: tagRect.minY + 1))
+                .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
+            durAttr.draw(at: NSPoint(x: rect.maxX - durAttr.size().width - 8, y: rect.minY + 5))
+
+            // Separator
+            if i < ss.count - 1 {
+                NSColor(calibratedWhite: 0.85, alpha: 1).setFill()
+                NSBezierPath(rect: NSRect(x: tx, y: rect.maxY - 0.5, width: rect.maxX - tx - 8, height: 0.5)).fill()
+            }
 
             // Buttons are NSButton subviews managed by rebuildButtons()
         }
@@ -2534,10 +2521,10 @@ class DashboardView: NSView {
         // ── Terminals section ──
         if !terminals.isEmpty {
             let headerY = terminalsTopY
-            let headerAttr = NSAttributedString(string: "TERMINALS", attributes: [
-                .font: Self.fontSemi9,
-                .foregroundColor: NSColor.tertiaryLabelColor])
-            headerAttr.draw(at: NSPoint(x: padX, y: headerY + 6))
+            let headerAttr = NSAttributedString(string: "Terminals", attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
+            headerAttr.draw(at: NSPoint(x: padX, y: headerY + 8))
 
             for (i, t) in terminals.enumerated() {
                 let rect = termCardRect(at: i)
@@ -2548,56 +2535,38 @@ class DashboardView: NSView {
                     bg.fill()
                 }
 
-                // Left accent
-                let accentColor: NSColor = t.isAlive ? .systemTeal : .systemRed
-                NSGraphicsContext.saveGraphicsState()
-                bg.addClip()
-                accentColor.setFill()
-                NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: 3, height: termCardH)).fill()
-                NSGraphicsContext.restoreGraphicsState()
+                // State dot
+                let dotColor: NSColor = t.isAlive ? .systemTeal : NSColor(calibratedWhite: 0.78, alpha: 1)
+                let dotSize: CGFloat = 7
+                dotColor.setFill()
+                NSBezierPath(ovalIn: NSRect(x: rect.minX + 4, y: rect.midY - dotSize / 2, width: dotSize, height: dotSize)).fill()
 
-                let tx = rect.minX + 14
+                let tx = rect.minX + 18
 
-                // Row 1: name + status
                 let nameAttr = NSAttributedString(string: t.name, attributes: [
                     .font: Self.fontBold12,
-                    .foregroundColor: NSColor.labelColor])
-                nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 5))
+                    .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)])
+                nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
 
-                let statusLabel = t.isAlive ? "ACTIVE" : "CLOSED"
-                let statusColor: NSColor = t.isAlive ? .systemTeal : .systemRed
-                let statusAttr = NSAttributedString(string: statusLabel, attributes: [
-                    .font: Self.fontSemi9,
-                    .foregroundColor: statusColor])
-                statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 10, y: rect.minY + 7))
-
-                // Row 2: path + terminal tag
                 let pathAttr = NSAttributedString(string: shortPath(t.cwd), attributes: [
-                    .font: Self.fontReg10,
-                    .foregroundColor: NSColor.secondaryLabelColor])
-                pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 25))
+                    .font: Self.fontReg9,
+                    .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
+                pathAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 8, y: rect.minY + 10))
 
-                let tTagColor: NSColor = .systemTeal
-                let tTagAttr = NSAttributedString(string: "terminal", attributes: [
-                    .font: Self.fontReg9, .foregroundColor: tTagColor])
-                let tTagSize = tTagAttr.size()
-                let tTagPad: CGFloat = 4
-                let tTagRect = NSRect(x: rect.maxX - 32 - tTagSize.width - tTagPad * 2,
-                                      y: rect.minY + 25, width: tTagSize.width + tTagPad * 2,
-                                      height: tTagSize.height + 2)
-                let tTagBg = NSBezierPath(roundedRect: tTagRect, xRadius: 3, yRadius: 3)
-                tTagColor.withAlphaComponent(0.15).setFill()
-                tTagBg.fill()
-                tTagAttr.draw(at: NSPoint(x: tTagRect.minX + tTagPad, y: tTagRect.minY + 1))
+                // Separator
+                if i < terminals.count - 1 {
+                    NSColor(calibratedWhite: 0.85, alpha: 1).setFill()
+                    NSBezierPath(rect: NSRect(x: tx, y: rect.maxY - 0.5, width: rect.maxX - tx - 8, height: 0.5)).fill()
+                }
             }
         }
 
         // ── Pinned section ──
         if !pinnedItems.isEmpty {
             let headerY = pinnedTopY
-            let headerAttr = NSAttributedString(string: "PINNED", attributes: [
-                .font: Self.fontSemi9,
-                .foregroundColor: NSColor.tertiaryLabelColor])
+            let headerAttr = NSAttributedString(string: "Pinned", attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
             headerAttr.draw(at: NSPoint(x: padX, y: headerY + 6))
 
             for (i, item) in pinnedItems.enumerated() {
@@ -2621,57 +2590,33 @@ class DashboardView: NSView {
                     accentColor = alive ? .systemTeal : .systemRed
                     stateLabel = alive ? "ACTIVE" : "CLOSED"
                 }
-                NSGraphicsContext.saveGraphicsState()
-                bg.addClip()
+                // State dot
+                let dotSize: CGFloat = 7
                 accentColor.setFill()
-                NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: 3, height: pinnedCardH)).fill()
-                NSGraphicsContext.restoreGraphicsState()
+                NSBezierPath(ovalIn: NSRect(x: rect.minX + 4, y: rect.midY - dotSize / 2, width: dotSize, height: dotSize)).fill()
 
-                let tx = rect.minX + 14
-                // Name + status
-                let pinnedDispName = item.name.count > 19 ? String(item.name.prefix(18)) + "…" : item.name
+                let tx = rect.minX + 18
+                let pinnedDispName = item.name.count > 22 ? String(item.name.prefix(21)) + "…" : item.name
                 let nameAttr = NSAttributedString(string: pinnedDispName, attributes: [
-                    .font: Self.fontBold12, .foregroundColor: NSColor.labelColor])
-                nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 3))
-                let statusAttr = NSAttributedString(string: stateLabel, attributes: [
-                    .font: Self.fontSemi9, .foregroundColor: accentColor])
-                statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 8, y: rect.minY + 5))
-                // Time — hook ts or lastActive
+                    .font: Self.fontBold12, .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)])
+                nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 7))
+
                 let pinnedSession = allSessions.first(where: { $0.sessionId == item.id })
                 let pinnedTime: Date
                 if let ps = pinnedSession {
                     pinnedTime = ps.hookTs > 0 ? Date(timeIntervalSince1970: Double(ps.hookTs)) : ps.lastActive
                 } else {
-                    pinnedTime = Date() // no session found
+                    pinnedTime = Date()
                 }
                 let timeAttr = NSAttributedString(string: timeAgo(pinnedTime), attributes: [
-                    .font: Self.fontReg10, .foregroundColor: NSColor.secondaryLabelColor])
-                timeAttr.draw(at: NSPoint(x: rect.maxX - 56 - timeAttr.size().width, y: rect.minY + 5))
-                // Path
-                let pathAttr = NSAttributedString(string: shortPath(item.cwd), attributes: [
-                    .font: Self.fontReg9, .foregroundColor: NSColor.secondaryLabelColor])
-                pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 20))
-                // Source tag
-                let pTagColor: NSColor
-                let pTagText: String
-                if item.type == "terminal" {
-                    pTagColor = .systemTeal; pTagText = "terminal"
-                } else {
-                    let src = pinnedSession?.source ?? "claude"
-                    pTagColor = src == "codex" ? .systemPurple : .systemBlue
-                    pTagText = src == "codex" ? "codex" : "claude"
+                    .font: Self.fontReg9, .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
+                timeAttr.draw(at: NSPoint(x: rect.maxX - 56 - timeAttr.size().width, y: rect.minY + 9))
+
+                // Separator
+                if i < pinnedItems.count - 1 {
+                    NSColor(calibratedWhite: 0.85, alpha: 1).setFill()
+                    NSBezierPath(rect: NSRect(x: tx, y: rect.maxY - 0.5, width: rect.maxX - tx - 8, height: 0.5)).fill()
                 }
-                let pTagAttr = NSAttributedString(string: pTagText, attributes: [
-                    .font: Self.fontReg9, .foregroundColor: pTagColor])
-                let pTagSize = pTagAttr.size()
-                let pTagPad: CGFloat = 4
-                let pTagRect = NSRect(x: rect.maxX - 56 - pTagSize.width - pTagPad * 2,
-                                      y: rect.minY + 20, width: pTagSize.width + pTagPad * 2,
-                                      height: pTagSize.height + 2)
-                let pTagBg = NSBezierPath(roundedRect: pTagRect, xRadius: 3, yRadius: 3)
-                pTagColor.withAlphaComponent(0.15).setFill()
-                pTagBg.fill()
-                pTagAttr.draw(at: NSPoint(x: pTagRect.minX + pTagPad, y: pTagRect.minY + 1))
                 // Buttons are added in rebuildPinnedButtons
             }
         }
