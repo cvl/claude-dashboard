@@ -1047,10 +1047,14 @@ class TabSidebarView: NSView {
             if tabRect(at: i).contains(loc) { found = i; break }
         }
         if found != hoveredTabIdx { hoveredTabIdx = found; needsDisplay = true }
+        // Set cursor
+        let overClickable = found != nil || addBtnRect().contains(loc)
+        if overClickable { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
     }
 
     override func mouseExited(with event: NSEvent) {
         if hoveredTabIdx != nil { hoveredTabIdx = nil; needsDisplay = true }
+        NSCursor.arrow.set()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1156,12 +1160,6 @@ class TabSidebarView: NSView {
         plus.draw(at: NSPoint(x: px, y: py))
     }
 
-    override func resetCursorRects() {
-        for i in 0..<tabs.count {
-            addCursorRect(tabRect(at: i), cursor: .pointingHand)
-        }
-        addCursorRect(addBtnRect(), cursor: .pointingHand)
-    }
 }
 
 // MARK: - Notification Panel
@@ -1227,10 +1225,12 @@ class NotificationPanelView: NSView {
             if itemRect(at: i).contains(loc) { found = i; break }
         }
         if found != hoveredNotifIdx { hoveredNotifIdx = found; needsDisplay = true }
+        if found != nil || clearRect().contains(loc) { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
     }
 
     override func mouseExited(with event: NSEvent) {
         if hoveredNotifIdx != nil { hoveredNotifIdx = nil; needsDisplay = true }
+        NSCursor.arrow.set()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1315,11 +1315,6 @@ class NotificationPanelView: NSView {
         }
     }
 
-    override func resetCursorRects() {
-        for (i, _) in notifications.enumerated() {
-            addCursorRect(itemRect(at: i), cursor: .pointingHand)
-        }
-    }
 }
 
 // MARK: - Chat Panel
@@ -1871,26 +1866,30 @@ class ChatMessageTextView: NSTextView {
 
 class PointerButton: NSButton {
     var hoverBackground: NSColor?
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .pointingHand)
-    }
+    var normalBackground = NSColor(calibratedWhite: 0.96, alpha: 1)
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+        addTrackingArea(NSTrackingArea(rect: bounds,
+            options: [.mouseEnteredAndExited, .cursorUpdate, .activeAlways], owner: self))
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.pointingHand.set()
     }
 
     override func mouseEntered(with event: NSEvent) {
+        NSCursor.pointingHand.set()
         if let bg = hoverBackground {
             superview?.layer?.backgroundColor = bg.cgColor
         }
     }
 
     override func mouseExited(with event: NSEvent) {
+        NSCursor.arrow.set()
         if hoverBackground != nil {
-            superview?.layer?.backgroundColor = NSColor(calibratedWhite: 0.96, alpha: 1).cgColor
+            superview?.layer?.backgroundColor = normalBackground.cgColor
         }
     }
 }
