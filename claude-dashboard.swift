@@ -1509,20 +1509,26 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         sc.hasVerticalScroller = true
         sc.autohidesScrollers = true
         sc.hasHorizontalScroller = false
-        sc.borderType = .bezelBorder
+        sc.borderType = .noBorder
         sc.drawsBackground = true
         sc.backgroundColor = .white
+        sc.wantsLayer = true
+        sc.layer?.cornerRadius = 8
+        sc.layer?.borderWidth = 1
+        sc.layer?.borderColor = NSColor(calibratedWhite: 0.78, alpha: 1).cgColor
+        sc.layer?.masksToBounds = true
 
-        let tv = NSTextView()
+        let tv = ChatInputTextView()
         tv.font = NSFont.systemFont(ofSize: 13, weight: .regular)
         tv.drawsBackground = false
         tv.isRichText = false
         tv.isVerticallyResizable = true
         tv.isHorizontallyResizable = false
         tv.autoresizingMask = [.width]
-        tv.textContainerInset = NSSize(width: 2, height: 4)
+        tv.textContainerInset = NSSize(width: 4, height: 6)
         tv.textContainer?.widthTracksTextView = true
         tv.textContainer?.lineFragmentPadding = 4
+        tv.placeholderString = "@name to DM, Tab to complete"
         tv.delegate = self
         sc.documentView = tv
         addSubview(sc)
@@ -1827,6 +1833,30 @@ class AttachedChildWindow: NSWindow {
     override func orderFront(_ sender: Any?) {
         _hidden = false
         super.orderFront(sender)
+    }
+}
+
+class ChatInputTextView: NSTextView {
+    var placeholderString: String = "" { didSet { needsDisplay = true } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        if string.isEmpty && !placeholderString.isEmpty {
+            let attr = NSAttributedString(string: placeholderString, attributes: [
+                .font: font ?? NSFont.systemFont(ofSize: 13),
+                .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)])
+            attr.draw(at: NSPoint(x: textContainerInset.width + 4, y: textContainerInset.height))
+        }
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        needsDisplay = true
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        needsDisplay = true
+        return super.becomeFirstResponder()
     }
 }
 
