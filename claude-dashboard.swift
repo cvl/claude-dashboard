@@ -1147,12 +1147,6 @@ class TabSidebarView: NSView {
         plus.draw(at: NSPoint(x: px, y: py))
     }
 
-    override func resetCursorRects() {
-        for i in 0..<tabs.count {
-            addCursorRect(tabRect(at: i), cursor: .pointingHand)
-        }
-        addCursorRect(addBtnRect(), cursor: .pointingHand)
-    }
 }
 
 // MARK: - Notification Panel
@@ -1308,11 +1302,6 @@ class NotificationPanelView: NSView {
         }
     }
 
-    override func resetCursorRects() {
-        for (i, _) in notifications.enumerated() {
-            addCursorRect(itemRect(at: i), cursor: .pointingHand)
-        }
-    }
 }
 
 // MARK: - Chat Panel
