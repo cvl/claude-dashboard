@@ -1217,24 +1217,17 @@ class NotificationPanelView: NSView {
         for (i, notif) in notifications.enumerated() {
             let rect = itemRect(at: i)
 
-            // Background
-            let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-            NSColor.controlBackgroundColor.setFill()
-            bg.fill()
-
-            // Accent — orange for input needed, blue for finished
-            let accentColor = notif.isInputNeeded ? NSColor.systemOrange : NSColor.systemBlue
-            NSGraphicsContext.saveGraphicsState()
-            bg.addClip()
+            // Accent dot
+            let accentColor: NSColor = notif.isInputNeeded ?
+                NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 1) : .controlAccentColor
             accentColor.setFill()
-            NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: 3, height: itemH)).fill()
-            NSGraphicsContext.restoreGraphicsState()
+            NSBezierPath(ovalIn: NSRect(x: rect.minX + 4, y: rect.minY + 10, width: 6, height: 6)).fill()
 
-            let tx = rect.minX + 10
+            let tx = rect.minX + 16
 
             // Name
             let nameAttr = NSAttributedString(string: notif.sessionName, attributes: [
-                .font: font, .foregroundColor: NSColor.labelColor])
+                .font: font, .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)])
             nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 5))
 
             // Status + time
@@ -1244,19 +1237,31 @@ class NotificationPanelView: NSView {
                 ? "input needed \(df.string(from: notif.time))"
                 : "finished \(df.string(from: notif.time))"
             let timeAttr = NSAttributedString(string: timeStr, attributes: [
-                .font: smallFont, .foregroundColor: NSColor.secondaryLabelColor])
+                .font: smallFont, .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
             timeAttr.draw(at: NSPoint(x: tx, y: rect.minY + 20))
 
             // Path
             let pathAttr = NSAttributedString(string: shortPath(notif.cwd), attributes: [
-                .font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor])
+                .font: smallFont, .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)])
             pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 31))
 
             // X button
             let xr = closeRect(for: rect)
             let xAttr = NSAttributedString(string: "✕", attributes: [
-                .font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.secondaryLabelColor])
+                .font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor(calibratedWhite: 0.6, alpha: 1)])
             xAttr.draw(at: NSPoint(x: xr.minX, y: xr.minY))
+
+            // Separator
+            if i < notifications.count - 1 {
+                NSColor(calibratedWhite: 0.9, alpha: 1).setFill()
+                NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 0.5, width: bounds.width, height: 0.5)).fill()
+            }
+        }
+    }
+
+    override func resetCursorRects() {
+        for (i, _) in notifications.enumerated() {
+            addCursorRect(itemRect(at: i), cursor: .pointingHand)
         }
     }
 }
@@ -1454,12 +1459,13 @@ class ChatPanelView: NSView, NSTextFieldDelegate {
         contentView = cv
 
         // Input field + send button
-        let sendW: CGFloat = 30
+        let sendW: CGFloat = 28
         let tfY = bounds.height - inputH - membersH - padY
-        let sendBtn = NSButton(frame: NSRect(x: bounds.width - padX - sendW, y: tfY + 1, width: sendW, height: inputH - 2))
-        let tfW = bounds.width - padX * 2 - sendW - 4
+        let sendX = bounds.width - padX - sendW
+        let tfW = sendX - padX - 4
         let tf = NSTextField(frame: NSRect(x: padX, y: tfY, width: tfW, height: inputH))
         tf.font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        let sendBtn = NSButton(frame: NSRect(x: sendX, y: tfY + 1, width: sendW, height: inputH - 2))
         tf.placeholderString = "@name to DM, Tab to complete"
         tf.bezelStyle = .roundedBezel
         tf.usesSingleLineMode = true
@@ -2272,19 +2278,15 @@ class DashboardView: NSView {
     func rebuildTermButtons() {
         termPinButtons.forEach { $0.removeFromSuperview() }
         termPinButtons.removeAll()
+        let btnSize: CGFloat = 22
         for (i, t) in terminals.enumerated() {
             let rect = termCardRect(at: i)
+            let by = rect.minY + (termCardH - btnSize) / 2
+            let bx = rect.maxX - 8 - btnSize
             let isPinned = pinnedItems.contains { $0.id == t.name }
-            // Position after name + status label
-            let nameW = NSAttributedString(string: t.name, attributes: [
-                .font: Self.fontBold12]).size().width
-            let statusLabel = t.isAlive ? "ACTIVE" : "CLOSED"
-            let statusW = NSAttributedString(string: statusLabel, attributes: [
-                .font: Self.fontSemi9]).size().width
-            let pinX = min(rect.minX + 14 + nameW + 10 + statusW + 6, rect.maxX - 30)
-            let pb = makeIconButton(frame: NSRect(x: pinX, y: rect.minY + 4, width: 20, height: 20),
+            let pb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
                 icon: isPinned ? "pin.fill" : "pin",
-                tint: isPinned ? .systemBlue : .secondaryLabelColor,
+                tint: isPinned ? .controlAccentColor : NSColor(calibratedWhite: 0.6, alpha: 1),
                 tooltip: isPinned ? "Unpin" : "Pin")
             pb.tag = i; pb.target = self; pb.action = #selector(termPinBtnClicked(_:))
             addSubview(pb); termPinButtons.append(pb)
@@ -2495,15 +2497,18 @@ class DashboardView: NSView {
             let (displayName, wasTruncated) = truncate(charLimitName, font: Self.fontBold12, maxWidth: maxNameW)
             let nameTruncated = wasTruncated || s.name.count > 22
             if nameTruncated { newTruncated[i] = s.name }
+            let isDead = s.state == .dead
+            let nameColor: NSColor = isDead ?
+                NSColor(calibratedWhite: 0.55, alpha: 1) :
+                NSColor(calibratedWhite: 0.11, alpha: 1)
             let nameAttr = NSAttributedString(string: displayName, attributes: [
-                .font: Self.fontBold12,
-                .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)])
+                .font: Self.fontBold12, .foregroundColor: nameColor])
             nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
 
             let timeDate = s.hookTs > 0 ? Date(timeIntervalSince1970: Double(s.hookTs)) : s.lastActive
             let durAttr = NSAttributedString(string: timeAgo(timeDate), attributes: [
                 .font: Self.fontReg9,
-                .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
+                .foregroundColor: NSColor(calibratedWhite: isDead ? 0.7 : 0.56, alpha: 1)])
             durAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 6, y: rect.minY + 10))
 
             // Row 2: path
@@ -2546,29 +2551,26 @@ class DashboardView: NSView {
                 }
 
                 // State dot — same position as sessions
-                let dotColor: NSColor = t.isAlive ? .systemTeal : NSColor(calibratedWhite: 0.78, alpha: 1)
+                let dotColor: NSColor = t.isAlive ? .systemTeal :
+                    NSColor(calibratedRed: 0.85, green: 0.35, blue: 0.35, alpha: 1)
                 let dotSize: CGFloat = 6
                 dotColor.setFill()
                 NSBezierPath(ovalIn: NSRect(x: padX, y: rect.minY + 13, width: dotSize, height: dotSize)).fill()
 
                 let tx = padX + 14
+                let nameColor: NSColor = t.isAlive ?
+                    NSColor(calibratedWhite: 0.11, alpha: 1) :
+                    NSColor(calibratedWhite: 0.55, alpha: 1)
 
-                // Row 1: name + time (same as sessions)
+                // Row 1: name
                 let nameAttr = NSAttributedString(string: t.name, attributes: [
-                    .font: Self.fontBold12,
-                    .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)])
+                    .font: Self.fontBold12, .foregroundColor: nameColor])
                 nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
-
-                let statusText = t.isAlive ? "active" : "closed"
-                let statusAttr = NSAttributedString(string: statusText, attributes: [
-                    .font: Self.fontReg9,
-                    .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
-                statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 6, y: rect.minY + 10))
 
                 // Row 2: path
                 let pathAttr = NSAttributedString(string: shortPath(t.cwd), attributes: [
                     .font: Self.fontReg9,
-                    .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
+                    .foregroundColor: NSColor(calibratedWhite: 0.65, alpha: 1)])
                 pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 26))
 
                 // Full-width separator
@@ -2621,8 +2623,12 @@ class DashboardView: NSView {
 
                 // Row 1: name + time (same as sessions)
                 let pinnedDispName = item.name.count > 22 ? String(item.name.prefix(21)) + "…" : item.name
+                let pIsDead = accentColor == NSColor(calibratedRed: 0.85, green: 0.35, blue: 0.35, alpha: 1)
+                let pNameColor: NSColor = pIsDead ?
+                    NSColor(calibratedWhite: 0.55, alpha: 1) :
+                    NSColor(calibratedWhite: 0.11, alpha: 1)
                 let nameAttr = NSAttributedString(string: pinnedDispName, attributes: [
-                    .font: Self.fontBold12, .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)])
+                    .font: Self.fontBold12, .foregroundColor: pNameColor])
                 nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
 
                 let pinnedSession = allSessions.first(where: { $0.sessionId == item.id })
