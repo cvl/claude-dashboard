@@ -1102,11 +1102,14 @@ class TabSidebarView: NSView {
             // Background — only for active/drop target
             let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
             if isDropTarget {
-                NSColor.systemBlue.withAlphaComponent(0.15).setFill()
+                NSColor.systemBlue.withAlphaComponent(0.1).setFill()
                 bg.fill()
             } else if isActive {
-                NSColor(white: 0.0, alpha: 0.06).setFill()
+                NSColor.white.setFill()
                 bg.fill()
+                NSColor(white: 0.0, alpha: 0.08).setStroke()
+                bg.lineWidth = 0.5
+                bg.stroke()
             }
 
             let hasWorking = workingTabIds.contains(tab.id)
@@ -1222,8 +1225,11 @@ class NotificationPanelView: NSView {
 
             // Background
             let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-            NSColor(white: 0.0, alpha: 0.04).setFill()
+            NSColor.white.setFill()
             bg.fill()
+            NSColor(white: 0.0, alpha: 0.08).setStroke()
+            bg.lineWidth = 0.5
+            bg.stroke()
 
             // Accent — orange for input needed, blue for finished
             let accentColor = notif.isInputNeeded ? NSColor.systemOrange : NSColor.systemBlue
@@ -2458,12 +2464,14 @@ class DashboardView: NSView {
         for (i, s) in ss.enumerated() {
             let rect = cardRect(at: i)
 
-            // Card background
+            // Card background — white card with subtle border
             let isHovered = hoveredCardType == "session" && hoveredCardIndex == i
-            let bgAlpha: CGFloat = isHovered ? 0.08 : 0.04
-            let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-            NSColor(white: 0.5, alpha: bgAlpha).setFill()
+            let bg = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
+            NSColor.white.setFill()
             bg.fill()
+            NSColor(white: 0.0, alpha: isHovered ? 0.12 : 0.06).setStroke()
+            bg.lineWidth = 0.5
+            bg.stroke()
 
             // Left accent bar
             NSGraphicsContext.saveGraphicsState()
@@ -2524,7 +2532,7 @@ class DashboardView: NSView {
                                  width: tagSize.width + tagPad * 2,
                                  height: tagSize.height + 2)
             let tagBg = NSBezierPath(roundedRect: tagRect, xRadius: 3, yRadius: 3)
-            tagColor.withAlphaComponent(0.15).setFill()
+            tagColor.withAlphaComponent(0.1).setFill()
             tagBg.fill()
             tagAttr.draw(at: NSPoint(x: tagRect.minX + tagPad, y: tagRect.minY + 1))
 
@@ -2546,9 +2554,12 @@ class DashboardView: NSView {
             for (i, t) in terminals.enumerated() {
                 let rect = termCardRect(at: i)
                 let isHovered = hoveredCardType == "terminal" && hoveredCardIndex == i
-                let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-                NSColor(white: 0.0, alpha: isHovered ? 0.06 : 0.03).setFill()
+                let bg = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
+                NSColor.white.setFill()
                 bg.fill()
+                NSColor(white: 0.0, alpha: isHovered ? 0.12 : 0.06).setStroke()
+                bg.lineWidth = 0.5
+                bg.stroke()
 
                 // Left accent
                 let accentColor: NSColor = t.isAlive ? .systemTeal : .systemRed
@@ -2605,9 +2616,12 @@ class DashboardView: NSView {
             for (i, item) in pinnedItems.enumerated() {
                 let rect = pinnedCardRect(at: i)
                 let isHovered = hoveredCardType == "pinned" && hoveredCardIndex == i
-                let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-                NSColor(white: 0.0, alpha: isHovered ? 0.06 : 0.03).setFill()
+                let bg = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
+                NSColor.white.setFill()
                 bg.fill()
+                NSColor(white: 0.0, alpha: isHovered ? 0.12 : 0.06).setStroke()
+                bg.lineWidth = 0.5
+                bg.stroke()
 
                 // Left accent — use allSessions for state lookup (not tab-filtered)
                 let accentColor: NSColor
@@ -2892,11 +2906,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.level = alwaysOnTop ? .floating : .normal
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.appearance = NSAppearance(named: .aqua)  // force light mode
+        panel.backgroundColor = .white
 
         let visual = NSVisualEffectView(frame: panel.contentView!.bounds)
-        visual.material = .popover
+        visual.material = .sidebar
         visual.blendingMode = .behindWindow
         visual.state = .active
+        visual.appearance = NSAppearance(named: .aqua)
         visual.autoresizingMask = [.width, .height]
         panel.contentView!.addSubview(visual)
 
@@ -3040,13 +3057,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             styleMask: [.borderless], backing: .buffered, defer: false)
         tabPanel.isOpaque = false
         tabPanel.backgroundColor = .clear
-        tabPanel.hasShadow = false
+        tabPanel.hasShadow = true
         tabPanel.level = panel.level
         tabPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         tabPanel.isMovableByWindowBackground = false
+        tabPanel.appearance = NSAppearance(named: .aqua)
 
         let tabVisual = NSVisualEffectView(frame: tabPanel.contentView!.bounds)
-        tabVisual.material = .hudWindow
+        tabVisual.material = .sidebar
         tabVisual.blendingMode = .behindWindow
         tabVisual.state = .active
         tabVisual.autoresizingMask = [.width, .height]
@@ -3069,12 +3087,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             styleMask: [.borderless], backing: .buffered, defer: false)
         notifPanel.isOpaque = false
         notifPanel.backgroundColor = .clear
-        notifPanel.hasShadow = false
+        notifPanel.hasShadow = true
+        notifPanel.appearance = NSAppearance(named: .aqua)
         notifPanel.level = panel.level
         notifPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         let notifVisual = NSVisualEffectView(frame: notifPanel.contentView!.bounds)
-        notifVisual.material = .hudWindow
+        notifVisual.material = .sidebar
         notifVisual.blendingMode = .behindWindow
         notifVisual.state = .active
         notifVisual.autoresizingMask = [.width, .height]
@@ -3118,11 +3137,12 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         chatPanel.isOpaque = false
         chatPanel.backgroundColor = .clear
         chatPanel.hasShadow = true
+        chatPanel.appearance = NSAppearance(named: .aqua)
         chatPanel.level = panel.level
         chatPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         let chatVisual = NSVisualEffectView(frame: chatPanel.contentView!.bounds)
-        chatVisual.material = .hudWindow
+        chatVisual.material = .sidebar
         chatVisual.blendingMode = .behindWindow
         chatVisual.state = .active
         chatVisual.autoresizingMask = [.width, .height]
