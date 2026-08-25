@@ -1861,10 +1861,8 @@ class AttachedChildWindow: NSWindow {
 class ChatMessageTextView: NSTextView {
     override var acceptsFirstResponder: Bool { false }
     override func becomeFirstResponder() -> Bool { false }
-    override func resetCursorRects() {}
-    override func updateTrackingAreas() {
-        // Remove all tracking areas to prevent cursor fighting
-        trackingAreas.forEach { removeTrackingArea($0) }
+    override func resetCursorRects() {
+        // Don't set I-beam cursor — prevents fighting with sibling button cursors
     }
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
@@ -1964,7 +1962,6 @@ class PointerButton: NSButton {
 
 class ChatInputTextView: NSTextView {
     var placeholderString: String = "" { didSet { needsDisplay = true } }
-    override func resetCursorRects() {}  // don't fight with sibling cursors
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
