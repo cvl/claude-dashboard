@@ -1519,7 +1519,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         contentView = cv
 
         // Input — NSTextView in NSScrollView for proper multiline + expansion
-        let sendW: CGFloat = 22
+        let sendW: CGFloat = 30
         let inputAreaY = bounds.height - inputH - membersH - padY
         let sendX = bounds.width - padX - sendW
         let inputW = sendX - padX - 6
@@ -1560,8 +1560,8 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         inputTV = tv
         inputScroll = sc
 
-        let sb = NSButton(frame: NSRect(x: sendX, y: inputAreaY + 1, width: sendW, height: inputH - 2))
-        let sendConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        let sb = PointerButton(frame: NSRect(x: sendX, y: inputAreaY, width: sendW, height: inputH))
+        let sendConfig = NSImage.SymbolConfiguration(pointSize: 18, weight: .medium)
         sb.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")?.withSymbolConfiguration(sendConfig)
         sb.imageScaling = .scaleNone
         sb.isBordered = false
@@ -1723,6 +1723,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             btn.tag = i
             btn.target = self
             btn.action = #selector(memberClicked(_:))
+            btn.hoverBackground = NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1)
             chip.addSubview(btn)
 
             mv.addSubview(chip)
@@ -1869,8 +1870,28 @@ class ChatMessageTextView: NSTextView {
 }
 
 class PointerButton: NSButton {
+    var hoverBackground: NSColor?
+
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        if let bg = hoverBackground {
+            superview?.layer?.backgroundColor = bg.cgColor
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if hoverBackground != nil {
+            superview?.layer?.backgroundColor = NSColor(calibratedWhite: 0.96, alpha: 1).cgColor
+        }
     }
 }
 
