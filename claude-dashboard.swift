@@ -2721,19 +2721,21 @@ class DashboardView: NSView {
                 .foregroundColor: NSColor(calibratedWhite: isDead ? 0.7 : 0.56, alpha: 1)])
             durAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 6, y: rect.minY + 10))
 
-            // Row 2: source + path
+            // Source label under icons
             let sourceText = s.source == "codex" ? "codex" : "claude"
-            let sourceColor: NSColor = isDead ? NSColor(calibratedWhite: 0.75, alpha: 1) : NSColor(calibratedWhite: 0.65, alpha: 1)
             let sourceAttr = NSAttributedString(string: sourceText, attributes: [
-                .font: Self.fontReg9, .foregroundColor: sourceColor])
-            sourceAttr.draw(at: NSPoint(x: tx, y: rect.minY + 26))
+                .font: NSFont.systemFont(ofSize: 8, weight: .medium),
+                .foregroundColor: NSColor(calibratedWhite: isDead ? 0.82 : 0.72, alpha: 1)])
+            let iconsCenter = rect.maxX - 42
+            let srcX = iconsCenter - sourceAttr.size().width / 2
+            sourceAttr.draw(at: NSPoint(x: srcX, y: rect.minY + 32))
 
+            // Row 2: path
             let pathStr = shortPath(s.cwd)
             let pathAttr = NSAttributedString(string: pathStr, attributes: [
                 .font: Self.fontReg9,
                 .foregroundColor: NSColor(calibratedWhite: isDead ? 0.75 : 0.56, alpha: 1)])
-            let pathX = tx + sourceAttr.size().width + 6
-            let maxPathW = rightEdge - pathX
+            let maxPathW = rightEdge - tx
             let pathClip = NSRect(x: pathX, y: rect.minY + 26, width: maxPathW, height: 14)
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: pathClip).addClip()
@@ -2859,15 +2861,18 @@ class DashboardView: NSView {
                     .font: Self.fontReg9, .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
                 timeAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 6, y: rect.minY + 10))
 
-                // Row 2: source + path
+                // Source label under icons
                 let pSrc = pinnedSession?.source ?? (item.type == "terminal" ? "terminal" : "claude")
                 let pSrcAttr = NSAttributedString(string: pSrc, attributes: [
-                    .font: Self.fontReg9, .foregroundColor: NSColor(calibratedWhite: pIsDead ? 0.75 : 0.65, alpha: 1)])
-                pSrcAttr.draw(at: NSPoint(x: tx, y: rect.minY + 26))
-                let pPathX = tx + pSrcAttr.size().width + 6
+                    .font: NSFont.systemFont(ofSize: 8, weight: .medium),
+                    .foregroundColor: NSColor(calibratedWhite: pIsDead ? 0.82 : 0.72, alpha: 1)])
+                let pIconsCenter = rect.maxX - 42
+                pSrcAttr.draw(at: NSPoint(x: pIconsCenter - pSrcAttr.size().width / 2, y: rect.minY + 32))
 
+                // Row 2: path
                 let pathAttr = NSAttributedString(string: shortPath(item.cwd), attributes: [
                     .font: Self.fontReg9, .foregroundColor: NSColor(calibratedWhite: pIsDead ? 0.75 : 0.56, alpha: 1)])
+                let pPathX = tx
                 let maxPW = rect.maxX - 68 - pPathX
                 let pClip = NSRect(x: pPathX, y: rect.minY + 26, width: maxPW, height: 14)
                 NSGraphicsContext.saveGraphicsState()
