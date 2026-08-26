@@ -1549,7 +1549,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     private var scrollView: NSScrollView?
     private var contentView: NSView?
     private var channelLabel: NSTextField?
-    private var membersView: NSView?
+    var membersView: NSView?
     var sessionNames: [String] = []
 
     override var isFlipped: Bool { true }
@@ -3505,12 +3505,19 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         chatView.onMembersHeightChanged = { [weak self] newH in
             guard let self else { return }
-            var f = self.chatPanel.frame
             let delta = newH - self.chatView.membersH
+            guard abs(delta) > 1 else { return }
             self.chatView.membersH = newH
+            // Expand panel downward
+            var f = self.chatPanel.frame
             f.size.height += delta
             f.origin.y -= delta
             self.chatPanel.setFrame(f, display: true)
+            // Reposition members view
+            if let mv = self.chatView.membersView {
+                mv.frame = NSRect(x: 0, y: self.chatView.bounds.height - newH,
+                                  width: mv.frame.width, height: newH)
+            }
         }
         chatView.onRemoveFromChat = { [weak self] name in
             guard let self, !chatView.activeProject.isEmpty else { return }
@@ -3857,11 +3864,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard !chatView.activeProject.isEmpty else { return }
         // Load members and feed names for autocomplete
         var mbrs = loadChatMembers(project: chatView.activeProject)
-        // Fix state from live session data (use all sessions, not just current tab)
+        // Fix state from live session data — prefer alive sessions over dead ones
         let allSess = dashView.allSessions
         for i in 0..<mbrs.count {
-            if let live = allSess.first(where: { $0.name == mbrs[i].name }) {
-                mbrs[i] = ChatMember(name: mbrs[i].name, agentType: mbrs[i].agentType, state: live.state)
+            let name = mbrs[i].name
+            let live = allSess.first(where: { $0.name == name && $0.state != .dead })
+                    ?? allSess.first(where: { $0.name == name })
+            if let live {
+                mbrs[i] = ChatMember(name: name, agentType: mbrs[i].agentType, state: live.state)
             }
         }
         chatView.members = mbrs
