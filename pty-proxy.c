@@ -477,6 +477,9 @@ int main(int argc, char *argv[]) {
                     /* Strip trailing newlines */
                     while (n > 0 && (inject_buf[n-1] == '\n' || inject_buf[n-1] == '\r')) n--;
                     inject_buf[n] = '\0';
+                    /* Clear any existing input first: Ctrl+U (kill line) + Ctrl+A (home) + Ctrl+K (kill to end) */
+                    write(master_fd, "\x15", 1);  /* Ctrl+U: kill line */
+                    usleep(10000); /* 10ms */
                     if (inject_buf[0] == '-' && inject_buf[1] == ' ') {
                         /* Chat messages — wrap with header/footer */
                         const char *prefix = "New chat messages:\n";
