@@ -171,8 +171,8 @@ def cmd_read(args):
     rows = db.execute(f"""SELECT id, sender_name, sender_type, recipient, body, created_at
         FROM messages WHERE project_id=? AND id>? AND (recipient IS NULL OR recipient=? OR sender_name=?)
         {time_filter}
-        ORDER BY id ASC LIMIT ?""",
-        (project, cursor, name, name, limit)).fetchall()
+        ORDER BY id ASC""",
+        (project, cursor, name, name)).fetchall()
 
     if not rows:
         print(f"No new messages in {project}")
