@@ -46,6 +46,7 @@ static char osc_title[TITLE_SIZE];
 static int osc_collecting = 0;
 static int osc_pos = 0;
 static int osc_st_pending = 0; /* waiting for \ after ESC in ST terminator */
+static time_t osc_title_time = 0; /* when title was last set */
 
 /* State tracking */
 typedef enum { ST_IDLE, ST_WORKING, ST_NEEDS_INPUT } state_t;
@@ -206,6 +207,7 @@ static void track_osc(const char *data, int len) {
                 osc_title[osc_pos] = '\0';
                 osc_collecting = 0;
                 osc_pos = 0;
+                osc_title_time = time(NULL);
             }
             continue;
         }
@@ -215,6 +217,7 @@ static void track_osc(const char *data, int len) {
                 osc_title[osc_pos] = '\0';
                 osc_collecting = 0;
                 osc_pos = 0;
+                osc_title_time = time(NULL);
             } else if (c == 0x1b) { /* ESC — might be start of ST (\x1b\\) */
                 osc_st_pending = 1;
             } else if (osc_pos < TITLE_SIZE - 1) {
@@ -424,7 +427,10 @@ int main(int argc, char *argv[]) {
             if (elapsed_ms >= CHECK_INTERVAL_MS) {
                 char screen[CLEAN_SIZE];
                 int slen = ring_recent_clean(screen, CLEAN_SIZE - 1);
-                state_t new_state = detect_state(screen, osc_title);
+                /* Expire stale OSC title after 30s — prevents stuck "working" state */
+                const char *title = osc_title;
+                if (osc_title_time > 0 && time(NULL) - osc_title_time > 30) title = "";
+                state_t new_state = detect_state(screen, title);
 
                 /* Debug: dump screen + state when CDASH_DEBUG is set */
                 if (getenv("CDASH_DEBUG")) {
