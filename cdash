@@ -29,85 +29,44 @@ if [ "$1" = "chat" ]; then
   pid="${CDASH_PID:-$$}"
   proxy_pid="${CDASH_PROXY_PID:-}"
 
-  # Session name: env var > Claude/Codex session file by PID (walk ancestors) > cwd basename
-  session_name="${CDASH_SESSION_NAME:-}"
-  if [ -z "$session_name" ]; then
-    session_name=$(python3 -c "
-import json, os, glob
-# Collect ancestor PIDs (walk up process tree)
+  # Session name + channel: state file is the single source of truth
+  chat_db="$HOME/.claude/dashboard-chat.db"
+  result=$(python3 -c "
+import os, json, subprocess, sqlite3
+state_dir = '/tmp/claude-dash'
+# Walk up process tree to find our state file
 pids = set()
 p = os.getpid()
 while p > 1:
     pids.add(p)
     try:
-        with open(f'/proc/{p}/stat') if os.path.exists(f'/proc/{p}/stat') else open(os.devnull) as f: pass
-        # macOS: use ps
-        import subprocess
         out = subprocess.check_output(['ps', '-o', 'ppid=', '-p', str(p)], text=True).strip()
         p = int(out) if out else 0
     except: break
-for f in glob.glob(os.path.expanduser('~/.claude/sessions/*.json')):
-    try:
-        d = json.load(open(f))
-        if d.get('pid') in pids:
-            n = d.get('name', '')
-            if n: print(n); break
-    except: pass
-" 2>/dev/null)
-    session_name="${session_name:-$(basename "$(pwd)")}"
-  fi
-
-  # Resolve channel from chat db — try session name, then state file name, then env/git root
-  chat_db="$HOME/.claude/dashboard-chat.db"
-  project=""
-  if [ -f "$chat_db" ]; then
-    project=$(python3 -c "
-import sqlite3, sys, os, json, glob
-db = sqlite3.connect(sys.argv[1])
-db.execute('PRAGMA journal_mode=WAL')
-names_to_try = [sys.argv[2]]
-# Also try name from state file (set by proxy from dashboard)
-state_dir = '/tmp/claude-dash'
-try:
-    import subprocess
-    pids = set()
-    p = os.getpid()
-    while p > 1:
-        pids.add(p)
-        try:
-            out = subprocess.check_output(['ps', '-o', 'ppid=', '-p', str(p)], text=True).strip()
-            p = int(out) if out else 0
-        except: break
-    for fname in os.listdir(state_dir):
-        if not fname.endswith('.state'): continue
-        pid = int(fname[:-6])
-        if pid in pids:
-            with open(f'{state_dir}/{fname}') as f:
-                d = json.load(f)
-                n = d.get('name', '')
-                if n and n not in names_to_try: names_to_try.append(n)
-    # Also try claude session file name
-    for f in glob.glob(os.path.expanduser('~/.claude/sessions/*.json')):
-        try:
-            d = json.load(open(f))
-            if d.get('pid') in pids:
-                n = d.get('name', '')
-                if n and n not in names_to_try: names_to_try.append(n)
-        except: pass
-except: pass
-for name in names_to_try:
+name = ''
+for fname in os.listdir(state_dir):
+    if not fname.endswith('.state'): continue
+    pid = int(fname[:-6])
+    if pid in pids:
+        with open(f'{state_dir}/{fname}') as f:
+            d = json.load(f)
+            name = d.get('name', '')
+            if name: break
+if not name: name = os.environ.get('CDASH_SESSION_NAME', os.path.basename(os.getcwd()))
+# Look up channel from chat db
+channel = ''
+db_path = os.path.expanduser('~/.claude/dashboard-chat.db')
+if os.path.exists(db_path):
+    db = sqlite3.connect(db_path)
+    db.execute('PRAGMA journal_mode=WAL')
     row = db.execute('SELECT project_id FROM sessions WHERE display_name=? ORDER BY last_seen DESC LIMIT 1', (name,)).fetchone()
-    if row:
-        # Also update session_name to match what's in the db
-        print(row[0] + '|' + name)
-        break
-db.close()
-" "$chat_db" "$session_name" 2>/dev/null)
-    if [ -n "$project" ] && echo "$project" | grep -q '|'; then
-      session_name="${project#*|}"
-      project="${project%%|*}"
-    fi
-  fi
+    if row: channel = row[0]
+    db.close()
+print(f'{name}|{channel}')
+" 2>/dev/null)
+  session_name="${result%%|*}"
+  project="${result#*|}"
+  session_name="${session_name:-${CDASH_SESSION_NAME:-$(basename "$(pwd)")}}"
   project="${project:-${CDASH_PROJECT:-$(git_root_name)}}"
 
   case "$subcmd" in
