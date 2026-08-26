@@ -2114,6 +2114,7 @@ class DashboardView: NSView {
     var onRemoveClick: ((Session) -> Void)?
     var onResumeClick: ((Session) -> Void)?
     var onAddToChat: ((Session) -> Void)?
+    var onAddToChatChannel: ((Session, String) -> Void)?
     var onReorder: ((Int, Int) -> Void)?  // (fromIndex, toInsertBeforeIndex)
     var onTerminalClick: ((Terminal) -> Void)?
     var onTerminalRemove: ((Terminal) -> Void)?
@@ -2287,12 +2288,20 @@ class DashboardView: NSView {
             closeItem.target = self
             closeItem.tag = idx
             menu.addItem(closeItem)
-            if s.state != .dead && !isInChat(name: s.name, sessionId: s.sessionId) {
-                let chatItem = NSMenuItem(title: "Add to Chat",
-                    action: #selector(contextAddToChat(_:)), keyEquivalent: "")
-                chatItem.target = self
-                chatItem.tag = idx
-                menu.addItem(chatItem)
+            if s.state != .dead {
+                let channels = loadChatProjects()
+                if !channels.isEmpty && !isInChat(name: s.name, sessionId: s.sessionId) {
+                    let chatSub = NSMenu()
+                    for ch in channels {
+                        let chItem = NSMenuItem(title: "# \(ch)", action: #selector(contextAddToChatChannel(_:)), keyEquivalent: "")
+                        chItem.target = self
+                        chItem.representedObject = ["idx": idx, "channel": ch] as [String: Any]
+                        chatSub.addItem(chItem)
+                    }
+                    let chatItem = NSMenuItem(title: "Add to Chat")
+                    chatItem.submenu = chatSub
+                    menu.addItem(chatItem)
+                }
             }
             NSMenu.popUpContextMenu(menu, with: event, for: self)
             return
@@ -2329,12 +2338,20 @@ class DashboardView: NSView {
             closeItem.target = self
             closeItem.tag = idx
             menu.addItem(closeItem)
-            if let s = allSessions.first(where: { $0.sessionId == item.id }), s.state != .dead, !isInChat(name: s.name, sessionId: s.sessionId) {
-                let chatItem = NSMenuItem(title: "Add to Chat",
-                    action: #selector(contextAddPinnedToChat(_:)), keyEquivalent: "")
-                chatItem.target = self
-                chatItem.tag = idx
-                menu.addItem(chatItem)
+            if let s = allSessions.first(where: { $0.sessionId == item.id }), s.state != .dead {
+                let channels = loadChatProjects()
+                if !channels.isEmpty && !isInChat(name: s.name, sessionId: s.sessionId) {
+                    let chatSub = NSMenu()
+                    for ch in channels {
+                        let chItem = NSMenuItem(title: "# \(ch)", action: #selector(contextAddPinnedToChatChannel(_:)), keyEquivalent: "")
+                        chItem.target = self
+                        chItem.representedObject = ["idx": idx, "channel": ch] as [String: Any]
+                        chatSub.addItem(chItem)
+                    }
+                    let chatItem = NSMenuItem(title: "Add to Chat")
+                    chatItem.submenu = chatSub
+                    menu.addItem(chatItem)
+                }
             }
             NSMenu.popUpContextMenu(menu, with: event, for: self)
             return
@@ -2359,6 +2376,24 @@ class DashboardView: NSView {
     @objc func contextAddToChat(_ sender: NSMenuItem) {
         guard sender.tag < sessions.count else { return }
         onAddToChat?(sessions[sender.tag])
+    }
+
+    @objc func contextAddToChatChannel(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: Any],
+              let idx = info["idx"] as? Int,
+              let channel = info["channel"] as? String,
+              idx < sessions.count else { return }
+        onAddToChatChannel?(sessions[idx], channel)
+    }
+
+    @objc func contextAddPinnedToChatChannel(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: Any],
+              let idx = info["idx"] as? Int,
+              let channel = info["channel"] as? String,
+              idx < pinnedItems.count else { return }
+        if let s = allSessions.first(where: { $0.sessionId == pinnedItems[idx].id }) {
+            onAddToChatChannel?(s, channel)
+        }
     }
 
     @objc func contextAddPinnedToChat(_ sender: NSMenuItem) {
@@ -3266,32 +3301,23 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.sessionOrder = ids
             self.poll()
         }
-        dashView.onAddToChat = { [weak self] s in
+        // Shared: add session to a specific chat channel
+        let addSessionToChannel: (Session, String) -> Void = { [weak self] s, project in
             guard let self else { return }
             guard !isInChat(name: s.name, sessionId: s.sessionId) else { return }
-            // Project = tab the session belongs to, or active tab for unassigned (main) sessions
-            let sessionTab = self.tabs.first(where: { $0.sessionIds.contains(s.sessionId) })
-            let project: String
-            if let tab = sessionTab {
-                project = tab.name
-            } else {
-                // Session is in "main" (unassigned) — use active tab name or "main"
-                let activeTab = self.tabs.first(where: { $0.id == self.activeTabId })
-                project = activeTab?.name ?? "main"
-            }
-            // Register in chat db with session_id for stable identity
+            // Remove from any existing channel first (one channel at a time)
+            let _ = shell("/usr/bin/sqlite3", chatDbPath,
+                          "DELETE FROM sessions WHERE display_name='\(s.name.replacingOccurrences(of: "'", with: "''"))'")
+            // Register in chat db
             let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
                           "send", "--project", project, "--name", s.name,
                           "--type", s.source, "--pid", "\(s.pid)",
                           "--session-id", s.sessionId,
                           "--message", "\(s.name) joined the chat")
-            // Build member list for intro
             let members = loadChatMembers(project: project)
                 .filter { $0.name != s.name && $0.name != "human" }
                 .map { $0.name }
             let memberList = members.isEmpty ? "none yet" : members.joined(separator: ", ")
-
-            // Inject intro via state file's child PID
             let injectPath = "\(stateDir)/\(s.pid).inject"
             let intro = "You have been added to team chat channel \"\(project)\". " +
                 "Other agents in channel: \(memberList). " +
@@ -3301,12 +3327,20 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 "`cdash chat list` (see who's online). " +
                 "Check messages now and before making breaking changes."
             try? intro.write(toFile: injectPath, atomically: true, encoding: .utf8)
-            // Open chat panel and switch to that channel
             if !self.showChat { self.showChat = true }
             self.chatView.activeProject = project
             self.chatView.updateChannelLabel()
             self.lastChatFingerprint = ""
             self.pollChat()
+        }
+        dashView.onAddToChat = { [weak self] s in
+            guard let self else { return }
+            let sessionTab = self.tabs.first(where: { $0.sessionIds.contains(s.sessionId) })
+            let project = sessionTab?.name ?? (self.tabs.first(where: { $0.id == self.activeTabId })?.name ?? "main")
+            addSessionToChannel(s, project)
+        }
+        dashView.onAddToChatChannel = { s, channel in
+            addSessionToChannel(s, channel)
         }
         dashView.onRemoveClick = { [weak self] s in
             removeSession(s)
@@ -3755,17 +3789,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func moveItemToTab(tabId: String, itemId: String) {
-        // If session is in a chat channel for its old tab, remove it
-        if itemId.hasPrefix("session:") {
-            let sid = String(itemId.dropFirst(8))
-            if let session = currentSessions.first(where: { $0.sessionId == sid }) {
-                // Find old tab
-                let oldTab = tabs.first(where: { $0.sessionIds.contains(sid) })
-                let oldChannel = oldTab?.name ?? "main"
-                let _ = shell("/usr/bin/sqlite3", chatDbPath,
-                    "DELETE FROM sessions WHERE display_name='\(session.name.replacingOccurrences(of: "'", with: "''"))'")
-            }
-        }
         // Remove item from all tabs first
         for i in 0..<tabs.count {
             tabs[i].sessionIds.removeAll { "session:\($0)" == itemId }
