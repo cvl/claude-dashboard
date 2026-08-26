@@ -1651,10 +1651,8 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         addSubview(sb)
         sendButton = sb as? NSButton
 
-        // Members strip below input — pinned to bottom
-        let mvY = bounds.height - membersH
-        let mv = FlippedView(frame: NSRect(x: 0, y: mvY, width: bounds.width, height: membersH))
-        mv.autoresizingMask = [.width, .minYMargin]
+        // Members strip below input
+        let mv = FlippedView(frame: NSRect(x: 0, y: bounds.height - membersH, width: bounds.width, height: membersH))
         addSubview(mv)
         membersView = mv
     }
@@ -1832,9 +1830,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             mv.addSubview(chip)
             x += chipW + chipGapX
         }
-        // Update height for rows
+        // Update height and reposition at bottom of parent
         let neededH = (row + 1) * (chipH + chipGapY) + 6
         membersH = max(36, neededH)
+        mv.frame = NSRect(x: 0, y: bounds.height - membersH, width: bounds.width, height: membersH)
     }
 
     @objc func memberClicked(_ sender: NSButton) {
