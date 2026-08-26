@@ -483,8 +483,7 @@ int main(int argc, char *argv[]) {
                     while (n > 0 && (inject_buf[n-1] == '\n' || inject_buf[n-1] == '\r')) n--;
                     inject_buf[n] = '\0';
                     write(master_fd, inject_buf, n);
-                    /* Submit: \r for Claude Code, \n for Codex — send both */
-                    write(master_fd, "\r\n", 2);
+                    write(master_fd, "\r", 1);
                 }
             }
         }
