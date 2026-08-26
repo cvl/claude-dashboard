@@ -1997,6 +1997,8 @@ class PointerButton: NSButton {
     var hoverBackground: NSColor?
     var normalBackground = NSColor(calibratedWhite: 0.96, alpha: 1)
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
