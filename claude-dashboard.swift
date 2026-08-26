@@ -316,7 +316,7 @@ func appendToHistory(_ session: StoredSession) {
     let notes = notesFileName(name: session.name, sessionId: session.sessionId)
     let isCodex = session.source == "codex"
     let resume = isCodex
-        ? "cd \(session.cwd) && cdash codex resume \(session.sessionId)"
+        ? "cd \(session.cwd) && cdash codex --name '\(session.name)' resume \(session.sessionId)"
         : "cd \(session.cwd) && cdash claude --resume \(session.sessionId) --name '\(session.name)' --effort max"
 
     let prefix = prev != nil ? "[renamed from '\(prev!)'] " : ""
@@ -3219,7 +3219,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView.onResumeClick = { [weak self] s in
             let cmd: String
             if s.source == "codex" {
-                cmd = "cd \(s.cwd) && cdash codex resume \(s.sessionId)"
+                cmd = "cd \(s.cwd) && cdash codex --name '\(s.name)' resume \(s.sessionId)"
             } else {
                 cmd = "cd \(s.cwd) && cdash claude --resume \(s.sessionId) --name '\(s.name)' --effort max"
             }
