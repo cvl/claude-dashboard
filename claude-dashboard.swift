@@ -2298,7 +2298,7 @@ class DashboardView: NSView {
                         chItem.representedObject = ["idx": idx, "channel": ch] as [String: Any]
                         chatSub.addItem(chItem)
                     }
-                    let chatItem = NSMenuItem(title: "Add to Chat")
+                    let chatItem = NSMenuItem(title: "Add to Chat", action: nil, keyEquivalent: "")
                     chatItem.submenu = chatSub
                     menu.addItem(chatItem)
                 }
@@ -2348,7 +2348,7 @@ class DashboardView: NSView {
                         chItem.representedObject = ["idx": idx, "channel": ch] as [String: Any]
                         chatSub.addItem(chItem)
                     }
-                    let chatItem = NSMenuItem(title: "Add to Chat")
+                    let chatItem = NSMenuItem(title: "Add to Chat", action: nil, keyEquivalent: "")
                     chatItem.submenu = chatSub
                     menu.addItem(chatItem)
                 }
