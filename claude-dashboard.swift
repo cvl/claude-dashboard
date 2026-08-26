@@ -1539,7 +1539,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     private let padY: CGFloat = 8
     private let inputH: CGFloat = 52
     private let headerH: CGFloat = 22
-    private let membersH: CGFloat = 36
+    var membersH: CGFloat = 36
 
     private var inputField: NSTextField?  // legacy compat
     var inputTV: NSTextView?
@@ -1763,11 +1763,17 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
 
     var onMemberReveal: ((String) -> Void)?  // session name → reveal terminal
 
+    var onMembersHeightChanged: ((CGFloat) -> Void)?
+
     func refreshMembers() {
         guard let mv = membersView else { return }
         mv.subviews.forEach { $0.removeFromSuperview() }
-        var x: CGFloat = padX
         let chipH: CGFloat = 24
+        let chipGapX: CGFloat = 6
+        let chipGapY: CGFloat = 4
+        let maxW = mv.superview?.frame.width ?? bounds.width
+        var x: CGFloat = padX
+        var row: CGFloat = 0
         for (i, m) in members.enumerated() where m.name != "human" {
             let stateColor = m.state.color
             let testLabel = NSTextField(labelWithString: m.name)
@@ -1775,7 +1781,14 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             testLabel.sizeToFit()
             let chipW = testLabel.frame.width + 22
 
-            let chip = NSView(frame: NSRect(x: x, y: 3, width: chipW, height: chipH))
+            // Wrap to next row if needed
+            if x + chipW > maxW - padX && x > padX {
+                x = padX
+                row += 1
+            }
+            let chipY: CGFloat = 3 + row * (chipH + chipGapY)
+
+            let chip = NSView(frame: NSRect(x: x, y: chipY, width: chipW, height: chipH))
             chip.wantsLayer = true
             chip.layer?.backgroundColor = NSColor(calibratedWhite: 0.96, alpha: 1).cgColor
             chip.layer?.cornerRadius = 6
@@ -1815,7 +1828,12 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             chip.addSubview(btn)
 
             mv.addSubview(chip)
-            x += chipW + 6
+            x += chipW + chipGapX
+        }
+        // Report needed height
+        let neededH = (row + 1) * (chipH + chipGapY) + 6
+        if neededH != membersH {
+            onMembersHeightChanged?(neededH)
         }
     }
 
@@ -3485,6 +3503,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 revealSession(s)
             }
         }
+        chatView.onMembersHeightChanged = { [weak self] newH in
+            guard let self else { return }
+            var f = self.chatPanel.frame
+            let delta = newH - self.chatView.membersH
+            self.chatView.membersH = newH
+            f.size.height += delta
+            f.origin.y -= delta
+            self.chatPanel.setFrame(f, display: true)
+        }
         chatView.onRemoveFromChat = { [weak self] name in
             guard let self, !chatView.activeProject.isEmpty else { return }
             let project = chatView.activeProject
@@ -3830,9 +3857,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard !chatView.activeProject.isEmpty else { return }
         // Load members and feed names for autocomplete
         var mbrs = loadChatMembers(project: chatView.activeProject)
-        // Fix state from live session data (chat db PID is stale)
+        // Fix state from live session data (use all sessions, not just current tab)
+        let allSess = dashView.allSessions
         for i in 0..<mbrs.count {
-            if let live = currentSessions.first(where: { $0.name == mbrs[i].name }) {
+            if let live = allSess.first(where: { $0.name == mbrs[i].name }) {
                 mbrs[i] = ChatMember(name: mbrs[i].name, agentType: mbrs[i].agentType, state: live.state)
             }
         }
