@@ -3356,7 +3356,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView.tabSidebar = tabSidebar
 
         // Keep tab panel attached to main panel
-        panel.addChildWindow(tabPanel, ordered: .above)
+        panel.addChildWindow(tabPanel, ordered: .below)
 
         // Notification panel — floating to the left of tabs
         notifPanel = AttachedChildWindow(
@@ -3379,7 +3379,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         notifView = NotificationPanelView(frame: notifPanel.contentView!.bounds)
         notifView.autoresizingMask = [.width, .height]
         notifPanel.contentView!.addSubview(notifView)
-        panel.addChildWindow(notifPanel, ordered: .above)
+        panel.addChildWindow(notifPanel, ordered: .below)
         notifPanel.orderOut(nil)
 
         notifView.onClickNotification = { [weak self] notif in
@@ -3426,7 +3426,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         chatView.autoresizingMask = [.width, .height]
         chatPanel.contentView!.addSubview(chatView)
         chatView.setupViews()
-        panel.addChildWindow(chatPanel, ordered: .above)
+        panel.addChildWindow(chatPanel, ordered: .below)
         chatPanel.orderOut(nil)
 
         chatView.onSend = { [weak self] project, message in
