@@ -3496,7 +3496,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 try? notice.write(toFile: injectPath, atomically: true, encoding: .utf8)
             }
             let _ = shell("/usr/bin/sqlite3", chatDbPath,
-                          "DELETE FROM sessions WHERE project_id='\(project.replacingOccurrences(of: "'", with: "''"))' AND display_name='\(name.replacingOccurrences(of: "'", with: "''"))'")
+                          "DELETE FROM sessions WHERE display_name='\(name.replacingOccurrences(of: "'", with: "''"))'")
             self.pollChat()
         }
         chatView.onSwitchChannel = { [weak self] project in
@@ -3744,7 +3744,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let oldTab = tabs.first(where: { $0.sessionIds.contains(sid) })
                 let oldChannel = oldTab?.name ?? "main"
                 let _ = shell("/usr/bin/sqlite3", chatDbPath,
-                    "DELETE FROM sessions WHERE project_id='\(oldChannel.replacingOccurrences(of: "'", with: "''"))' AND display_name='\(session.name.replacingOccurrences(of: "'", with: "''"))'")
+                    "DELETE FROM sessions WHERE display_name='\(session.name.replacingOccurrences(of: "'", with: "''"))'")
             }
         }
         // Remove item from all tabs first
