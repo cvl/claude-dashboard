@@ -2889,7 +2889,7 @@ class DashboardView: NSView {
                     stateLabel = state.label
                 } else {
                     let alive = allTerminals.first(where: { $0.name == item.id })?.isAlive ?? false
-                    accentColor = alive ? .systemTeal : .systemRed
+                    accentColor = alive ? .systemTeal : NSColor(calibratedRed: 0.85, green: 0.35, blue: 0.35, alpha: 1)
                     stateLabel = alive ? "ACTIVE" : "CLOSED"
                 }
                 // Hover — full width, same as sessions
@@ -2904,7 +2904,12 @@ class DashboardView: NSView {
                 NSBezierPath(ovalIn: NSRect(x: padX, y: rect.minY + 13, width: dotSize, height: dotSize)).fill()
 
                 var tx = padX + 14
-                let pIsDead = accentColor == NSColor(calibratedRed: 0.85, green: 0.35, blue: 0.35, alpha: 1)
+                let pIsDead: Bool
+                if item.type == "session" {
+                    pIsDead = (allSessions.first(where: { $0.sessionId == item.id })?.state ?? .dead) == .dead
+                } else {
+                    pIsDead = !(allTerminals.first(where: { $0.name == item.id })?.isAlive ?? false)
+                }
 
                 // Source tag
                 let pinnedSession = allSessions.first(where: { $0.sessionId == item.id })
@@ -3441,6 +3446,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         chatView.onMemberReveal = { [weak self] name in
             guard let self else { return }
             if let s = self.currentSessions.first(where: { $0.name == name }) {
+                // Switch to the tab containing this session
+                let targetTab = self.tabs.first(where: { $0.sessionIds.contains(s.sessionId) })?.id ?? "main"
+                if self.activeTabId != targetTab {
+                    self.activeTabId = targetTab
+                    self.tabSidebar.activeTabId = targetTab
+                    try? targetTab.write(toFile: activeTabFile, atomically: true, encoding: .utf8)
+                    self.refreshView()
+                }
                 revealSession(s)
             }
         }
