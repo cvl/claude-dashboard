@@ -115,12 +115,11 @@ def cmd_send(args):
 
     state_files = find_all_state_files()
 
-    # Match by name+project in state files (proxy writes these from env vars)
+    # Match by name in state files — channel is already scoped by the db query above
     target_names = {recipient} if recipient else {r[0] for r in rows}
 
     for sf_pid, sf_event, sf_proxy_pid, sf_tty, sf_name, sf_project in state_files:
         if sf_event != "stop": continue  # only inject idle
-        if sf_project != project: continue  # same project only
         if sf_name not in target_names: continue
         snippet = message[:100] + ("..." if len(message) > 100 else "")
         inject_text = (f"Chat from {agent_type}/{name}: \"{snippet}\" "
