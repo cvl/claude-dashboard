@@ -1719,7 +1719,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             }
         }
         guard !msg.isEmpty else { return }
-        if let target, target.lowercased() != "all" {
+        if let target {
             onSendDM?(activeProject, msg, target)
         } else {
             onSend?(activeProject, msg)
