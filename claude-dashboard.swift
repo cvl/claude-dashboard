@@ -3253,14 +3253,21 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                           "send", "--project", project, "--name", s.name,
                           "--type", s.source, "--pid", "\(s.pid)",
                           "--message", "\(s.name) joined the chat")
+            // Build member list for intro
+            let members = loadChatMembers(project: project)
+                .filter { $0.name != s.name && $0.name != "human" }
+                .map { "\($0.agentType)/\($0.name)" }
+            let memberList = members.isEmpty ? "none yet" : members.joined(separator: ", ")
+
             // Inject intro via state file's child PID
-            let sf = stateFileEvent(s.pid)
             let injectPath = "\(stateDir)/\(s.pid).inject"
-            let intro = "You have team chat available via cdash in project \"\(project)\". " +
-                "Use `cdash chat read` to check messages, " +
-                "`cdash chat send \"msg\"` to broadcast, " +
-                "`cdash chat send \"msg\" --to name` for DM. " +
-                "Check now and before breaking changes."
+            let intro = "You have been added to team chat channel \"\(project)\". " +
+                "Other agents in channel: \(memberList). " +
+                "Commands: `cdash chat read` (check messages), " +
+                "`cdash chat send \"msg\"` (broadcast), " +
+                "`cdash chat send \"msg\" --to name` (DM agent), " +
+                "`cdash chat list` (see who's online). " +
+                "Check messages now and before making breaking changes."
             try? intro.write(toFile: injectPath, atomically: true, encoding: .utf8)
             // Open chat panel and switch to that channel
             if !self.showChat { self.showChat = true }
@@ -3466,8 +3473,16 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         chatView.onRemoveFromChat = { [weak self] name in
             guard let self, !chatView.activeProject.isEmpty else { return }
+            let project = chatView.activeProject
+            // Inject removal notice
+            if let s = self.currentSessions.first(where: { $0.name == name }) {
+                let injectPath = "\(stateDir)/\(s.pid).inject"
+                let notice = "You have been removed from the team chat channel \"\(project)\". " +
+                    "Stop using cdash chat commands for this channel."
+                try? notice.write(toFile: injectPath, atomically: true, encoding: .utf8)
+            }
             let _ = shell("/usr/bin/sqlite3", chatDbPath,
-                          "DELETE FROM sessions WHERE project_id='\(chatView.activeProject)' AND display_name='\(name)'")
+                          "DELETE FROM sessions WHERE project_id='\(project.replacingOccurrences(of: "'", with: "''"))' AND display_name='\(name.replacingOccurrences(of: "'", with: "''"))'")
             self.pollChat()
         }
         chatView.onSwitchChannel = { [weak self] project in
