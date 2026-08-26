@@ -463,17 +463,23 @@ int main(int argc, char *argv[]) {
             snprintf(inject_path, sizeof(inject_path), STATE_DIR "/%d.inject", child_pid);
             FILE *inj = fopen(inject_path, "r");
             if (inj) {
-                char inject_buf[2048];
+                char inject_buf[4096];
                 size_t n = fread(inject_buf, 1, sizeof(inject_buf) - 1, inj);
                 fclose(inj);
                 unlink(inject_path);
                 if (n > 0) {
-                    /* Strip trailing newlines — we send \r to submit */
+                    inject_buf[n] = '\0';
+                    /* Wrap accumulated messages in a single prompt */
+                    const char *prefix = "New chat messages:\n";
+                    const char *suffix = "Run `cdash chat read` for full context, `cdash chat send \"reply\"` to respond.";
+                    write(master_fd, prefix, strlen(prefix));
+                    /* Strip trailing newlines */
                     while (n > 0 && (inject_buf[n-1] == '\n' || inject_buf[n-1] == '\r')) n--;
                     inject_buf[n] = '\0';
                     write(master_fd, inject_buf, n);
-                    /* Small delay before Enter — some TUIs need time to process input */
-                    usleep(50000); /* 50ms */
+                    write(master_fd, "\n", 1);
+                    write(master_fd, suffix, strlen(suffix));
+                    usleep(50000); /* 50ms delay before Enter */
                     write(master_fd, "\r", 1);
                 }
             }

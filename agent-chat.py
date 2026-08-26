@@ -80,11 +80,11 @@ def find_all_state_files():
     except: pass
     return results
 
-def write_inject(pid, text):
-    """Write inject file for a proxy child PID."""
+def append_inject(pid, text):
+    """Append to inject file for a proxy child PID. Multiple messages accumulate."""
     path = f"{STATE_DIR}/{pid}.inject"
     try:
-        with open(path, "w") as f:
+        with open(path, "a") as f:
             f.write(text)
     except Exception:
         pass
@@ -120,15 +120,13 @@ def cmd_send(args):
 
     for sf_pid, sf_event, sf_proxy_pid, sf_tty, sf_name, sf_project in state_files:
         if sf_name not in target_names: continue
-        # Write inject file — proxy will pick it up when agent goes idle
-        snippet = message[:100] + ("..." if len(message) > 100 else "")
-        # Simple notification for join messages, full prompt for real messages
+        # Append to inject file — multiple messages accumulate into single prompt
+        snippet = message[:150] + ("..." if len(message) > 150 else "")
         if "joined the chat" in message:
-            inject_text = f"{name} joined the chat channel.\n"
+            line = f"- {name} joined the chat channel"
         else:
-            inject_text = (f"Chat from {name}: \"{snippet}\" "
-                          f"— Run `cdash chat read` for context, `cdash chat send \"reply\"` to respond.\n")
-        write_inject(sf_pid, inject_text)
+            line = f"- {name}: {snippet}"
+        append_inject(sf_pid, line + "\n")
 
     active = len([r for r in rows if r[1] and r[1] > 0])
     if recipient:
