@@ -1438,6 +1438,19 @@ func loadChatProjects() -> [String] {
     return projects
 }
 
+func isInChat(name: String) -> Bool {
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
+          let db else { return false }
+    defer { sqlite3_close(db) }
+    var stmt: OpaquePointer?
+    let sql = "SELECT COUNT(*) FROM sessions WHERE display_name=?"
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+    defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, name, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    return sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) > 0
+}
+
 func loadChatMembers(project: String) -> [ChatMember] {
     var db: OpaquePointer?
     guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
@@ -2257,7 +2270,7 @@ class DashboardView: NSView {
             closeItem.target = self
             closeItem.tag = idx
             menu.addItem(closeItem)
-            if s.state != .dead {
+            if s.state != .dead && !isInChat(name: s.name) {
                 let chatItem = NSMenuItem(title: "Add to Chat",
                     action: #selector(contextAddToChat(_:)), keyEquivalent: "")
                 chatItem.target = self
@@ -2299,7 +2312,7 @@ class DashboardView: NSView {
             closeItem.target = self
             closeItem.tag = idx
             menu.addItem(closeItem)
-            if let s = allSessions.first(where: { $0.sessionId == item.id }), s.state != .dead {
+            if let s = allSessions.first(where: { $0.sessionId == item.id }), s.state != .dead, !isInChat(name: s.name) {
                 let chatItem = NSMenuItem(title: "Add to Chat",
                     action: #selector(contextAddPinnedToChat(_:)), keyEquivalent: "")
                 chatItem.target = self
@@ -3238,6 +3251,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         dashView.onAddToChat = { [weak self] s in
             guard let self else { return }
+            guard !isInChat(name: s.name) else { return }
             // Project = tab the session belongs to, or active tab for unassigned (main) sessions
             let sessionTab = self.tabs.first(where: { $0.sessionIds.contains(s.sessionId) })
             let project: String
