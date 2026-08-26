@@ -1717,7 +1717,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             }
         }
         guard !msg.isEmpty else { return }
-        if let target {
+        if let target, target.lowercased() != "all" {
             onSendDM?(activeProject, msg, target)
         } else {
             onSend?(activeProject, msg)
@@ -1741,7 +1741,8 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             guard let atIdx = text.lastIndex(of: "@") else { return false }
             let partial = String(text[text.index(after: atIdx)...]).lowercased()
             if partial.isEmpty { return false }
-            if let match = sessionNames.first(where: { $0.lowercased().hasPrefix(partial) && $0 != "human" }) {
+            let allNames = sessionNames.filter { $0 != "human" } + ["all"]
+            if let match = allNames.first(where: { $0.lowercased().hasPrefix(partial) }) {
                 let prefix = String(text[...atIdx])
                 textView.string = prefix + match + " "
                 textView.setSelectedRange(NSRange(location: textView.string.count, length: 0))

@@ -95,6 +95,7 @@ def cmd_send(args):
     agent_type = args["type"]
     message = args["message"]
     recipient = args.get("to")
+    if recipient == "all": recipient = None  # @all = broadcast to everyone
     pid = args.get("pid")
     proxy_pid = args.get("proxy_pid")
     cwd = args.get("cwd")
