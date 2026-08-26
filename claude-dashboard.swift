@@ -1766,8 +1766,6 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
 
     var onMemberReveal: ((String) -> Void)?  // session name → reveal terminal
 
-    var onMembersHeightChanged: ((CGFloat) -> Void)?
-
     func refreshMembers() {
         guard let mv = membersView else { return }
         mv.subviews.forEach { $0.removeFromSuperview() }
@@ -1833,11 +1831,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             mv.addSubview(chip)
             x += chipW + chipGapX
         }
-        // Report needed height
+        // Resize members view to fit all rows
         let neededH = (row + 1) * (chipH + chipGapY) + 6
-        if neededH != membersH {
-            onMembersHeightChanged?(neededH)
-        }
+        membersH = max(36, neededH)
+        mv.frame = NSRect(x: 0, y: bounds.height - membersH, width: bounds.width, height: membersH)
     }
 
     @objc func memberClicked(_ sender: NSButton) {
@@ -3507,22 +3504,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 revealSession(s)
             }
         }
-        chatView.onMembersHeightChanged = { [weak self] newH in
-            guard let self else { return }
-            let delta = newH - self.chatView.membersH
-            guard abs(delta) > 1 else { return }
-            self.chatView.membersH = newH
-            // Expand panel downward
-            var f = self.chatPanel.frame
-            f.size.height += delta
-            f.origin.y -= delta
-            self.chatPanel.setFrame(f, display: true)
-            // Reposition members view
-            if let mv = self.chatView.membersView {
-                mv.frame = NSRect(x: 0, y: self.chatView.bounds.height - newH,
-                                  width: mv.frame.width, height: newH)
-            }
-        }
         chatView.onRemoveFromChat = { [weak self] name in
             guard let self, !chatView.activeProject.isEmpty else { return }
             let project = chatView.activeProject
@@ -3763,7 +3744,8 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let wantChat = showChat && !mainHidden
         if wantChat {
             let w: CGFloat = 300
-            let h: CGFloat = 400
+            let extraMembersH = max(0, chatView.membersH - 36)
+            let h: CGFloat = 400 + extraMembersH
             let x = panel.frame.maxX + 4
             let y = panel.frame.maxY - h
             chatPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
