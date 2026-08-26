@@ -122,8 +122,12 @@ def cmd_send(args):
         if sf_name not in target_names: continue
         # Write inject file — proxy will pick it up when agent goes idle
         snippet = message[:100] + ("..." if len(message) > 100 else "")
-        inject_text = (f"Chat from {name}: \"{snippet}\" "
-                      f"— Run `cdash chat read` for context, `cdash chat send \"reply\"` to respond.\n")
+        # Simple notification for join messages, full prompt for real messages
+        if "joined the chat" in message:
+            inject_text = f"{name} joined the chat channel.\n"
+        else:
+            inject_text = (f"Chat from {name}: \"{snippet}\" "
+                          f"— Run `cdash chat read` for context, `cdash chat send \"reply\"` to respond.\n")
         write_inject(sf_pid, inject_text)
 
     active = len([r for r in rows if r[1] and r[1] > 0])
