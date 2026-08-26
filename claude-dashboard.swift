@@ -3238,9 +3238,16 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         dashView.onAddToChat = { [weak self] s in
             guard let self else { return }
-            // Project = tab the session belongs to (not necessarily active tab)
+            // Project = tab the session belongs to, or active tab for unassigned (main) sessions
             let sessionTab = self.tabs.first(where: { $0.sessionIds.contains(s.sessionId) })
-            let project = sessionTab?.name ?? "main"
+            let project: String
+            if let tab = sessionTab {
+                project = tab.name
+            } else {
+                // Session is in "main" (unassigned) — use active tab name or "main"
+                let activeTab = self.tabs.first(where: { $0.id == self.activeTabId })
+                project = activeTab?.name ?? "main"
+            }
             // Register in chat db
             let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
                           "send", "--project", project, "--name", s.name,
