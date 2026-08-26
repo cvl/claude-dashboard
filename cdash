@@ -25,7 +25,6 @@ if [ "$1" = "chat" ]; then
   shift
   subcmd="${1:-read}"; shift 2>/dev/null || true
 
-  project="${CDASH_PROJECT:-$(git_root_name)}"
   agent_type="${CDASH_AGENT_TYPE:-claude}"
   pid="${CDASH_PID:-$$}"
   proxy_pid="${CDASH_PROXY_PID:-}"
@@ -57,6 +56,21 @@ for f in glob.glob(os.path.expanduser('~/.claude/sessions/*.json')):
 " 2>/dev/null)
     session_name="${session_name:-$(basename "$(pwd)")}"
   fi
+
+  # Resolve channel from chat db (where this agent is registered), fall back to env/git root
+  chat_db="$HOME/.claude/dashboard-chat.db"
+  project=""
+  if [ -f "$chat_db" ]; then
+    project=$(python3 -c "
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute('PRAGMA journal_mode=WAL')
+row = db.execute('SELECT project_id FROM sessions WHERE display_name=? ORDER BY last_seen DESC LIMIT 1', (sys.argv[2],)).fetchone()
+if row: print(row[0])
+db.close()
+" "$chat_db" "$session_name" 2>/dev/null)
+  fi
+  project="${project:-${CDASH_PROJECT:-$(git_root_name)}}"
 
   case "$subcmd" in
     send)
