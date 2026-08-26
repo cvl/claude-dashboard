@@ -57,18 +57,56 @@ for f in glob.glob(os.path.expanduser('~/.claude/sessions/*.json')):
     session_name="${session_name:-$(basename "$(pwd)")}"
   fi
 
-  # Resolve channel from chat db (where this agent is registered), fall back to env/git root
+  # Resolve channel from chat db — try session name, then state file name, then env/git root
   chat_db="$HOME/.claude/dashboard-chat.db"
   project=""
   if [ -f "$chat_db" ]; then
     project=$(python3 -c "
-import sqlite3, sys
+import sqlite3, sys, os, json, glob
 db = sqlite3.connect(sys.argv[1])
 db.execute('PRAGMA journal_mode=WAL')
-row = db.execute('SELECT project_id FROM sessions WHERE display_name=? ORDER BY last_seen DESC LIMIT 1', (sys.argv[2],)).fetchone()
-if row: print(row[0])
+names_to_try = [sys.argv[2]]
+# Also try name from state file (set by proxy from dashboard)
+state_dir = '/tmp/claude-dash'
+try:
+    import subprocess
+    pids = set()
+    p = os.getpid()
+    while p > 1:
+        pids.add(p)
+        try:
+            out = subprocess.check_output(['ps', '-o', 'ppid=', '-p', str(p)], text=True).strip()
+            p = int(out) if out else 0
+        except: break
+    for fname in os.listdir(state_dir):
+        if not fname.endswith('.state'): continue
+        pid = int(fname[:-6])
+        if pid in pids:
+            with open(f'{state_dir}/{fname}') as f:
+                d = json.load(f)
+                n = d.get('name', '')
+                if n and n not in names_to_try: names_to_try.append(n)
+    # Also try claude session file name
+    for f in glob.glob(os.path.expanduser('~/.claude/sessions/*.json')):
+        try:
+            d = json.load(open(f))
+            if d.get('pid') in pids:
+                n = d.get('name', '')
+                if n and n not in names_to_try: names_to_try.append(n)
+        except: pass
+except: pass
+for name in names_to_try:
+    row = db.execute('SELECT project_id FROM sessions WHERE display_name=? ORDER BY last_seen DESC LIMIT 1', (name,)).fetchone()
+    if row:
+        # Also update session_name to match what's in the db
+        print(row[0] + '|' + name)
+        break
 db.close()
 " "$chat_db" "$session_name" 2>/dev/null)
+    if [ -n "$project" ] && echo "$project" | grep -q '|'; then
+      session_name="${project#*|}"
+      project="${project%%|*}"
+    fi
   fi
   project="${project:-${CDASH_PROJECT:-$(git_root_name)}}"
 
