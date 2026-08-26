@@ -1,4 +1,5 @@
 import Cocoa
+import SQLite3
 
 // MARK: - Config
 
@@ -17,6 +18,8 @@ let activeTabFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard-active-tab").path
 let logFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude").appendingPathComponent("dashboard.log").path
+let chatDbPath = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".claude").appendingPathComponent("dashboard-chat.db").path
 let codexSessionsDir = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".codex").appendingPathComponent("sessions")
 let codexHooksFile = FileManager.default.homeDirectoryForCurrentUser
@@ -79,10 +82,10 @@ enum State: String, CaseIterable {
     }
     var color: NSColor {
         switch self {
-        case .working:    return .systemGreen
-        case .needsInput: return .systemOrange
-        case .idle:       return .systemGray
-        case .dead:       return .systemRed
+        case .working:    return NSColor(calibratedRed: 0.25, green: 0.72, blue: 0.35, alpha: 1)
+        case .needsInput: return NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 1)
+        case .idle:       return NSColor(calibratedWhite: 0.78, alpha: 1)
+        case .dead:       return NSColor(calibratedRed: 0.85, green: 0.35, blue: 0.35, alpha: 1)
         }
     }
     var emoji: String {
@@ -207,6 +210,13 @@ let stateDir = "/tmp/claude-dash"
 var previousState: [pid_t: State] = [:]
 var lastActiveTime: [pid_t: Date] = [:]
 
+func isCdashSession(_ pid: pid_t) -> Bool {
+    let url = URL(fileURLWithPath: "\(stateDir)/\(pid).state")
+    guard let data = try? Data(contentsOf: url),
+          let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+    return j["proxy_pid"] != nil
+}
+
 func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?)? {
     let url = URL(fileURLWithPath: "\(stateDir)/\(pid).state")
     guard let data = try? Data(contentsOf: url),
@@ -306,7 +316,7 @@ func appendToHistory(_ session: StoredSession) {
     let notes = notesFileName(name: session.name, sessionId: session.sessionId)
     let isCodex = session.source == "codex"
     let resume = isCodex
-        ? "cd \(session.cwd) && cdash codex resume \(session.sessionId)"
+        ? "cd \(session.cwd) && cdash codex --name '\(session.name)' resume \(session.sessionId)"
         : "cd \(session.cwd) && cdash claude --resume \(session.sessionId) --name '\(session.name)' --effort max"
 
     let prefix = prev != nil ? "[renamed from '\(prev!)'] " : ""
@@ -379,6 +389,7 @@ func loadSessions() -> [Session] {
                   let pid = j["pid"] as? Int else { continue }
             let p = pid_t(pid)
             guard kill(p, 0) == 0 else { continue } // skip dead PIDs
+            guard isCdashSession(p) else { continue } // skip non-cdash sessions
             let sid = (j["sessionId"] as? String) ?? ""
             let sname = (j["name"] as? String) ?? "session-\(pid)"
             let startedAt = (j["startedAt"] as? Double) ?? 0
@@ -441,8 +452,12 @@ func loadSessions() -> [Session] {
                 // Resumed under new sessionId — migrate notes, remove old entry
                 let oldPath = notesPath(name: stored.name, sessionId: sid)
                 let newPath = notesPath(name: live.name, sessionId: live.sessionId)
-                if oldPath != newPath && fm.fileExists(atPath: oldPath) && !fm.fileExists(atPath: newPath) {
-                    try? fm.moveItem(atPath: oldPath, toPath: newPath)
+                if oldPath != newPath && fm.fileExists(atPath: oldPath) {
+                    let newSize = (try? fm.attributesOfItem(atPath: newPath)[.size] as? Int) ?? 0
+                    if !fm.fileExists(atPath: newPath) || newSize == 0 {
+                        try? fm.removeItem(atPath: newPath)
+                        try? fm.moveItem(atPath: oldPath, toPath: newPath)
+                    }
                 }
                 resumedOldIds.append(sid)
                 continue
@@ -938,9 +953,9 @@ func restoreTerminalLayout() {
 // MARK: - Menu bar icon
 
 func dot(_ color: NSColor) -> NSImage {
-    let img = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+    let img = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { _ in
         color.setFill()
-        NSBezierPath(ovalIn: NSRect(x: 5, y: 5, width: 8, height: 8)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 5, y: 5, width: 6, height: 6)).fill()
         return true
     }
     img.isTemplate = false
@@ -953,7 +968,7 @@ func dockIcon(_ color: NSColor) -> NSImage {
     let img = NSImage(size: NSSize(width: s, height: s), flipped: false) { _ in
         let bg = NSBezierPath(roundedRect: NSRect(x: 4, y: 4, width: s - 8, height: s - 8),
                               xRadius: r, yRadius: r)
-        NSColor(white: 0.15, alpha: 1).setFill()
+        NSColor.windowBackgroundColor.setFill()
         bg.fill()
         NSColor(white: 0.3, alpha: 1).setStroke()
         bg.lineWidth = 1.5
@@ -977,10 +992,11 @@ private extension NSBezierPath {
 // MARK: - Tab Sidebar View
 
 class TabSidebarView: NSView {
-    var tabs: [TabBucket] = [] { didSet { needsDisplay = true } }
+    var tabs: [TabBucket] = [] { didSet { needsDisplay = true; rebuildClickTargets() } }
     var activeTabId: String = "main" { didSet { needsDisplay = true } }
     var dropTargetTabId: String? { didSet { needsDisplay = true } }
     var workingTabIds: Set<String> = [] { didSet { needsDisplay = true } }
+    private var hoveredTabIdx: Int? = nil
 
     var onTabSelect: ((String) -> Void)?
     var onTabAdd: (() -> Void)?
@@ -1018,50 +1034,86 @@ class TabSidebarView: NSView {
         padY + CGFloat(tabs.count + 1) * (tabH + gap)
     }
 
-    override func mouseDown(with event: NSEvent) {
-        let loc = convert(event.locationInWindow, from: nil)
-        if addBtnRect().contains(loc) {
-            onTabAdd?()
-            return
-        }
-        for (i, tab) in tabs.enumerated() {
-            if tabRect(at: i).contains(loc) {
-                onTabSelect?(tab.id)
-                return
-            }
-        }
+    private var hoverArea: NSTrackingArea?
+    private var clickTargets: [PointerButton] = []
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let h = hoverArea { removeTrackingArea(h) }
+        hoverArea = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp], owner: self)
+        addTrackingArea(hoverArea!)
     }
 
-    // Double-click to rename
-    override func mouseUp(with event: NSEvent) {
-        guard event.clickCount == 2 else { return }
-        let loc = convert(event.locationInWindow, from: nil)
+    private func rebuildClickTargets() {
+        clickTargets.forEach { $0.removeFromSuperview() }
+        clickTargets.removeAll()
+
         for (i, tab) in tabs.enumerated() {
-            guard tabRect(at: i).contains(loc) else { continue }
+            let button = PointerButton(frame: tabRect(at: i))
+            button.isBordered = false
+            button.title = ""
+            button.focusRingType = .none
+            button.tag = i
+            button.target = self
+            button.action = #selector(tabClicked(_:))
+            button.toolTip = tab.name
+            button.menu = contextMenu(for: tab)
+            addSubview(button)
+            clickTargets.append(button)
+        }
+
+        let addButton = PointerButton(frame: addBtnRect())
+        addButton.isBordered = false
+        addButton.title = ""
+        addButton.focusRingType = .none
+        addButton.target = self
+        addButton.action = #selector(addTabClicked(_:))
+        addButton.toolTip = "Add tab"
+        addSubview(addButton)
+        clickTargets.append(addButton)
+    }
+
+    private func contextMenu(for tab: TabBucket) -> NSMenu {
+        let menu = NSMenu()
+        let renameItem = NSMenuItem(title: "Rename", action: #selector(contextRename(_:)), keyEquivalent: "")
+        renameItem.target = self
+        renameItem.representedObject = tab.id
+        menu.addItem(renameItem)
+        if tab.id != "main" {
+            let deleteItem = NSMenuItem(title: "Delete", action: #selector(contextDelete(_:)), keyEquivalent: "")
+            deleteItem.target = self
+            deleteItem.representedObject = tab.id
+            menu.addItem(deleteItem)
+        }
+        return menu
+    }
+
+    @objc private func tabClicked(_ sender: NSButton) {
+        guard sender.tag < tabs.count else { return }
+        let tab = tabs[sender.tag]
+        if NSApp.currentEvent?.clickCount == 2 {
             onTabRename?(tab.id, tab.name)
-            return
+        } else {
+            onTabSelect?(tab.id)
         }
     }
 
-    // Right-click context menu
-    override func rightMouseDown(with event: NSEvent) {
+    @objc private func addTabClicked(_ sender: NSButton) {
+        onTabAdd?()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
-        for (i, tab) in tabs.enumerated() {
-            guard tabRect(at: i).contains(loc) else { continue }
-            let menu = NSMenu()
-            let renameItem = NSMenuItem(title: "Rename", action: #selector(contextRename(_:)), keyEquivalent: "")
-            renameItem.target = self
-            renameItem.representedObject = tab.id
-            menu.addItem(renameItem)
-            if tab.id != "main" {
-                let deleteItem = NSMenuItem(title: "Delete", action: #selector(contextDelete(_:)), keyEquivalent: "")
-                deleteItem.target = self
-                deleteItem.representedObject = tab.id
-                menu.addItem(deleteItem)
-            }
-            NSMenu.popUpContextMenu(menu, with: event, for: self)
-            return
+        var found: Int? = nil
+        for i in 0..<tabs.count {
+            if tabRect(at: i).contains(loc) { found = i; break }
         }
+        if found != hoveredTabIdx { hoveredTabIdx = found; needsDisplay = true }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard event.trackingArea === hoverArea else { return }
+        if hoveredTabIdx != nil { hoveredTabIdx = nil; needsDisplay = true }
     }
 
     @objc func contextRename(_ sender: NSMenuItem) {
@@ -1081,13 +1133,16 @@ class TabSidebarView: NSView {
             let isActive = tab.id == activeTabId
             let isDropTarget = tab.id == dropTargetTabId
 
-            // Background — only for active/drop target
+            // Background
             let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
             if isDropTarget {
-                NSColor.systemBlue.withAlphaComponent(0.3).setFill()
+                NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
+                bg.fill()
+            } else if hoveredTabIdx == i && !isActive {
+                NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
                 bg.fill()
             } else if isActive {
-                NSColor(white: 0.5, alpha: 0.12).setFill()
+                NSColor.controlAccentColor.withAlphaComponent(0.08).setFill()
                 bg.fill()
             }
 
@@ -1099,7 +1154,7 @@ class TabSidebarView: NSView {
             }
 
             // Label
-            let font = NSFont.monospacedSystemFont(ofSize: 9, weight: isActive ? .bold : .medium)
+            let font = NSFont.systemFont(ofSize: 9, weight: isActive ? .semibold : .regular)
             let color: NSColor = isActive ? .labelColor : .secondaryLabelColor
             let attr = NSAttributedString(string: tab.name, attributes: [
                 .font: font, .foregroundColor: color])
@@ -1111,12 +1166,13 @@ class TabSidebarView: NSView {
         // + button
         let addRect = addBtnRect()
         let plus = NSAttributedString(string: "+", attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: 14, weight: .medium),
+            .font: NSFont.systemFont(ofSize: 14, weight: .medium),
             .foregroundColor: NSColor.secondaryLabelColor])
         let px = addRect.midX - plus.size().width / 2
         let py = addRect.midY - plus.size().height / 2
         plus.draw(at: NSPoint(x: px, y: py))
     }
+
 }
 
 // MARK: - Notification Panel
@@ -1131,7 +1187,7 @@ struct DashNotification {
 }
 
 class NotificationPanelView: NSView {
-    var notifications: [DashNotification] = [] { didSet { needsDisplay = true } }
+    var notifications: [DashNotification] = [] { didSet { needsDisplay = true; rebuildClickTargets() } }
     var onClickNotification: ((DashNotification) -> Void)?
     var onDismissNotification: ((String) -> Void)?
     var onClearAll: (() -> Void)?
@@ -1140,9 +1196,9 @@ class NotificationPanelView: NSView {
     private let gap: CGFloat = 4
     private let padX: CGFloat = 6
     private let padY: CGFloat = 6
-    private let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
-    private let smallFont = NSFont.monospacedSystemFont(ofSize: 8, weight: .regular)
-    private let clearH: CGFloat = 20
+    private let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+    private let smallFont = NSFont.systemFont(ofSize: 11, weight: .regular)
+    private let clearH: CGFloat = 22
 
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -1156,37 +1212,106 @@ class NotificationPanelView: NSView {
 
     private func itemRect(at index: Int) -> NSRect {
         let y = padY + clearH + gap + CGFloat(index) * (itemH + gap)
-        return NSRect(x: padX, y: y, width: bounds.width - padX * 2, height: itemH)
+        return NSRect(x: padX, y: y, width: max(0, bounds.width - padX * 2), height: itemH)
     }
 
     private func clearRect() -> NSRect {
-        NSRect(x: padX, y: padY, width: bounds.width - padX * 2, height: clearH)
+        let text = NSAttributedString(string: "Clear all", attributes: [.font: smallFont])
+        let w = text.size().width + 12
+        return NSRect(x: bounds.width - padX - w, y: padY, width: w, height: clearH)
     }
 
     private func closeRect(for itemRect: NSRect) -> NSRect {
         NSRect(x: itemRect.maxX - 16, y: itemRect.minY + 4, width: 12, height: 12)
     }
 
-    override func mouseDown(with event: NSEvent) {
-        let loc = convert(event.locationInWindow, from: nil)
+    private var hoveredNotifIdx: Int? = nil
+    private var hoveredClearAll = false
+    private var notifHoverArea: NSTrackingArea?
+    private var clickTargets: [PointerButton] = []
 
-        // Clear all
-        if clearRect().contains(loc) {
-            onClearAll?()
-            return
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        layoutClickTargets()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let h = notifHoverArea { removeTrackingArea(h) }
+        notifHoverArea = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp], owner: self)
+        addTrackingArea(notifHoverArea!)
+    }
+
+    private func rebuildClickTargets() {
+        clickTargets.forEach { $0.removeFromSuperview() }
+        clickTargets.removeAll()
+
+        guard !notifications.isEmpty else { return }
+
+        let clearButton = PointerButton(frame: clearRect())
+        clearButton.isBordered = false
+        clearButton.title = ""
+        clearButton.focusRingType = .none
+        clearButton.target = self
+        clearButton.action = #selector(clearAllClicked(_:))
+        clearButton.toolTip = "Clear all notifications"
+        addSubview(clearButton)
+        clickTargets.append(clearButton)
+
+        for (i, notification) in notifications.enumerated() {
+            let button = PointerButton(frame: itemRect(at: i))
+            button.isBordered = false
+            button.title = ""
+            button.focusRingType = .none
+            button.tag = i
+            button.target = self
+            button.action = #selector(notificationClicked(_:))
+            button.toolTip = notification.sessionName
+            addSubview(button)
+            clickTargets.append(button)
         }
+    }
 
-        for (i, notif) in notifications.enumerated() {
-            let rect = itemRect(at: i)
-            guard rect.contains(loc) else { continue }
-            // X button
-            if closeRect(for: rect).contains(loc) {
-                onDismissNotification?(notif.id)
-            } else {
-                onClickNotification?(notif)
+    private func layoutClickTargets() {
+        guard clickTargets.count == notifications.count + 1 else { return }
+        clickTargets[0].frame = clearRect()
+        for i in notifications.indices {
+            clickTargets[i + 1].frame = itemRect(at: i)
+        }
+    }
+
+    @objc private func clearAllClicked(_ sender: NSButton) {
+        onClearAll?()
+    }
+
+    @objc private func notificationClicked(_ sender: NSButton) {
+        guard sender.tag < notifications.count else { return }
+        let notification = notifications[sender.tag]
+        if let event = NSApp.currentEvent {
+            let location = convert(event.locationInWindow, from: nil)
+            if closeRect(for: itemRect(at: sender.tag)).contains(location) {
+                onDismissNotification?(notification.id)
+                return
             }
-            return
         }
+        onClickNotification?(notification)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let loc = convert(event.locationInWindow, from: nil)
+        var found: Int? = nil
+        for (i, _) in notifications.enumerated() {
+            if itemRect(at: i).contains(loc) { found = i; break }
+        }
+        let overClear = clearRect().contains(loc)
+        if found != hoveredNotifIdx || overClear != hoveredClearAll {
+            hoveredNotifIdx = found; hoveredClearAll = overClear; needsDisplay = true
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard event.trackingArea === notifHoverArea else { return }
+        if hoveredNotifIdx != nil || hoveredClearAll { hoveredNotifIdx = nil; hoveredClearAll = false; needsDisplay = true }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -1194,32 +1319,40 @@ class NotificationPanelView: NSView {
 
         // Clear all button
         let cr = clearRect()
+        if hoveredClearAll {
+            let hoverBg = NSBezierPath(roundedRect: cr, xRadius: 4, yRadius: 4)
+            NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
+            hoverBg.fill()
+        }
         let clearAttr = NSAttributedString(string: "Clear all", attributes: [
-            .font: smallFont, .foregroundColor: NSColor.secondaryLabelColor])
-        let cx = cr.maxX - clearAttr.size().width
+            .font: smallFont, .foregroundColor: hoveredClearAll ? NSColor(calibratedWhite: 0.3, alpha: 1) : NSColor.secondaryLabelColor])
+        let cx = cr.midX - clearAttr.size().width / 2
         clearAttr.draw(at: NSPoint(x: cx, y: cr.minY + 4))
 
         for (i, notif) in notifications.enumerated() {
             let rect = itemRect(at: i)
 
-            // Background
-            let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-            NSColor(white: 0.5, alpha: 0.08).setFill()
-            bg.fill()
+            // Hover
+            if hoveredNotifIdx == i {
+                NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
+                NSBezierPath(rect: NSRect(x: 0, y: rect.minY, width: bounds.width, height: itemH)).fill()
+            }
 
-            // Accent — orange for input needed, blue for finished
-            let accentColor = notif.isInputNeeded ? NSColor.systemOrange : NSColor.systemBlue
-            NSGraphicsContext.saveGraphicsState()
-            bg.addClip()
+            // Top border
+            NSColor(calibratedWhite: 0.88, alpha: 1).setFill()
+            NSBezierPath(rect: NSRect(x: 0, y: rect.minY, width: bounds.width, height: 1)).fill()
+
+            // Accent dot
+            let accentColor: NSColor = notif.isInputNeeded ?
+                NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 1) : .controlAccentColor
             accentColor.setFill()
-            NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: 3, height: itemH)).fill()
-            NSGraphicsContext.restoreGraphicsState()
+            NSBezierPath(ovalIn: NSRect(x: rect.minX + 4, y: rect.minY + 10, width: 6, height: 6)).fill()
 
-            let tx = rect.minX + 10
+            let tx = rect.minX + 16
 
             // Name
             let nameAttr = NSAttributedString(string: notif.sessionName, attributes: [
-                .font: font, .foregroundColor: NSColor.labelColor])
+                .font: font, .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)])
             nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 5))
 
             // Status + time
@@ -1229,21 +1362,720 @@ class NotificationPanelView: NSView {
                 ? "input needed \(df.string(from: notif.time))"
                 : "finished \(df.string(from: notif.time))"
             let timeAttr = NSAttributedString(string: timeStr, attributes: [
-                .font: smallFont, .foregroundColor: NSColor.secondaryLabelColor])
+                .font: smallFont, .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
             timeAttr.draw(at: NSPoint(x: tx, y: rect.minY + 20))
 
             // Path
             let pathAttr = NSAttributedString(string: shortPath(notif.cwd), attributes: [
-                .font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor])
+                .font: smallFont, .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)])
             pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 31))
 
             // X button
             let xr = closeRect(for: rect)
             let xAttr = NSAttributedString(string: "✕", attributes: [
-                .font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.secondaryLabelColor])
+                .font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor(calibratedWhite: 0.6, alpha: 1)])
             xAttr.draw(at: NSPoint(x: xr.minX, y: xr.minY))
+
         }
     }
+
+}
+
+// MARK: - Chat Panel
+
+struct ChatMessage {
+    let id: Int
+    let senderName: String
+    let senderType: String
+    let recipient: String?
+    let body: String
+    let timestamp: Int
+}
+
+func loadChatMessages(project: String, limit: Int = 50) -> [ChatMessage] {
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
+          let db else { return [] }
+    defer { sqlite3_close(db) }
+
+    var stmt: OpaquePointer?
+    let sql = "SELECT id, sender_name, sender_type, recipient, body, created_at FROM messages WHERE project_id=? ORDER BY id DESC LIMIT ?"
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { sqlite3_finalize(stmt) }
+
+    sqlite3_bind_text(stmt, 1, project, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    sqlite3_bind_int(stmt, 2, Int32(limit))
+
+    var msgs: [ChatMessage] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+        let id = Int(sqlite3_column_int(stmt, 0))
+        let sName = String(cString: sqlite3_column_text(stmt, 1))
+        let sType = String(cString: sqlite3_column_text(stmt, 2))
+        let recip = sqlite3_column_text(stmt, 3).map { String(cString: $0) }
+        let body = String(cString: sqlite3_column_text(stmt, 4))
+        let ts = Int(sqlite3_column_int(stmt, 5))
+        msgs.append(ChatMessage(id: id, senderName: sName, senderType: sType,
+                                recipient: recip, body: body, timestamp: ts))
+    }
+    return msgs.reversed()
+}
+
+func loadChatProjects() -> [String] {
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
+          let db else { return [] }
+    defer { sqlite3_close(db) }
+
+    var stmt: OpaquePointer?
+    let sql = "SELECT DISTINCT project_id FROM messages ORDER BY project_id"
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { sqlite3_finalize(stmt) }
+
+    var projects: [String] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+        projects.append(String(cString: sqlite3_column_text(stmt, 0)))
+    }
+    return projects
+}
+
+func isInChat(name: String, sessionId: String = "") -> Bool {
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
+          let db else { return false }
+    defer { sqlite3_close(db) }
+    var stmt: OpaquePointer?
+    let sql = "SELECT COUNT(*) FROM sessions WHERE display_name=? OR (session_id=? AND session_id!='')"
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+    defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, name, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    sqlite3_bind_text(stmt, 2, sessionId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    return sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) > 0
+}
+
+func loadChatMembers(project: String) -> [ChatMember] {
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
+          let db else { return [] }
+    defer { sqlite3_close(db) }
+
+    var stmt: OpaquePointer?
+    let sql = "SELECT display_name, agent_type, pid, COALESCE(session_id,'') FROM sessions WHERE project_id=? ORDER BY display_name"
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, project, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+
+    var result: [ChatMember] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+        let name = String(cString: sqlite3_column_text(stmt, 0))
+        let atype = String(cString: sqlite3_column_text(stmt, 1))
+        let pid = Int(sqlite3_column_int(stmt, 2))
+        let sid = String(cString: sqlite3_column_text(stmt, 3))
+        let state: State
+        if pid > 0 && kill(pid_t(pid), 0) == 0 {
+            state = resolveState(pid_t(pid))
+        } else {
+            state = .dead
+        }
+        result.append(ChatMember(name: name, agentType: atype, state: state, sessionId: sid))
+    }
+    return result
+}
+
+func chatUnreadCount(project: String) -> Int {
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
+          let db else { return 0 }
+    defer { sqlite3_close(db) }
+
+    // Get human's read cursor
+    var cursor = 0
+    var stmt: OpaquePointer?
+    let cursorSql = "SELECT last_read_id FROM read_cursors WHERE project_id=? AND display_name='human'"
+    if sqlite3_prepare_v2(db, cursorSql, -1, &stmt, nil) == SQLITE_OK {
+        sqlite3_bind_text(stmt, 1, project, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        if sqlite3_step(stmt) == SQLITE_ROW { cursor = Int(sqlite3_column_int(stmt, 0)) }
+        sqlite3_finalize(stmt)
+    }
+
+    // Count messages after cursor
+    let countSql = "SELECT COUNT(*) FROM messages WHERE project_id=? AND id>?"
+    if sqlite3_prepare_v2(db, countSql, -1, &stmt, nil) == SQLITE_OK {
+        sqlite3_bind_text(stmt, 1, project, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        sqlite3_bind_int(stmt, 2, Int32(cursor))
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            let count = Int(sqlite3_column_int(stmt, 0))
+            sqlite3_finalize(stmt)
+            return count
+        }
+        sqlite3_finalize(stmt)
+    }
+    return 0
+}
+
+func updateHumanReadCursor(project: String, maxId: Int) {
+    let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
+                   "read", "--project", project, "--name", "human", "--type", "human")
+}
+
+struct ChatMember {
+    let name: String
+    let agentType: String
+    let state: State
+    let sessionId: String
+}
+
+class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
+    var messages: [ChatMessage] = [] { didSet { needsDisplay = true } }
+    var activeProject: String = ""
+    var projects: [String] = []
+    var members: [ChatMember] = [] { didSet { refreshMembers() } }
+    var onSend: ((String, String) -> Void)?  // (project, message)
+    var onRemoveFromChat: ((String) -> Void)?  // session name
+    var onSwitchChannel: ((String) -> Void)?
+    var onAddChannel: (() -> Void)?
+    var onRemoveChannel: ((String) -> Void)?
+
+    private let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+    private let smallFont = NSFont.systemFont(ofSize: 10, weight: .regular)
+    private let bodyFont = NSFont.systemFont(ofSize: 12, weight: .regular)
+    private let padX: CGFloat = 10
+    private let padY: CGFloat = 8
+    private let inputH: CGFloat = 52
+    private let headerH: CGFloat = 22
+    var membersH: CGFloat = 36
+
+    private var inputField: NSTextField?  // legacy compat
+    var inputTV: NSTextView?
+    private var inputScroll: NSScrollView?
+    private var sendButton: NSButton?
+    private var inputMinH: CGFloat = 0
+    private var scrollView: NSScrollView?
+    private var contentView: NSView?
+    private var channelLabel: NSTextField?
+    var membersView: NSView?
+    var sessionNames: [String] = []
+
+    override var isFlipped: Bool { true }
+
+    func setupViews() {
+        // Channel header — label + arrow button
+        let label = NSTextField(labelWithString: "# main")
+        label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        label.textColor = .labelColor
+        label.frame = NSRect(x: padX, y: padY, width: bounds.width - padX - 30, height: 18)
+        label.autoresizingMask = [.width]
+        addSubview(label)
+        channelLabel = label
+
+        let arrow = PointerButton(frame: NSRect(x: bounds.width - padX - 28, y: padY - 2, width: 28, height: 22))
+        arrow.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Channels")
+        arrow.imageScaling = .scaleProportionallyDown
+        arrow.isBordered = false
+        arrow.focusRingType = .none
+        arrow.contentTintColor = .secondaryLabelColor
+        arrow.target = self
+        arrow.action = #selector(channelArrowClicked(_:))
+        arrow.autoresizingMask = [.minXMargin]
+        addSubview(arrow)
+
+        // Scroll view for messages — main area
+        let scrollY = headerH + padY
+        let inputY = bounds.height - inputH - membersH - padY * 2
+        let scrollH = inputY - scrollY
+        let sv = NSScrollView(frame: NSRect(x: 0, y: scrollY, width: bounds.width, height: scrollH))
+        sv.autoresizingMask = [.width]
+        sv.hasVerticalScroller = true
+        sv.drawsBackground = false
+        sv.borderType = .noBorder
+        let cv = FlippedView(frame: NSRect(x: 0, y: 0, width: sv.contentSize.width, height: 0))
+        cv.autoresizingMask = [.width]
+        sv.documentView = cv
+        addSubview(sv)
+        scrollView = sv
+        contentView = cv
+
+        // Input — NSTextView in NSScrollView for proper multiline + expansion
+        let sendW: CGFloat = 30
+        let inputAreaY = bounds.height - inputH - membersH - padY
+        let sendX = bounds.width - padX - sendW
+        let inputW = sendX - padX - 6
+        inputMinH = inputH
+
+        let sc = NSScrollView(frame: NSRect(x: padX, y: inputAreaY, width: inputW, height: inputH))
+        sc.hasVerticalScroller = true
+        sc.autohidesScrollers = true
+        sc.hasHorizontalScroller = false
+        sc.borderType = .noBorder
+        sc.drawsBackground = true
+        sc.backgroundColor = .white
+        // Rounded border on clipView — scroll view's clipView draws on top of any scroll view layer
+        sc.contentView.wantsLayer = true
+        sc.contentView.layer?.cornerRadius = 8
+        sc.contentView.layer?.borderWidth = 1
+        sc.contentView.layer?.borderColor = NSColor(calibratedWhite: 0.78, alpha: 1).cgColor
+        sc.contentView.layer?.masksToBounds = true
+        sc.contentView.layer?.backgroundColor = NSColor.white.cgColor
+        addSubview(sc)
+
+        let tv = ChatInputTextView(frame: NSRect(x: 0, y: 0, width: sc.contentSize.width, height: inputH))
+        tv.font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        tv.minSize = NSSize(width: 0, height: inputH)
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.drawsBackground = false
+        tv.isRichText = false
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.autoresizingMask = [.width]
+        tv.textContainerInset = NSSize(width: 4, height: 6)
+        tv.textContainer?.widthTracksTextView = true
+        tv.textContainer?.lineFragmentPadding = 4
+        tv.placeholderString = "@name to DM, Tab to complete"
+        tv.delegate = self
+        sc.documentView = tv
+        addSubview(sc)
+        inputTV = tv
+        inputScroll = sc
+
+        let btnH: CGFloat = 24
+        let sb = TintHoverButton(frame: NSRect(x: sendX, y: inputAreaY + (inputH - btnH) / 2, width: sendW, height: btnH))
+        sb.image = NSImage(systemSymbolName: "arrow.right.circle.fill", accessibilityDescription: "Send")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .medium))
+        sb.imagePosition = .imageOnly
+        sb.isBordered = false
+        sb.normalTint = .controlAccentColor
+        sb.hoverTint = NSColor(calibratedRed: 0.0, green: 0.3, blue: 0.8, alpha: 1)
+        sb.contentTintColor = .controlAccentColor
+        sb.target = self
+        sb.action = #selector(sendClicked(_:))
+        sb.autoresizingMask = [.minXMargin]
+        addSubview(sb)
+        sendButton = sb as? NSButton
+
+        // Members strip below input
+        let mv = FlippedView(frame: NSRect(x: 0, y: bounds.height - membersH, width: bounds.width, height: membersH))
+        addSubview(mv)
+        membersView = mv
+    }
+
+    func updateChannelLabel() {
+        channelLabel?.stringValue = "# \(activeProject)"
+    }
+
+    @objc func channelArrowClicked(_ sender: NSButton) {
+        let menu = NSMenu()
+        for p in projects {
+            let item = NSMenuItem(title: "# \(p)", action: #selector(channelSelected(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = p
+            if p == activeProject { item.state = .on }
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let addItem = NSMenuItem(title: "Add Channel...", action: #selector(addChannelClicked(_:)), keyEquivalent: "")
+        addItem.target = self
+        menu.addItem(addItem)
+        menu.popUp(positioning: nil, at: NSPoint(x: sender.frame.minX, y: sender.frame.maxY), in: self)
+    }
+
+    @objc func channelSelected(_ sender: NSMenuItem) {
+        guard let p = sender.representedObject as? String else { return }
+        activeProject = p
+        updateChannelLabel()
+        onSwitchChannel?(p)
+    }
+
+    @objc func addChannelClicked(_ sender: NSMenuItem) {
+        onAddChannel?()
+    }
+
+    // Right-click on channel label → remove channel
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let loc = convert(event.locationInWindow, from: nil)
+        if let label = channelLabel, label.frame.contains(loc), !activeProject.isEmpty {
+            let menu = NSMenu()
+            let rm = NSMenuItem(title: "Remove Channel \"\(activeProject)\"",
+                                action: #selector(removeChannelClicked(_:)), keyEquivalent: "")
+            rm.target = self
+            menu.addItem(rm)
+            return menu
+        }
+        return nil
+    }
+
+    @objc func removeChannelClicked(_ sender: NSMenuItem) {
+        onRemoveChannel?(activeProject)
+    }
+
+    @objc func sendClicked(_ sender: Any) {
+        let text = (inputTV?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        var msg = text
+        var target: String? = nil
+        if msg.hasPrefix("@") {
+            let parts = msg.dropFirst().split(separator: " ", maxSplits: 1)
+            if let name = parts.first {
+                target = String(name)
+                msg = parts.count > 1 ? String(parts[1]) : ""
+            }
+        }
+        guard !msg.isEmpty else { return }
+        if let target, target.lowercased() != "all" {
+            onSendDM?(activeProject, msg, target)
+        } else {
+            onSend?(activeProject, msg)
+        }
+        inputTV?.string = ""
+    }
+
+    var onSendDM: ((String, String, String) -> Void)?  // (project, message, target)
+
+    // NSTextViewDelegate
+    func textDidChange(_ notification: Notification) {}
+
+    func textView(_ textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        if sel == #selector(insertNewline(_:)) {
+            if NSEvent.modifierFlags.contains(.shift) { return false }
+            sendClicked(textView)
+            return true
+        }
+        if sel == #selector(insertTab(_:)) {
+            let text = textView.string
+            guard let atIdx = text.lastIndex(of: "@") else { return false }
+            let partial = String(text[text.index(after: atIdx)...]).lowercased()
+            if partial.isEmpty { return false }
+            if let match = sessionNames.first(where: { $0.lowercased().hasPrefix(partial) && $0 != "human" }) {
+                let prefix = String(text[...atIdx])
+                textView.string = prefix + match + " "
+                textView.setSelectedRange(NSRange(location: textView.string.count, length: 0))
+            }
+            return true
+        }
+        return false
+    }
+
+    // No dynamic resize — fixed input with scroll for overflow
+
+    func updateProjects(_ newProjects: [String]) {
+        projects = newProjects
+        if activeProject.isEmpty, let first = newProjects.first {
+            activeProject = first
+        }
+        updateChannelLabel()
+    }
+
+    var onMemberReveal: ((String) -> Void)?  // session name → reveal terminal
+
+    func refreshMembers() {
+        guard let mv = membersView else { return }
+        mv.subviews.forEach { $0.removeFromSuperview() }
+        let chipH: CGFloat = 24
+        let chipGapX: CGFloat = 6
+        let chipGapY: CGFloat = 4
+        let maxW = mv.superview?.frame.width ?? bounds.width
+        var x: CGFloat = padX
+        var row: CGFloat = 0
+        for (i, m) in members.enumerated() where m.name != "human" {
+            let stateColor = m.state.color
+            let testLabel = NSTextField(labelWithString: m.name)
+            testLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+            testLabel.sizeToFit()
+            let chipW = testLabel.frame.width + 22
+
+            // Wrap to next row if needed
+            if x + chipW > maxW - padX && x > padX {
+                x = padX
+                row += 1
+            }
+            let chipY: CGFloat = 3 + row * (chipH + chipGapY)
+
+            let chip = NSView(frame: NSRect(x: x, y: chipY, width: chipW, height: chipH))
+            chip.wantsLayer = true
+            chip.layer?.backgroundColor = NSColor(calibratedWhite: 0.96, alpha: 1).cgColor
+            chip.layer?.cornerRadius = 6
+            chip.layer?.borderWidth = 0.5
+            chip.layer?.borderColor = NSColor(calibratedWhite: 0.82, alpha: 1).cgColor
+
+            // State dot
+            let dotSize: CGFloat = 6
+            let dot = NSView(frame: NSRect(x: 6, y: (chipH - dotSize) / 2, width: dotSize, height: dotSize))
+            dot.wantsLayer = true
+            dot.layer?.backgroundColor = stateColor.cgColor
+            dot.layer?.cornerRadius = dotSize / 2
+            chip.addSubview(dot)
+
+            // Name label
+            let nameLabel = NSTextField(labelWithString: m.name)
+            nameLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+            nameLabel.textColor = NSColor(calibratedWhite: 0.25, alpha: 1)
+            nameLabel.isBezeled = false
+            nameLabel.drawsBackground = false
+            nameLabel.isEditable = false
+            nameLabel.isSelectable = false
+            nameLabel.lineBreakMode = .byClipping
+            nameLabel.sizeToFit()
+            nameLabel.frame.origin = NSPoint(x: 14, y: (chipH - nameLabel.frame.height) / 2)
+            chip.addSubview(nameLabel)
+
+            // Clickable button — LAST so it's on top, catches all clicks
+            let btn = PointerButton(frame: NSRect(x: 0, y: 0, width: chipW, height: chipH))
+            btn.title = ""
+            btn.isBordered = false
+            btn.isTransparent = true
+            btn.tag = i
+            btn.target = self
+            btn.action = #selector(memberClicked(_:))
+            btn.hoverBackground = NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1)
+            chip.addSubview(btn)
+
+            mv.addSubview(chip)
+            x += chipW + chipGapX
+        }
+        // Update height and reposition at bottom of parent
+        let neededH = (row + 1) * (chipH + chipGapY) + 6
+        membersH = max(36, neededH)
+        mv.frame = NSRect(x: 0, y: bounds.height - membersH, width: bounds.width, height: membersH)
+    }
+
+    @objc func memberClicked(_ sender: NSButton) {
+        guard sender.tag < members.count else { return }
+        let name = members[sender.tag].name
+        onMemberReveal?(name)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let mv = membersView else { super.rightMouseDown(with: event); return }
+        let loc = convert(event.locationInWindow, from: nil)
+        let mvLoc = mv.convert(loc, from: self)
+        // Members are chips — match non-human members by chip index
+        let nonHuman = members.enumerated().filter { $0.element.name != "human" }
+        for (chipIdx, (memberIdx, m)) in nonHuman.enumerated() {
+            guard chipIdx < mv.subviews.count else { break }
+            if mv.subviews[chipIdx].frame.contains(mvLoc) {
+                let menu = NSMenu()
+                let item = NSMenuItem(title: "Remove \(m.name) from Chat",
+                                      action: #selector(removeMemberFromChat(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = memberIdx
+                menu.addItem(item)
+                NSMenu.popUpContextMenu(menu, with: event, for: self)
+                return
+            }
+        }
+        super.rightMouseDown(with: event)
+    }
+
+    @objc func removeMemberFromChat(_ sender: NSMenuItem) {
+        guard sender.tag < members.count else { return }
+        onRemoveFromChat?(members[sender.tag].name)
+    }
+
+    private var chatTextView: NSTextView?
+
+    func refreshMessages() {
+        guard let sv = scrollView else { return }
+
+        // Use a single NSTextView for full cross-message text selection
+        let tv: NSTextView
+        if let existing = chatTextView {
+            tv = existing
+        } else {
+            tv = ChatMessageTextView(frame: NSRect(x: 0, y: 0, width: sv.contentSize.width, height: 0))
+            tv.isEditable = false
+            tv.isSelectable = true
+            tv.drawsBackground = false
+            tv.textContainerInset = NSSize(width: padX, height: 4)
+            tv.textContainer?.lineFragmentPadding = 0
+            tv.autoresizingMask = [.width]
+            tv.isVerticallyResizable = true
+            tv.isHorizontallyResizable = false
+            tv.textContainer?.widthTracksTextView = true
+            sv.documentView = tv
+            chatTextView = tv
+        }
+
+        let full = NSMutableAttributedString()
+        let df = DateFormatter()
+        df.dateFormat = "HH:mm"
+
+        for (i, msg) in messages.enumerated() {
+            let timeStr = df.string(from: Date(timeIntervalSince1970: Double(msg.timestamp)))
+            let senderColor: NSColor = msg.senderType == "claude" ?
+                NSColor(calibratedRed: 0.25, green: 0.72, blue: 0.35, alpha: 1) :
+                msg.senderType == "codex" ? .controlAccentColor :
+                NSColor(calibratedWhite: 0.4, alpha: 1)
+            let sender = msg.senderType == "human" ? "You" : "\(msg.senderName)"
+            let dm = msg.recipient != nil ? " → \(msg.recipient!)" : ""
+
+            // Tag + Sender + time
+            if msg.senderType != "human" {
+                let tagText = msg.senderType == "codex" ? "CX" : "CL"
+                let tagColor: NSColor = msg.senderType == "codex"
+                    ? NSColor(calibratedRed: 0.6, green: 0.4, blue: 0.15, alpha: 1)
+                    : NSColor(calibratedRed: 0.2, green: 0.45, blue: 0.8, alpha: 1)
+                full.append(NSAttributedString(string: tagText, attributes: [
+                    .font: NSFont.systemFont(ofSize: 9, weight: .semibold),
+                    .foregroundColor: tagColor,
+                    .backgroundColor: tagColor.withAlphaComponent(0.12)]))
+                full.append(NSAttributedString(string: " "))
+            }
+            full.append(NSAttributedString(string: "\(sender)\(dm)", attributes: [
+                .font: font, .foregroundColor: senderColor]))
+            full.append(NSAttributedString(string: "  \(timeStr)\n", attributes: [
+                .font: smallFont, .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)]))
+            // Body
+            full.append(NSAttributedString(string: msg.body, attributes: [
+                .font: bodyFont, .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)]))
+            if i < messages.count - 1 {
+                full.append(NSAttributedString(string: "\n\n"))
+            }
+        }
+
+        tv.textContainerInset = NSSize(width: padX, height: 4)
+        (tv as! ChatMessageTextView).topPadding = 4
+        tv.textStorage?.setAttributedString(full)
+        tv.sizeToFit()
+
+        // Measure actual text height
+        let lm = tv.layoutManager!
+        lm.ensureLayout(for: tv.textContainer!)
+        let textH = lm.usedRect(for: tv.textContainer!).height + 8
+        let visibleH = sv.contentSize.height
+
+        if textH < visibleH {
+            // Push text to bottom via top padding
+            (tv as! ChatMessageTextView).topPadding = visibleH - textH
+            tv.setFrameSize(NSSize(width: tv.frame.width, height: visibleH))
+        } else {
+            (tv as! ChatMessageTextView).topPadding = 4
+            tv.sizeToFit()
+            tv.scrollToEndOfDocument(nil)
+        }
+    }
+}
+
+class FlippedView: NSView { override var isFlipped: Bool { true } }
+
+/// Child window that stays attached to parent — hides by moving offscreen instead of orderOut
+/// (orderOut breaks macOS child window auto-move during drag)
+class AttachedChildWindow: NSWindow {
+    private var _hidden = false
+    var isHiddenOffscreen: Bool { _hidden }
+
+    override var isVisible: Bool { !_hidden }
+
+    func hideOffscreen() {
+        guard !_hidden else { return }
+        _hidden = true
+        super.setFrame(NSRect(x: -9999, y: -9999, width: 1, height: 1), display: false)
+    }
+
+    func showAt(_ frame: NSRect) {
+        _hidden = false
+        super.setFrame(frame, display: true)
+        super.orderFront(nil)
+    }
+
+    override func orderOut(_ sender: Any?) {
+        hideOffscreen()
+    }
+
+    override func orderFront(_ sender: Any?) {
+        _hidden = false
+        super.orderFront(sender)
+    }
+}
+
+/// Message display — selectable but doesn't grab focus on its own
+class ChatMessageTextView: NSTextView {
+    var topPadding: CGFloat = 4
+
+    override var acceptsFirstResponder: Bool { false }
+    override func becomeFirstResponder() -> Bool { false }
+
+    override var textContainerOrigin: NSPoint {
+        NSPoint(x: textContainerInset.width, y: topPadding)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        super.mouseDown(with: event)
+    }
+}
+
+/// Button with pointer cursor + rounded hover background, works on non-key windows
+class TintHoverButton: NSButton {
+    var normalTint: NSColor = .controlAccentColor
+    var hoverTint: NSColor = .systemBlue
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        contentTintColor = hoverTint
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        contentTintColor = normalTint
+    }
+}
+
+class PointerButton: NSButton {
+    var hoverBackground: NSColor?
+    var normalBackground = NSColor(calibratedWhite: 0.96, alpha: 1)
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        if let bg = hoverBackground {
+            superview?.layer?.backgroundColor = bg.cgColor
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if hoverBackground != nil {
+            superview?.layer?.backgroundColor = normalBackground.cgColor
+        }
+    }
+}
+
+class ChatInputTextView: NSTextView {
+    var placeholderString: String = "" { didSet { needsDisplay = true } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        if string.isEmpty && !placeholderString.isEmpty {
+            let attr = NSAttributedString(string: placeholderString, attributes: [
+                .font: font ?? NSFont.systemFont(ofSize: 13),
+                .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)])
+            attr.draw(at: NSPoint(x: textContainerInset.width + 4, y: textContainerInset.height))
+        }
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        needsDisplay = true
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        needsDisplay = true
+        return super.becomeFirstResponder()
+    }
+}
+
+class KeyableBorderlessWindow: AttachedChildWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
 }
 
 // MARK: - Dashboard Window View
@@ -1281,6 +2113,7 @@ class DashboardView: NSView {
     var onNotesClick: ((Session) -> Void)?
     var onRemoveClick: ((Session) -> Void)?
     var onResumeClick: ((Session) -> Void)?
+    var onAddToChat: ((Session) -> Void)?
     var onReorder: ((Int, Int) -> Void)?  // (fromIndex, toInsertBeforeIndex)
     var onTerminalClick: ((Terminal) -> Void)?
     var onTerminalRemove: ((Terminal) -> Void)?
@@ -1304,18 +2137,19 @@ class DashboardView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
 
-    private let cardH: CGFloat = 52
-    private let termCardH: CGFloat = 44
-    private let sectionHeaderH: CGFloat = 24
-    private let gap: CGFloat = 8
-    private let padX: CGFloat = 12
-    private let padY: CGFloat = 10
+    private let cardH: CGFloat = 46
+    private let termCardH: CGFloat = 46
+    private let sectionHeaderH: CGFloat = 28
+    private let gap: CGFloat = 0
+    private let padX: CGFloat = 16
+    private let padY: CGFloat = 8
     private var noteButtons: [NSButton] = []
     var resumeButtons: [NSButton] = []
     private var pinButtons: [NSButton] = []
     private var termPinButtons: [NSButton] = []
     private var pinnedNoteButtons: [NSButton] = []
     private var pinnedPinButtons: [NSButton] = []
+    private var pinnedResumeButtons: [NSButton] = []
 
     // Hover state
     private var hoveredCardType: String = ""  // "session", "terminal", "pinned", ""
@@ -1338,7 +2172,7 @@ class DashboardView: NSView {
         return padY + sessH + gap
     }
 
-    private let pinnedCardH: CGFloat = 36
+    private let pinnedCardH: CGFloat = 46
 
     private var pinnedTopY: CGFloat {
         var h = terminalsTopY
@@ -1405,7 +2239,7 @@ class DashboardView: NSView {
         super.updateTrackingAreas()
         if let t = hoverTracker { removeTrackingArea(t) }
         hoverTracker = NSTrackingArea(rect: bounds,
-            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways],
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp],
             owner: self, userInfo: nil)
         addTrackingArea(hoverTracker!)
     }
@@ -1453,6 +2287,13 @@ class DashboardView: NSView {
             closeItem.target = self
             closeItem.tag = idx
             menu.addItem(closeItem)
+            if s.state != .dead && !isInChat(name: s.name, sessionId: s.sessionId) {
+                let chatItem = NSMenuItem(title: "Add to Chat",
+                    action: #selector(contextAddToChat(_:)), keyEquivalent: "")
+                chatItem.target = self
+                chatItem.tag = idx
+                menu.addItem(chatItem)
+            }
             NSMenu.popUpContextMenu(menu, with: event, for: self)
             return
         }
@@ -1476,6 +2317,7 @@ class DashboardView: NSView {
         }
         // Pinned context menu
         if let idx = pinnedIndex(at: loc), idx < pinnedItems.count {
+            let item = pinnedItems[idx]
             let menu = NSMenu()
             let unpinItem = NSMenuItem(title: "Unpin",
                 action: #selector(contextUnpin(_:)), keyEquivalent: "")
@@ -1487,6 +2329,13 @@ class DashboardView: NSView {
             closeItem.target = self
             closeItem.tag = idx
             menu.addItem(closeItem)
+            if let s = allSessions.first(where: { $0.sessionId == item.id }), s.state != .dead, !isInChat(name: s.name, sessionId: s.sessionId) {
+                let chatItem = NSMenuItem(title: "Add to Chat",
+                    action: #selector(contextAddPinnedToChat(_:)), keyEquivalent: "")
+                chatItem.target = self
+                chatItem.tag = idx
+                menu.addItem(chatItem)
+            }
             NSMenu.popUpContextMenu(menu, with: event, for: self)
             return
         }
@@ -1505,6 +2354,19 @@ class DashboardView: NSView {
     @objc func contextCloseSession(_ sender: NSMenuItem) {
         guard sender.tag < sessions.count else { return }
         onRemoveClick?(sessions[sender.tag])
+    }
+
+    @objc func contextAddToChat(_ sender: NSMenuItem) {
+        guard sender.tag < sessions.count else { return }
+        onAddToChat?(sessions[sender.tag])
+    }
+
+    @objc func contextAddPinnedToChat(_ sender: NSMenuItem) {
+        guard sender.tag < pinnedItems.count else { return }
+        let item = pinnedItems[sender.tag]
+        if let s = allSessions.first(where: { $0.sessionId == item.id }) {
+            onAddToChat?(s)
+        }
     }
 
     @objc func contextPinTerminal(_ sender: NSMenuItem) {
@@ -1681,55 +2543,51 @@ class DashboardView: NSView {
         resumeButtons.removeAll()
         pinButtons.removeAll()
 
+        let btnSize: CGFloat = 22
+        let btnY: (NSRect) -> CGFloat = { rect in rect.minY + (self.cardH - btnSize) / 2 }
         for (i, s) in sessions.enumerated() {
             let rect = cardRect(at: i)
+            let by = btnY(rect)
+            var bx = rect.maxX - 8
 
-            // Pin button — positioned after state label (where close button used to be)
-            let isPinned = pinnedItems.contains { $0.id == s.sessionId }
-            let maxNameW = rect.maxX - 88 - (rect.minX + 14) - 80
-            let (dispName, _) = truncate(s.name, font: Self.fontBold12, maxWidth: maxNameW)
-            let nameW = NSAttributedString(string: dispName, attributes: [
-                .font: Self.fontBold12]).size().width
-            let stateW = NSAttributedString(string: s.state.label, attributes: [
-                .font: Self.fontSemi9]).size().width
-            let pinX = min(rect.minX + 14 + nameW + 10 + stateW + 6, rect.maxX - 90)
-            let pb = makeIconButton(frame: NSRect(x: pinX, y: rect.minY + 8, width: 20, height: 20),
-                icon: isPinned ? "pin.fill" : "pin",
-                tint: isPinned ? .systemBlue : .secondaryLabelColor,
-                tooltip: isPinned ? "Unpin" : "Pin")
-            pb.tag = i; pb.target = self; pb.action = #selector(pinBtnClicked(_:))
-            addSubview(pb); pinButtons.append(pb)
+            // Notes (rightmost)
+            bx -= btnSize
+            let nb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
+                icon: s.hasNotes ? "doc.text.fill" : "doc.text", tooltip: "Open notes")
+            nb.tag = i; nb.target = self; nb.action = #selector(notesBtnClicked(_:))
+            addSubview(nb); noteButtons.append(nb)
 
-            // Resume button
-            let rb = makeIconButton(frame: NSRect(x: rect.maxX - 56, y: rect.minY + 14, width: 24, height: 24),
+            // Resume
+            bx -= btnSize + 2
+            let rb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
                 icon: "play.fill", tooltip: "Copy resume command")
             rb.tag = i; rb.target = self; rb.action = #selector(resumeBtnClicked(_:))
             addSubview(rb); resumeButtons.append(rb)
 
-            // Notes button
-            let nb = makeIconButton(frame: NSRect(x: rect.maxX - 30, y: rect.minY + 14, width: 24, height: 24),
-                icon: s.hasNotes ? "doc.text.fill" : "doc.text", tooltip: "Open notes")
-            nb.tag = i; nb.target = self; nb.action = #selector(notesBtnClicked(_:))
-            addSubview(nb); noteButtons.append(nb)
+            // Pin
+            bx -= btnSize + 2
+            let isPinned = pinnedItems.contains { $0.id == s.sessionId }
+            let pb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
+                icon: isPinned ? "pin.fill" : "pin",
+                tint: isPinned ? .controlAccentColor : NSColor(calibratedWhite: 0.6, alpha: 1),
+                tooltip: isPinned ? "Unpin" : "Pin")
+            pb.tag = i; pb.target = self; pb.action = #selector(pinBtnClicked(_:))
+            addSubview(pb); pinButtons.append(pb)
         }
     }
 
     func rebuildTermButtons() {
         termPinButtons.forEach { $0.removeFromSuperview() }
         termPinButtons.removeAll()
+        let btnSize: CGFloat = 22
         for (i, t) in terminals.enumerated() {
             let rect = termCardRect(at: i)
+            let by = rect.minY + (termCardH - btnSize) / 2
+            let bx = rect.maxX - 8 - btnSize
             let isPinned = pinnedItems.contains { $0.id == t.name }
-            // Position after name + status label
-            let nameW = NSAttributedString(string: t.name, attributes: [
-                .font: Self.fontBold12]).size().width
-            let statusLabel = t.isAlive ? "ACTIVE" : "CLOSED"
-            let statusW = NSAttributedString(string: statusLabel, attributes: [
-                .font: Self.fontSemi9]).size().width
-            let pinX = min(rect.minX + 14 + nameW + 10 + statusW + 6, rect.maxX - 30)
-            let pb = makeIconButton(frame: NSRect(x: pinX, y: rect.minY + 4, width: 20, height: 20),
+            let pb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
                 icon: isPinned ? "pin.fill" : "pin",
-                tint: isPinned ? .systemBlue : .secondaryLabelColor,
+                tint: isPinned ? .controlAccentColor : NSColor(calibratedWhite: 0.6, alpha: 1),
                 tooltip: isPinned ? "Unpin" : "Pin")
             pb.tag = i; pb.target = self; pb.action = #selector(termPinBtnClicked(_:))
             addSubview(pb); termPinButtons.append(pb)
@@ -1749,40 +2607,50 @@ class DashboardView: NSView {
         onUnpin?(pinnedItems[sender.tag].id)
     }
 
+    @objc func pinnedResumeBtnClicked(_ sender: NSButton) {
+        guard sender.tag < pinnedItems.count else { return }
+        let item = pinnedItems[sender.tag]
+        if let s = allSessions.first(where: { $0.sessionId == item.id }) {
+            onResumeClick?(s)
+        }
+    }
+
     func rebuildPinnedButtons() {
         pinnedNoteButtons.forEach { $0.removeFromSuperview() }
         pinnedPinButtons.forEach { $0.removeFromSuperview() }
+        pinnedResumeButtons.forEach { $0.removeFromSuperview() }
         pinnedNoteButtons.removeAll()
         pinnedPinButtons.removeAll()
+        pinnedResumeButtons.removeAll()
+        let btnSize: CGFloat = 22
         for (i, item) in pinnedItems.enumerated() {
             let rect = pinnedCardRect(at: i)
+            let by = rect.minY + (pinnedCardH - btnSize) / 2
+            var bx = rect.maxX - 8
 
-            // Pin toggle — positioned after name + status label
-            let pinnedBtnName = item.name.count > 19 ? String(item.name.prefix(18)) + "…" : item.name
-            let nameW = NSAttributedString(string: pinnedBtnName, attributes: [
-                .font: Self.fontBold12]).size().width
-            let stateLabel: String
+            // Notes (rightmost, sessions only)
             if item.type == "session" {
-                stateLabel = (allSessions.first(where: { $0.sessionId == item.id })?.state ?? .dead).label
-            } else {
-                stateLabel = (allTerminals.first(where: { $0.name == item.id })?.isAlive ?? false) ? "ACTIVE" : "CLOSED"
-            }
-            let stateW = NSAttributedString(string: stateLabel, attributes: [
-                .font: Self.fontSemi9]).size().width
-            let pinX = min(rect.minX + 14 + nameW + 8 + stateW + 6, rect.maxX - 50)
-            let pb = makeIconButton(frame: NSRect(x: pinX, y: rect.minY + 2, width: 20, height: 20),
-                icon: "pin.fill", tint: .systemBlue, tooltip: "Unpin")
-            pb.tag = i; pb.target = self; pb.action = #selector(pinnedPinBtnClicked(_:))
-            addSubview(pb); pinnedPinButtons.append(pb)
-
-            // Notes button (sessions only)
-            if item.type == "session" {
+                bx -= btnSize
                 let hasNotes = allSessions.first(where: { $0.sessionId == item.id })?.hasNotes ?? false
-                let nb = makeIconButton(frame: NSRect(x: rect.maxX - 26, y: rect.minY + 8, width: 20, height: 20),
+                let nb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
                     icon: hasNotes ? "doc.text.fill" : "doc.text", tooltip: "Open notes")
                 nb.tag = i; nb.target = self; nb.action = #selector(pinnedNoteBtnClicked(_:))
                 addSubview(nb); pinnedNoteButtons.append(nb)
+
+                // Resume
+                bx -= btnSize + 2
+                let rb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
+                    icon: "play.fill", tooltip: "Copy resume command")
+                rb.tag = i; rb.target = self; rb.action = #selector(pinnedResumeBtnClicked(_:))
+                addSubview(rb); pinnedResumeButtons.append(rb)
             }
+
+            // Pin
+            bx -= btnSize + 2
+            let pb = makeIconButton(frame: NSRect(x: bx, y: by, width: btnSize, height: btnSize),
+                icon: "pin.fill", tint: .controlAccentColor, tooltip: "Unpin")
+            pb.tag = i; pb.target = self; pb.action = #selector(pinnedPinBtnClicked(_:))
+            addSubview(pb); pinnedPinButtons.append(pb)
         }
     }
 
@@ -1792,24 +2660,17 @@ class DashboardView: NSView {
     private var trackingAreas2: [NSTrackingArea] = []
 
     override func resetCursorRects() {
+        // Tooltip tracking only — no cursor rects
         for ta in trackingAreas2 { removeTrackingArea(ta) }
         trackingAreas2.removeAll()
-
         for i in 0..<sessions.count {
-            addCursorRect(cardRect(at: i), cursor: .pointingHand)
             if truncatedNames[i] != nil {
                 let ta = NSTrackingArea(rect: cardRect(at: i),
-                    options: [.mouseEnteredAndExited, .activeAlways],
+                    options: [.mouseEnteredAndExited, .activeInActiveApp],
                     owner: self, userInfo: ["idx": i])
                 addTrackingArea(ta)
                 trackingAreas2.append(ta)
             }
-        }
-        for i in 0..<terminals.count {
-            addCursorRect(termCardRect(at: i), cursor: .pointingHand)
-        }
-        for i in 0..<pinnedItems.count {
-            addCursorRect(pinnedCardRect(at: i), cursor: .pointingHand)
         }
     }
 
@@ -1819,7 +2680,7 @@ class DashboardView: NSView {
         hoverTip?.orderOut(nil)
         hoverTip = nil
 
-        let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+        let font = NSFont.systemFont(ofSize: 10, weight: .medium)
         let padH: CGFloat = 6, padV: CGFloat = 3
         let textSize = (fullName as NSString).size(withAttributes: [.font: font])
         let size = NSSize(width: textSize.width + padH * 2, height: textSize.height + padV * 2)
@@ -1827,7 +2688,7 @@ class DashboardView: NSView {
         let tip = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                            styleMask: [.borderless], backing: .buffered, defer: false)
         tip.isOpaque = false
-        tip.backgroundColor = NSColor(white: 0.15, alpha: 0.92)
+        tip.backgroundColor = NSColor.windowBackgroundColor
         tip.hasShadow = true
         tip.level = .floating
         tip.contentView!.wantsLayer = true
@@ -1853,17 +2714,18 @@ class DashboardView: NSView {
     // mouseExited is in the hover tracking section above
 
     // ── Button helper ──
-    private func makeIconButton(frame: NSRect, icon: String, tint: NSColor? = .secondaryLabelColor, tooltip: String) -> NSButton {
+    private func makeIconButton(frame: NSRect, icon: String, tint: NSColor? = NSColor(calibratedWhite: 0.6, alpha: 1), tooltip: String) -> NSButton {
         let btn = NSButton(frame: frame)
-        btn.bezelStyle = .recessed
-        btn.isBordered = false
-        btn.image = NSImage(systemSymbolName: icon, accessibilityDescription: tooltip)
+        btn.bezelStyle = .accessoryBarAction
+        btn.isBordered = true
+        btn.showsBorderOnlyWhileMouseInside = true
+        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+        btn.image = NSImage(systemSymbolName: icon, accessibilityDescription: tooltip)?.withSymbolConfiguration(config)
         btn.imagePosition = .imageOnly
         btn.contentTintColor = tint
         btn.toolTip = tooltip
-        // Hover: show background
-        btn.showsBorderOnlyWhileMouseInside = true
-        btn.isBordered = true
+        btn.wantsLayer = true
+        btn.layer?.cornerRadius = 4
         return btn
     }
 
@@ -1882,90 +2744,102 @@ class DashboardView: NSView {
         return (ellipsis, true)
     }
 
-    // ── Fonts (cached) ──
-    private static let fontBold12  = NSFont.monospacedSystemFont(ofSize: 12, weight: .bold)
-    private static let fontSemi9   = NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold)
-    private static let fontReg10   = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
-    private static let fontReg12   = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    private static let fontReg9    = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
+    // ── Fonts — macOS native sizes ──
+    private static let fontBold12  = NSFont.systemFont(ofSize: 13, weight: .medium)
+    private static let fontSemi9   = NSFont.systemFont(ofSize: 11, weight: .regular)
+    private static let fontReg10   = NSFont.systemFont(ofSize: 11, weight: .regular)
+    private static let fontReg12   = NSFont.systemFont(ofSize: 13, weight: .regular)
+    private static let fontReg9    = NSFont.systemFont(ofSize: 10, weight: .regular)
 
     // ── Draw ──
     override func draw(_ dirtyRect: NSRect) {
         let ss = sessions // local snapshot
         if ss.isEmpty {
-            let str = NSAttributedString(string: "No active sessions", attributes: [
-                .font: Self.fontReg12,
-                .foregroundColor: NSColor.secondaryLabelColor])
-            str.draw(at: NSPoint(x: padX, y: 24))
+            let str = NSAttributedString(string: "No sessions", attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .regular),
+                .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
+            let sub = NSAttributedString(string: "\nLaunch with cdash claude", attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)])
+            let m = NSMutableAttributedString(); m.append(str); m.append(sub)
+            m.draw(at: NSPoint(x: padX, y: 20))
         }
 
         var newTruncated: [Int: String] = [:]
         for (i, s) in ss.enumerated() {
             let rect = cardRect(at: i)
 
-            // Card background
+            // Hover — full width, light blue
             let isHovered = hoveredCardType == "session" && hoveredCardIndex == i
-            let bgAlpha: CGFloat = isHovered ? 0.15 : 0.08
-            let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-            NSColor(white: 0.5, alpha: bgAlpha).setFill()
-            bg.fill()
+            if isHovered {
+                NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
+                NSBezierPath(rect: NSRect(x: 0, y: rect.minY, width: bounds.width, height: cardH)).fill()
+            }
 
-            // Left accent bar
-            NSGraphicsContext.saveGraphicsState()
-            bg.addClip()
+            // State dot
+            let dotSize: CGFloat = 6
+            let dotY = rect.minY + 13
             s.state.color.setFill()
-            NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY,
-                                      width: 3, height: cardH)).fill()
-            NSGraphicsContext.restoreGraphicsState()
+            NSBezierPath(ovalIn: NSRect(x: padX, y: dotY, width: dotSize, height: dotSize)).fill()
 
-            let tx = rect.minX + 14
-            let rightEdge = rect.maxX - 62 // leave space for resume + notes buttons
+            var tx = padX + 14
+            let rightEdge = rect.maxX - 68
+            let isDead = s.state == .dead
 
-            // Row 1: name (truncated if needed) + state + duration
-            let charLimitName = s.name.count > 19 ? String(s.name.prefix(18)) + "…" : s.name
-            let maxNameW = rightEdge - tx - 60 // room for state label + pin + duration
+            // Source tag before name
+            let tagText = s.source == "codex" ? "CX" : "CL"
+            let tagColor: NSColor = s.source == "codex"
+                ? NSColor(calibratedRed: 0.6, green: 0.4, blue: 0.15, alpha: isDead ? 0.5 : 1.0)
+                : NSColor(calibratedRed: 0.2, green: 0.45, blue: 0.8, alpha: isDead ? 0.5 : 1.0)
+            let tagFont = NSFont.systemFont(ofSize: 9, weight: .semibold)
+            let tagAttr = NSAttributedString(string: tagText, attributes: [
+                .font: tagFont, .foregroundColor: tagColor])
+            let tagTextSize = tagAttr.size()
+            let tagPadX: CGFloat = 4
+            let tagPadY: CGFloat = 2
+            let tagW = tagTextSize.width + tagPadX * 2
+            let tagH = tagTextSize.height + tagPadY * 2
+            let tagY = rect.minY + 8
+            let tagBg = NSBezierPath(roundedRect: NSRect(x: tx, y: tagY, width: tagW, height: tagH), xRadius: 3, yRadius: 3)
+            tagColor.withAlphaComponent(isDead ? 0.08 : 0.15).setFill()
+            tagBg.fill()
+            tagAttr.draw(at: NSPoint(x: tx + tagPadX, y: tagY + tagPadY))
+            tx += tagW + 5
+
+            // Row 1: name + time
+            let charLimitName = s.name.count > 20 ? String(s.name.prefix(19)) + "…" : s.name
+            let maxNameW = rightEdge - tx - 60
             let (displayName, wasTruncated) = truncate(charLimitName, font: Self.fontBold12, maxWidth: maxNameW)
-            let nameTruncated = wasTruncated || s.name.count > 19
+            let nameTruncated = wasTruncated || s.name.count > 20
             if nameTruncated { newTruncated[i] = s.name }
+            let nameColor: NSColor = isDead ?
+                NSColor(calibratedWhite: 0.55, alpha: 1) :
+                NSColor(calibratedWhite: 0.11, alpha: 1)
             let nameAttr = NSAttributedString(string: displayName, attributes: [
-                .font: Self.fontBold12,
-                .foregroundColor: NSColor.labelColor])
+                .font: Self.fontBold12, .foregroundColor: nameColor])
             nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
 
-            let stateAttr = NSAttributedString(string: s.state.label, attributes: [
-                .font: Self.fontSemi9,
-                .foregroundColor: s.state.color])
-            stateAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 10, y: rect.minY + 10))
-
-            // Time — use hook ts if available, fall back to lastActive
             let timeDate = s.hookTs > 0 ? Date(timeIntervalSince1970: Double(s.hookTs)) : s.lastActive
             let durAttr = NSAttributedString(string: timeAgo(timeDate), attributes: [
-                .font: Self.fontReg10,
-                .foregroundColor: NSColor.secondaryLabelColor])
-            durAttr.draw(at: NSPoint(x: rightEdge - durAttr.size().width, y: rect.minY + 9))
-
-            // Row 2: path + source tag
-            let pathAttr = NSAttributedString(string: shortPath(s.cwd), attributes: [
-                .font: Self.fontReg10,
-                .foregroundColor: NSColor.secondaryLabelColor])
-            pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 30))
-
-            let tagColor: NSColor = s.source == "codex" ? .systemPurple : .systemBlue
-            let tagText = s.source == "codex" ? "codex" : "claude"
-            let tagAttr = NSAttributedString(string: tagText, attributes: [
                 .font: Self.fontReg9,
-                .foregroundColor: tagColor])
-            // Draw tag with rounded background
-            let tagSize = tagAttr.size()
-            let tagPad: CGFloat = 4
-            let tagRect = NSRect(x: rightEdge - tagSize.width - tagPad * 2,
-                                 y: rect.minY + 30,
-                                 width: tagSize.width + tagPad * 2,
-                                 height: tagSize.height + 2)
-            let tagBg = NSBezierPath(roundedRect: tagRect, xRadius: 3, yRadius: 3)
-            tagColor.withAlphaComponent(0.15).setFill()
-            tagBg.fill()
-            tagAttr.draw(at: NSPoint(x: tagRect.minX + tagPad, y: tagRect.minY + 1))
+                .foregroundColor: NSColor(calibratedWhite: isDead ? 0.7 : 0.56, alpha: 1)])
+            durAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 6, y: rect.minY + 10))
+
+            // Row 2: path
+            let pathStr = shortPath(s.cwd)
+            let pathAttr = NSAttributedString(string: pathStr, attributes: [
+                .font: Self.fontReg9,
+                .foregroundColor: NSColor(calibratedWhite: isDead ? 0.75 : 0.56, alpha: 1)])
+            let maxPathW = rightEdge - tx
+            let pathClip = NSRect(x: tx, y: rect.minY + 26, width: maxPathW, height: 14)
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: pathClip).addClip()
+            pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 26))
+            NSGraphicsContext.restoreGraphicsState()
+
+            // Full-width separator
+            NSColor(calibratedWhite: 0.88, alpha: 1).setFill()
+            NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 1, width: bounds.width, height: 1)).fill()
 
             // Buttons are NSButton subviews managed by rebuildButtons()
         }
@@ -1977,76 +2851,64 @@ class DashboardView: NSView {
         // ── Terminals section ──
         if !terminals.isEmpty {
             let headerY = terminalsTopY
-            let headerAttr = NSAttributedString(string: "TERMINALS", attributes: [
-                .font: Self.fontSemi9,
-                .foregroundColor: NSColor.tertiaryLabelColor])
-            headerAttr.draw(at: NSPoint(x: padX, y: headerY + 6))
+            let headerAttr = NSAttributedString(string: "Terminals", attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
+            headerAttr.draw(at: NSPoint(x: padX, y: headerY + 8))
 
             for (i, t) in terminals.enumerated() {
                 let rect = termCardRect(at: i)
                 let isHovered = hoveredCardType == "terminal" && hoveredCardIndex == i
-                let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-                NSColor(white: 0.5, alpha: isHovered ? 0.12 : 0.05).setFill()
-                bg.fill()
+                if isHovered {
+                    NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
+                    NSBezierPath(rect: NSRect(x: 0, y: rect.minY, width: bounds.width, height: termCardH)).fill()
+                }
 
-                // Left accent
-                let accentColor: NSColor = t.isAlive ? .systemTeal : .systemRed
-                NSGraphicsContext.saveGraphicsState()
-                bg.addClip()
-                accentColor.setFill()
-                NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: 3, height: termCardH)).fill()
-                NSGraphicsContext.restoreGraphicsState()
+                // State dot — same position as sessions
+                let dotColor: NSColor = t.isAlive ? .systemTeal :
+                    NSColor(calibratedRed: 0.85, green: 0.35, blue: 0.35, alpha: 1)
+                let dotSize: CGFloat = 6
+                dotColor.setFill()
+                NSBezierPath(ovalIn: NSRect(x: padX, y: rect.minY + 13, width: dotSize, height: dotSize)).fill()
 
-                let tx = rect.minX + 14
+                let tx = padX + 14
+                let nameColor: NSColor = t.isAlive ?
+                    NSColor(calibratedWhite: 0.11, alpha: 1) :
+                    NSColor(calibratedWhite: 0.55, alpha: 1)
 
-                // Row 1: name + status
+                // Row 1: name
                 let nameAttr = NSAttributedString(string: t.name, attributes: [
-                    .font: Self.fontBold12,
-                    .foregroundColor: NSColor.labelColor])
-                nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 5))
+                    .font: Self.fontBold12, .foregroundColor: nameColor])
+                nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
 
-                let statusLabel = t.isAlive ? "ACTIVE" : "CLOSED"
-                let statusColor: NSColor = t.isAlive ? .systemTeal : .systemRed
-                let statusAttr = NSAttributedString(string: statusLabel, attributes: [
-                    .font: Self.fontSemi9,
-                    .foregroundColor: statusColor])
-                statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 10, y: rect.minY + 7))
-
-                // Row 2: path + terminal tag
+                // Row 2: path
                 let pathAttr = NSAttributedString(string: shortPath(t.cwd), attributes: [
-                    .font: Self.fontReg10,
-                    .foregroundColor: NSColor.secondaryLabelColor])
-                pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 25))
+                    .font: Self.fontReg9,
+                    .foregroundColor: NSColor(calibratedWhite: 0.65, alpha: 1)])
+                pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 26))
 
-                let tTagColor: NSColor = .systemTeal
-                let tTagAttr = NSAttributedString(string: "terminal", attributes: [
-                    .font: Self.fontReg9, .foregroundColor: tTagColor])
-                let tTagSize = tTagAttr.size()
-                let tTagPad: CGFloat = 4
-                let tTagRect = NSRect(x: rect.maxX - 32 - tTagSize.width - tTagPad * 2,
-                                      y: rect.minY + 25, width: tTagSize.width + tTagPad * 2,
-                                      height: tTagSize.height + 2)
-                let tTagBg = NSBezierPath(roundedRect: tTagRect, xRadius: 3, yRadius: 3)
-                tTagColor.withAlphaComponent(0.15).setFill()
-                tTagBg.fill()
-                tTagAttr.draw(at: NSPoint(x: tTagRect.minX + tTagPad, y: tTagRect.minY + 1))
+                // Full-width separator
+                NSColor(calibratedWhite: 0.9, alpha: 1).setFill()
+                NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 0.5, width: bounds.width, height: 0.5)).fill()
             }
         }
 
         // ── Pinned section ──
         if !pinnedItems.isEmpty {
             let headerY = pinnedTopY
-            let headerAttr = NSAttributedString(string: "PINNED", attributes: [
-                .font: Self.fontSemi9,
-                .foregroundColor: NSColor.tertiaryLabelColor])
+            let headerAttr = NSAttributedString(string: "Pinned", attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
             headerAttr.draw(at: NSPoint(x: padX, y: headerY + 6))
 
             for (i, item) in pinnedItems.enumerated() {
                 let rect = pinnedCardRect(at: i)
                 let isHovered = hoveredCardType == "pinned" && hoveredCardIndex == i
                 let bg = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-                NSColor(white: 0.5, alpha: isHovered ? 0.12 : 0.05).setFill()
-                bg.fill()
+                if isHovered {
+                    NSColor.controlAccentColor.withAlphaComponent(0.08).setFill()
+                    bg.fill()
+                }
 
                 // Left accent — use allSessions for state lookup (not tab-filtered)
                 let accentColor: NSColor
@@ -2057,60 +2919,85 @@ class DashboardView: NSView {
                     stateLabel = state.label
                 } else {
                     let alive = allTerminals.first(where: { $0.name == item.id })?.isAlive ?? false
-                    accentColor = alive ? .systemTeal : .systemRed
+                    accentColor = alive ? .systemTeal : NSColor(calibratedRed: 0.85, green: 0.35, blue: 0.35, alpha: 1)
                     stateLabel = alive ? "ACTIVE" : "CLOSED"
                 }
-                NSGraphicsContext.saveGraphicsState()
-                bg.addClip()
-                accentColor.setFill()
-                NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: 3, height: pinnedCardH)).fill()
-                NSGraphicsContext.restoreGraphicsState()
+                // Hover — full width, same as sessions
+                if isHovered {
+                    NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1).setFill()
+                    NSBezierPath(rect: NSRect(x: 0, y: rect.minY, width: bounds.width, height: pinnedCardH)).fill()
+                }
 
-                let tx = rect.minX + 14
-                // Name + status
-                let pinnedDispName = item.name.count > 19 ? String(item.name.prefix(18)) + "…" : item.name
-                let nameAttr = NSAttributedString(string: pinnedDispName, attributes: [
-                    .font: Self.fontBold12, .foregroundColor: NSColor.labelColor])
-                nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 3))
-                let statusAttr = NSAttributedString(string: stateLabel, attributes: [
-                    .font: Self.fontSemi9, .foregroundColor: accentColor])
-                statusAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 8, y: rect.minY + 5))
-                // Time — hook ts or lastActive
+                // State dot
+                let dotSize: CGFloat = 6
+                accentColor.setFill()
+                NSBezierPath(ovalIn: NSRect(x: padX, y: rect.minY + 13, width: dotSize, height: dotSize)).fill()
+
+                var tx = padX + 14
+                let pIsDead: Bool
+                if item.type == "session" {
+                    pIsDead = (allSessions.first(where: { $0.sessionId == item.id })?.state ?? .dead) == .dead
+                } else {
+                    pIsDead = !(allTerminals.first(where: { $0.name == item.id })?.isAlive ?? false)
+                }
+
+                // Source tag
                 let pinnedSession = allSessions.first(where: { $0.sessionId == item.id })
+                let pSrc = pinnedSession?.source ?? (item.type == "terminal" ? "terminal" : "claude")
+                if pSrc != "terminal" {
+                    let pTagText = pSrc == "codex" ? "CX" : "CL"
+                    let pTagColor: NSColor = pSrc == "codex"
+                        ? NSColor(calibratedRed: 0.6, green: 0.4, blue: 0.15, alpha: pIsDead ? 0.5 : 1.0)
+                        : NSColor(calibratedRed: 0.2, green: 0.45, blue: 0.8, alpha: pIsDead ? 0.5 : 1.0)
+                    let pTagFont = NSFont.systemFont(ofSize: 9, weight: .semibold)
+                    let pTagAttr = NSAttributedString(string: pTagText, attributes: [
+                        .font: pTagFont, .foregroundColor: pTagColor])
+                    let pTagSize = pTagAttr.size()
+                    let pTagPadX: CGFloat = 4
+                    let pTagPadY: CGFloat = 2
+                    let pTagW = pTagSize.width + pTagPadX * 2
+                    let pTagH = pTagSize.height + pTagPadY * 2
+                    let pTagY = rect.minY + 8
+                    let pTagBg = NSBezierPath(roundedRect: NSRect(x: tx, y: pTagY, width: pTagW, height: pTagH), xRadius: 3, yRadius: 3)
+                    pTagColor.withAlphaComponent(pIsDead ? 0.08 : 0.15).setFill()
+                    pTagBg.fill()
+                    pTagAttr.draw(at: NSPoint(x: tx + pTagPadX, y: pTagY + pTagPadY))
+                    tx += pTagW + 5
+                }
+
+                // Row 1: name + time
+                let pinnedDispName = item.name.count > 20 ? String(item.name.prefix(19)) + "…" : item.name
+                let pNameColor: NSColor = pIsDead ?
+                    NSColor(calibratedWhite: 0.55, alpha: 1) :
+                    NSColor(calibratedWhite: 0.11, alpha: 1)
+                let nameAttr = NSAttributedString(string: pinnedDispName, attributes: [
+                    .font: Self.fontBold12, .foregroundColor: pNameColor])
+                nameAttr.draw(at: NSPoint(x: tx, y: rect.minY + 8))
+
                 let pinnedTime: Date
                 if let ps = pinnedSession {
                     pinnedTime = ps.hookTs > 0 ? Date(timeIntervalSince1970: Double(ps.hookTs)) : ps.lastActive
                 } else {
-                    pinnedTime = Date() // no session found
+                    pinnedTime = Date()
                 }
                 let timeAttr = NSAttributedString(string: timeAgo(pinnedTime), attributes: [
-                    .font: Self.fontReg10, .foregroundColor: NSColor.secondaryLabelColor])
-                timeAttr.draw(at: NSPoint(x: rect.maxX - 56 - timeAttr.size().width, y: rect.minY + 5))
-                // Path
+                    .font: Self.fontReg9, .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
+                timeAttr.draw(at: NSPoint(x: tx + nameAttr.size().width + 6, y: rect.minY + 10))
+
+                // Row 2: path
                 let pathAttr = NSAttributedString(string: shortPath(item.cwd), attributes: [
-                    .font: Self.fontReg9, .foregroundColor: NSColor.secondaryLabelColor])
-                pathAttr.draw(at: NSPoint(x: tx, y: rect.minY + 20))
-                // Source tag
-                let pTagColor: NSColor
-                let pTagText: String
-                if item.type == "terminal" {
-                    pTagColor = .systemTeal; pTagText = "terminal"
-                } else {
-                    let src = pinnedSession?.source ?? "claude"
-                    pTagColor = src == "codex" ? .systemPurple : .systemBlue
-                    pTagText = src == "codex" ? "codex" : "claude"
-                }
-                let pTagAttr = NSAttributedString(string: pTagText, attributes: [
-                    .font: Self.fontReg9, .foregroundColor: pTagColor])
-                let pTagSize = pTagAttr.size()
-                let pTagPad: CGFloat = 4
-                let pTagRect = NSRect(x: rect.maxX - 56 - pTagSize.width - pTagPad * 2,
-                                      y: rect.minY + 20, width: pTagSize.width + pTagPad * 2,
-                                      height: pTagSize.height + 2)
-                let pTagBg = NSBezierPath(roundedRect: pTagRect, xRadius: 3, yRadius: 3)
-                pTagColor.withAlphaComponent(0.15).setFill()
-                pTagBg.fill()
-                pTagAttr.draw(at: NSPoint(x: pTagRect.minX + pTagPad, y: pTagRect.minY + 1))
+                    .font: Self.fontReg9, .foregroundColor: NSColor(calibratedWhite: pIsDead ? 0.75 : 0.56, alpha: 1)])
+                let pPathX = tx
+                let maxPW = rect.maxX - 68 - pPathX
+                let pClip = NSRect(x: pPathX, y: rect.minY + 26, width: maxPW, height: 14)
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(rect: pClip).addClip()
+                pathAttr.draw(at: NSPoint(x: pPathX, y: rect.minY + 26))
+                NSGraphicsContext.restoreGraphicsState()
+
+                // Full-width separator
+                NSColor(calibratedWhite: 0.9, alpha: 1).setFill()
+                NSBezierPath(rect: NSRect(x: 0, y: rect.maxY - 0.5, width: bounds.width, height: 0.5)).fill()
                 // Buttons are added in rebuildPinnedButtons
             }
         }
@@ -2299,6 +3186,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var notifPanel: NSWindow!
     var notifView: NotificationPanelView!
     var dashNotifications: [DashNotification] = []
+    var chatPanel: NSWindow!
+    var chatView: ChatPanelView!
+    var showChat: Bool {
+        get { UserDefaults.standard.object(forKey: "showChat") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "showChat"); layoutViews() }
+    }
+    var lastChatFingerprint = ""
+    var lastChatMaxId = 0
     var prevStates: [String: State] = [:]
     var pollCount = 0
 
@@ -2323,16 +3218,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.level = alwaysOnTop ? .floating : .normal
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.appearance = NSAppearance(named: .aqua)
 
-        let visual = NSVisualEffectView(frame: panel.contentView!.bounds)
-        visual.material = .hudWindow
-        visual.blendingMode = .behindWindow
-        visual.state = .active
-        visual.autoresizingMask = [.width, .height]
-        panel.contentView!.addSubview(visual)
+        panel.contentView!.wantsLayer = true
+        panel.contentView!.layer?.backgroundColor = NSColor.white.cgColor
 
         dashView = DashboardView(frame: panel.contentView!.bounds)
         dashView.autoresizingMask = [.width, .height]
+        dashView.wantsLayer = true
+        dashView.layer?.backgroundColor = NSColor.white.cgColor
         panel.contentView!.addSubview(dashView)
         dashView.onSessionClick = { [weak self] s in
             revealSession(s)
@@ -2342,7 +3236,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dashView.onResumeClick = { [weak self] s in
             let cmd: String
             if s.source == "codex" {
-                cmd = "cd \(s.cwd) && cdash codex resume \(s.sessionId)"
+                cmd = "cd \(s.cwd) && cdash codex --name '\(s.name)' resume \(s.sessionId)"
             } else {
                 cmd = "cd \(s.cwd) && cdash claude --resume \(s.sessionId) --name '\(s.name)' --effort max"
             }
@@ -2372,12 +3266,57 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.sessionOrder = ids
             self.poll()
         }
+        dashView.onAddToChat = { [weak self] s in
+            guard let self else { return }
+            guard !isInChat(name: s.name, sessionId: s.sessionId) else { return }
+            // Project = tab the session belongs to, or active tab for unassigned (main) sessions
+            let sessionTab = self.tabs.first(where: { $0.sessionIds.contains(s.sessionId) })
+            let project: String
+            if let tab = sessionTab {
+                project = tab.name
+            } else {
+                // Session is in "main" (unassigned) — use active tab name or "main"
+                let activeTab = self.tabs.first(where: { $0.id == self.activeTabId })
+                project = activeTab?.name ?? "main"
+            }
+            // Register in chat db with session_id for stable identity
+            let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
+                          "send", "--project", project, "--name", s.name,
+                          "--type", s.source, "--pid", "\(s.pid)",
+                          "--session-id", s.sessionId,
+                          "--message", "\(s.name) joined the chat")
+            // Build member list for intro
+            let members = loadChatMembers(project: project)
+                .filter { $0.name != s.name && $0.name != "human" }
+                .map { $0.name }
+            let memberList = members.isEmpty ? "none yet" : members.joined(separator: ", ")
+
+            // Inject intro via state file's child PID
+            let injectPath = "\(stateDir)/\(s.pid).inject"
+            let intro = "You have been added to team chat channel \"\(project)\". " +
+                "Other agents in channel: \(memberList). " +
+                "Commands: `cdash chat read` (check messages), " +
+                "`cdash chat send \"msg\"` (broadcast), " +
+                "`cdash chat send \"msg\" --to name` (DM agent), " +
+                "`cdash chat list` (see who's online). " +
+                "Check messages now and before making breaking changes."
+            try? intro.write(toFile: injectPath, atomically: true, encoding: .utf8)
+            // Open chat panel and switch to that channel
+            if !self.showChat { self.showChat = true }
+            self.chatView.activeProject = project
+            self.chatView.updateChannelLabel()
+            self.lastChatFingerprint = ""
+            self.pollChat()
+        }
         dashView.onRemoveClick = { [weak self] s in
             removeSession(s)
             // Also remove from pinned
             var pinned = loadPinned()
             pinned.removeAll { $0.id == s.sessionId }
             savePinned(pinned)
+            // Remove from chat
+            let _ = shell("/usr/bin/sqlite3", chatDbPath,
+                          "DELETE FROM sessions WHERE display_name='\(s.name.replacingOccurrences(of: "'", with: "''"))'")
             self?.poll()
         }
         dashView.onPinSession = { [weak self] s in
@@ -2445,20 +3384,17 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             styleMask: [.borderless], backing: .buffered, defer: false)
         tabPanel.isOpaque = false
         tabPanel.backgroundColor = .clear
-        tabPanel.hasShadow = false
+        tabPanel.hasShadow = true
         tabPanel.level = panel.level
         tabPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         tabPanel.isMovableByWindowBackground = false
+        tabPanel.appearance = NSAppearance(named: .aqua)
 
-        let tabVisual = NSVisualEffectView(frame: tabPanel.contentView!.bounds)
-        tabVisual.material = .hudWindow
-        tabVisual.blendingMode = .behindWindow
-        tabVisual.state = .active
-        tabVisual.autoresizingMask = [.width, .height]
-        tabVisual.wantsLayer = true
-        tabVisual.layer?.cornerRadius = 8
-        tabVisual.layer?.masksToBounds = true
-        tabPanel.contentView!.addSubview(tabVisual)
+        tabPanel.contentView!.wantsLayer = true
+        tabPanel.contentView!.layer?.backgroundColor = NSColor(calibratedWhite: 0.97, alpha: 1).cgColor
+        tabPanel.contentView!.layer?.cornerRadius = 8
+        tabPanel.contentView!.layer?.masksToBounds = true
+        let tabVisual = tabPanel.contentView!
 
         tabSidebar = TabSidebarView(frame: tabPanel.contentView!.bounds)
         tabSidebar.autoresizingMask = [.width, .height]
@@ -2469,24 +3405,22 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.addChildWindow(tabPanel, ordered: .below)
 
         // Notification panel — floating to the left of tabs
-        notifPanel = NSWindow(
+        notifPanel = AttachedChildWindow(
             contentRect: NSRect(x: 0, y: 0, width: 180, height: 100),
             styleMask: [.borderless], backing: .buffered, defer: false)
         notifPanel.isOpaque = false
         notifPanel.backgroundColor = .clear
-        notifPanel.hasShadow = false
+        notifPanel.hasShadow = true
+        notifPanel.appearance = NSAppearance(named: .aqua)
         notifPanel.level = panel.level
         notifPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        let notifVisual = NSVisualEffectView(frame: notifPanel.contentView!.bounds)
-        notifVisual.material = .hudWindow
-        notifVisual.blendingMode = .behindWindow
-        notifVisual.state = .active
-        notifVisual.autoresizingMask = [.width, .height]
-        notifVisual.wantsLayer = true
-        notifVisual.layer?.cornerRadius = 8
-        notifVisual.layer?.masksToBounds = true
-        notifPanel.contentView!.addSubview(notifVisual)
+        notifPanel.contentView!.wantsLayer = true
+        notifPanel.contentView!.layer?.backgroundColor = NSColor.white.cgColor
+        notifPanel.contentView!.layer?.cornerRadius = 10
+        notifPanel.contentView!.layer?.masksToBounds = true
+        notifPanel.contentView!.layer?.borderWidth = 0.5
+        notifPanel.contentView!.layer?.borderColor = NSColor(calibratedWhite: 0.85, alpha: 1).cgColor
 
         notifView = NotificationPanelView(frame: notifPanel.contentView!.bounds)
         notifView.autoresizingMask = [.width, .height]
@@ -2516,6 +3450,98 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.layoutNotifPanel()
         }
 
+        // Chat panel — separate floating window
+        chatPanel = KeyableBorderlessWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 400),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        chatPanel.isOpaque = false
+        chatPanel.backgroundColor = .clear
+        chatPanel.hasShadow = true
+        chatPanel.appearance = NSAppearance(named: .aqua)
+        chatPanel.level = panel.level
+        chatPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+        chatPanel.contentView!.wantsLayer = true
+        chatPanel.contentView!.layer?.backgroundColor = NSColor.white.cgColor
+        chatPanel.contentView!.layer?.cornerRadius = 10
+        chatPanel.contentView!.layer?.masksToBounds = true
+        chatPanel.contentView!.layer?.borderWidth = 0.5
+        chatPanel.contentView!.layer?.borderColor = NSColor(calibratedWhite: 0.85, alpha: 1).cgColor
+
+        chatView = ChatPanelView(frame: chatPanel.contentView!.bounds)
+        chatView.autoresizingMask = [.width, .height]
+        chatPanel.contentView!.addSubview(chatView)
+        chatView.setupViews()
+        panel.addChildWindow(chatPanel, ordered: .below)
+        chatPanel.orderOut(nil)
+
+        chatView.onSend = { [weak self] project, message in
+            guard !project.isEmpty, !message.isEmpty else { return }
+            let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
+                          "send", "--project", project, "--name", "human",
+                          "--type", "human", "--message", message)
+            self?.pollChat()
+        }
+        chatView.onSendDM = { [weak self] project, message, target in
+            guard !project.isEmpty, !message.isEmpty else { return }
+            let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
+                          "send", "--project", project, "--name", "human",
+                          "--type", "human", "--message", message, "--to", target)
+            self?.pollChat()
+        }
+        chatView.onMemberReveal = { [weak self] name in
+            guard let self else { return }
+            if let s = self.currentSessions.first(where: { $0.name == name }) {
+                // Switch to the tab containing this session
+                let targetTab = self.tabs.first(where: { $0.sessionIds.contains(s.sessionId) })?.id ?? "main"
+                if self.activeTabId != targetTab {
+                    self.activeTabId = targetTab
+                    self.tabSidebar.activeTabId = targetTab
+                    try? targetTab.write(toFile: activeTabFile, atomically: true, encoding: .utf8)
+                    self.refreshView()
+                }
+                revealSession(s)
+            }
+        }
+        chatView.onRemoveFromChat = { [weak self] name in
+            guard let self, !chatView.activeProject.isEmpty else { return }
+            let project = chatView.activeProject
+            // Inject removal notice
+            if let s = self.currentSessions.first(where: { $0.name == name }) {
+                let injectPath = "\(stateDir)/\(s.pid).inject"
+                let notice = "You have been removed from the team chat channel \"\(project)\". " +
+                    "Stop using cdash chat commands for this channel."
+                try? notice.write(toFile: injectPath, atomically: true, encoding: .utf8)
+            }
+            let _ = shell("/usr/bin/sqlite3", chatDbPath,
+                          "DELETE FROM sessions WHERE display_name='\(name.replacingOccurrences(of: "'", with: "''"))'")
+            self.pollChat()
+        }
+        chatView.onSwitchChannel = { [weak self] project in
+            self?.lastChatFingerprint = ""
+            self?.pollChat()
+        }
+        chatView.onAddChannel = { [weak self] in
+            guard let self else { return }
+            if let name = self.promptTabName("New Channel", defaultValue: "") {
+                let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
+                              "send", "--project", name, "--name", "human", "--type", "human",
+                              "--message", "Channel created")
+                self.chatView.activeProject = name
+                self.chatView.updateChannelLabel()
+                self.lastChatFingerprint = ""
+                self.pollChat()
+            }
+        }
+        chatView.onRemoveChannel = { [weak self] project in
+            guard let self else { return }
+            let _ = shell("/usr/bin/sqlite3", chatDbPath,
+                          "DELETE FROM messages WHERE project_id='\(project)'; DELETE FROM sessions WHERE project_id='\(project)'; DELETE FROM projects WHERE id='\(project)'; DELETE FROM read_cursors WHERE project_id='\(project)'")
+            self.chatView.activeProject = ""
+            self.lastChatFingerprint = ""
+            self.pollChat()
+        }
+
         tabs = loadTabs()
         tabSidebar.tabs = tabs
         tabSidebar.activeTabId = activeTabId
@@ -2528,8 +3554,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.activeTabId = id
             self.tabSidebar.activeTabId = id
             try? id.write(toFile: activeTabFile, atomically: true, encoding: .utf8)
-            // Re-filter cached data instantly — poll continues in background
+            // Sync chat to tab's project
+            let tabName = self.tabs.first(where: { $0.id == id })?.name ?? "main"
+            if self.chatView.projects.contains(tabName) {
+                self.chatView.activeProject = tabName
+                self.chatView.updateChannelLabel()
+                self.lastChatFingerprint = ""  // force refresh
+            }
             self.refreshView()
+            if self.showChat { self.pollChat() }
         }
         tabSidebar.onTabAdd = { [weak self] in
             guard let self else { return }
@@ -2573,6 +3606,18 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         layoutViews()
         panel.center()
         panel.makeKeyAndOrderFront(nil)
+
+        // Main menu — needed for Cmd+A, Cmd+C, etc. in text views
+        let mainMenu = NSMenu()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        editItem.submenu = editMenu
+        mainMenu.addItem(editItem)
+        NSApp.mainMenu = mainMenu
 
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.modifierFlags.contains(.command) else { return event }
@@ -2666,7 +3711,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Don't show child windows if main panel is minimized or hidden
         let mainHidden = !panel.isVisible || panel.isMiniaturized
 
-        if showTabs && !mainHidden {
+        // Tabs
+        let wantTabs = showTabs && !mainHidden
+        if wantTabs {
             let mainFrame = panel.frame
             let tabH = tabSidebar.idealHeight + 8
             let tabX = mainFrame.minX - sidebarWidth - 4
@@ -2679,15 +3726,11 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         // Notification panel
-        if !dashNotifications.isEmpty && !mainHidden {
+        let wantNotif = !dashNotifications.isEmpty && !mainHidden
+        if wantNotif {
             let w = notifView.idealWidth
             let h = notifView.idealHeight
-            let anchor: NSRect
-            if showTabs && tabPanel.isVisible {
-                anchor = tabPanel.frame
-            } else {
-                anchor = panel.frame
-            }
+            let anchor = (wantTabs && tabPanel.isVisible) ? tabPanel.frame : panel.frame
             let x = anchor.minX - w - 4
             let y = anchor.maxY - h
             notifPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
@@ -2695,9 +3738,34 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             if notifPanel.isVisible { notifPanel.orderOut(nil) }
         }
+
+        // Chat panel
+        let wantChat = showChat && !mainHidden
+        if wantChat {
+            let w: CGFloat = 300
+            let extraMembersH = max(0, chatView.membersH - 36)
+            let h: CGFloat = 400 + extraMembersH
+            let x = panel.frame.maxX + 4
+            let y = panel.frame.maxY - h
+            chatPanel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+            if !chatPanel.isVisible { chatPanel.orderFront(nil) }
+        } else {
+            if chatPanel.isVisible { chatPanel.orderOut(nil) }
+        }
     }
 
     func moveItemToTab(tabId: String, itemId: String) {
+        // If session is in a chat channel for its old tab, remove it
+        if itemId.hasPrefix("session:") {
+            let sid = String(itemId.dropFirst(8))
+            if let session = currentSessions.first(where: { $0.sessionId == sid }) {
+                // Find old tab
+                let oldTab = tabs.first(where: { $0.sessionIds.contains(sid) })
+                let oldChannel = oldTab?.name ?? "main"
+                let _ = shell("/usr/bin/sqlite3", chatDbPath,
+                    "DELETE FROM sessions WHERE display_name='\(session.name.replacingOccurrences(of: "'", with: "''"))'")
+            }
+        }
         // Remove item from all tabs first
         for i in 0..<tabs.count {
             tabs[i].sessionIds.removeAll { "session:\($0)" == itemId }
@@ -2758,9 +3826,76 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         showTabs = !showTabs
     }
 
+    @objc func toggleShowChat(_ sender: NSMenuItem) {
+        showChat = !showChat
+        if showChat {
+            pollChat()
+            layoutChatPanel()
+            // Focus the input
+            if let tv = chatView.inputTV {
+                chatPanel.makeFirstResponder(tv)
+            }
+        } else {
+            chatPanel.orderOut(nil)
+        }
+    }
+
+    func pollChat() {
+        let projects = loadChatProjects()
+        chatView.updateProjects(projects)
+        if chatView.activeProject.isEmpty, let first = projects.first {
+            chatView.activeProject = first
+        }
+        guard !chatView.activeProject.isEmpty else { return }
+        // Load members and feed names for autocomplete
+        var mbrs = loadChatMembers(project: chatView.activeProject)
+        // Match members to live sessions by session_id (stable) or name (fallback)
+        let allSess = dashView.allSessions
+        for i in 0..<mbrs.count {
+            let sid = mbrs[i].sessionId
+            let dbName = mbrs[i].name
+            // Match by session_id first (stable across renames), then by name
+            let live = (!sid.isEmpty ? allSess.first(where: { $0.sessionId == sid && $0.state != .dead }) : nil)
+                    ?? allSess.first(where: { $0.name == dbName && $0.state != .dead })
+                    ?? (!sid.isEmpty ? allSess.first(where: { $0.sessionId == sid }) : nil)
+                    ?? allSess.first(where: { $0.name == dbName })
+            if let live {
+                mbrs[i] = ChatMember(name: live.name, agentType: mbrs[i].agentType, state: live.state, sessionId: sid)
+                // Sync name in chat db if it changed (e.g. session renamed)
+                if live.name != dbName {
+                    let _ = shell("/usr/bin/sqlite3", chatDbPath,
+                        "UPDATE sessions SET display_name='\(live.name.replacingOccurrences(of: "'", with: "''"))' WHERE project_id='\(chatView.activeProject.replacingOccurrences(of: "'", with: "''"))' AND display_name='\(dbName.replacingOccurrences(of: "'", with: "''"))'")
+                }
+            }
+        }
+        chatView.members = mbrs
+        chatView.sessionNames = mbrs.map(\.name)
+        let msgs = loadChatMessages(project: chatView.activeProject)
+        let fp = msgs.map { "\($0.id)" }.joined()
+        if fp != lastChatFingerprint {
+            lastChatFingerprint = fp
+            chatView.messages = msgs
+            chatView.refreshMessages()
+
+            // Track max ID for human-directed message alerts
+            if let maxId = msgs.last?.id, maxId > lastChatMaxId {
+                // Check for new human-directed messages
+                for msg in msgs where msg.id > lastChatMaxId {
+                    if msg.recipient == "human" && msg.senderType != "human" {
+                        NSApp.requestUserAttention(.informationalRequest)
+                        NSSound(named: "Ping")?.play()
+                    }
+                }
+                lastChatMaxId = maxId
+            }
+        }
+    }
+
+    func layoutChatPanel() { layoutViews() }
+
     func showToast(_ message: String, near button: NSView) {
         let label = NSTextField(labelWithString: message)
-        label.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+        label.font = .systemFont(ofSize: 11, weight: .medium)
         label.textColor = .white
         label.backgroundColor = .clear
         label.isBezeled = false
@@ -2798,12 +3933,21 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sender.orderOut(nil)
         tabPanel.orderOut(nil)
         notifPanel.orderOut(nil)
+        chatPanel.orderOut(nil)
         return false
+    }
+
+    // Don't call layoutViews on windowDidMove — child windows auto-move with parent.
+    // Calling setFrame during drag fights with macOS auto-positioning and causes glitching.
+    // Only reposition on resize (changes relative offsets).
+    func windowDidResize(_ notification: Notification) {
+        layoutViews()
     }
 
     func windowDidMiniaturize(_ notification: Notification) {
         tabPanel.orderOut(nil)
         notifPanel.orderOut(nil)
+        chatPanel.orderOut(nil)
     }
 
     func windowDidDeminiaturize(_ notification: Notification) {
@@ -2819,6 +3963,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Force child windows to front — they may be behind other apps
             if showTabs { tabPanel.orderFront(nil) }
             if !dashNotifications.isEmpty { notifPanel.orderFront(nil) }
+            if showChat { chatPanel.orderFront(nil) }
             layoutViews()
         }
     }
@@ -2836,6 +3981,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             panel.orderOut(nil)
             tabPanel.orderOut(nil)
             notifPanel.orderOut(nil)
+            chatPanel.orderOut(nil)
         } else {
             panel.makeKeyAndOrderFront(nil)
             layoutViews()
@@ -2847,6 +3993,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.level = alwaysOnTop ? .floating : .normal
         tabPanel.level = panel.level
         notifPanel.level = panel.level
+        chatPanel.level = panel.level
     }
 
     @objc func toggleWakeOnAttention(_ sender: NSMenuItem) {
@@ -2945,7 +4092,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let codexSessions = loadCodexSessions()
             let ss = claudeSessions + codexSessions
             let terms = loadRegisteredTerminals()
-            DispatchQueue.main.async { self?.updateUI(ss, terminals: terms) }
+            DispatchQueue.main.async {
+                self?.updateUI(ss, terminals: terms)
+                if self?.showChat == true { self?.pollChat() }
+            }
         }
     }
 
@@ -3026,6 +4176,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         tabsToggle.state = showTabs ? .on : .off
         menu.addItem(tabsToggle)
 
+        let chatToggle = NSMenuItem(
+            title: "Show Chat",
+            action: #selector(toggleShowChat(_:)), keyEquivalent: "")
+        chatToggle.target = self
+        chatToggle.state = showChat ? .on : .off
+        menu.addItem(chatToggle)
+
         let openNotes = NSMenuItem(
             title: "Open Notes Folder",
             action: #selector(openNotesFolder), keyEquivalent: "")
@@ -3058,9 +4215,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let a = NSMutableAttributedString()
             a.append(NSAttributedString(string: "\(s.state.emoji)  "))
             a.append(NSAttributedString(string: s.name, attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .bold)]))
+                .font: NSFont.systemFont(ofSize: 12, weight: .semibold)]))
             a.append(NSAttributedString(string: "  \(s.state.label)", attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium),
+                .font: NSFont.systemFont(ofSize: 10, weight: .medium),
                 .foregroundColor: s.state.color]))
             row.attributedTitle = a
             menu.addItem(row)

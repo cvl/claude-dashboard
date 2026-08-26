@@ -46,6 +46,7 @@ static char osc_title[TITLE_SIZE];
 static int osc_collecting = 0;
 static int osc_pos = 0;
 static int osc_st_pending = 0; /* waiting for \ after ESC in ST terminator */
+static time_t osc_title_time = 0; /* when title was last set */
 
 /* State tracking */
 typedef enum { ST_IDLE, ST_WORKING, ST_NEEDS_INPUT } state_t;
@@ -54,6 +55,7 @@ static const char *agent_type = NULL; /* "claude" or "codex" */
 
 /* Debounce: hold working→idle until confirmed N times */
 static int idle_confirmations = 0;
+static int did_chat_intro = 0;
 
 static void cleanup(void) {
     if (raw_mode_set) {
@@ -102,6 +104,16 @@ static void init_real_tty(void) {
 }
 
 /* Write state file — includes real TTY for terminal reveal */
+static char session_name[128] = "";
+static char session_project[128] = "";
+
+static void init_session_info(void) {
+    const char *n = getenv("CDASH_SESSION_NAME");
+    if (n) snprintf(session_name, sizeof(session_name), "%s", n);
+    const char *p = getenv("CDASH_PROJECT");
+    if (p) snprintf(session_project, sizeof(session_project), "%s", p);
+}
+
 static void write_state(pid_t pid, state_t state) {
     mkdir(STATE_DIR, 0755);
     char path[128];
@@ -116,8 +128,8 @@ static void write_state(pid_t pid, state_t state) {
     snprintf(tmp, sizeof(tmp), STATE_DIR "/%d.state.tmp", pid);
     FILE *f = fopen(tmp, "w");
     if (f) {
-        fprintf(f, "{\"event\":\"%s\",\"ts\":%ld,\"tty\":\"%s\",\"proxy_pid\":%d}",
-                event, (long)time(NULL), real_tty, (int)getpid());
+        fprintf(f, "{\"event\":\"%s\",\"ts\":%ld,\"tty\":\"%s\",\"proxy_pid\":%d,\"name\":\"%s\",\"project\":\"%s\"}",
+                event, (long)time(NULL), real_tty, (int)getpid(), session_name, session_project);
         fclose(f);
         rename(tmp, path);
     }
@@ -195,6 +207,7 @@ static void track_osc(const char *data, int len) {
                 osc_title[osc_pos] = '\0';
                 osc_collecting = 0;
                 osc_pos = 0;
+                osc_title_time = time(NULL);
             }
             continue;
         }
@@ -204,6 +217,7 @@ static void track_osc(const char *data, int len) {
                 osc_title[osc_pos] = '\0';
                 osc_collecting = 0;
                 osc_pos = 0;
+                osc_title_time = time(NULL);
             } else if (c == 0x1b) { /* ESC — might be start of ST (\x1b\\) */
                 osc_st_pending = 1;
             } else if (osc_pos < TITLE_SIZE - 1) {
@@ -319,6 +333,7 @@ int main(int argc, char *argv[]) {
 
     agent_type = detect_agent(argv[1]);
     init_real_tty();
+    init_session_info();
 
     /* Save and set raw terminal mode */
     if (isatty(STDIN_FILENO)) {
@@ -338,7 +353,12 @@ int main(int argc, char *argv[]) {
     }
 
     if (child_pid == 0) {
-        /* Child: keep CDASH_PROXY set — hooks must not race with proxy */
+        /* Child: set PID env vars for cdash chat identity */
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", getpid());
+        setenv("CDASH_PID", buf, 1);
+        snprintf(buf, sizeof(buf), "%d", getppid());
+        setenv("CDASH_PROXY_PID", buf, 1);
         execvp(argv[1], &argv[1]);
         perror("execvp");
         _exit(127);
@@ -407,7 +427,10 @@ int main(int argc, char *argv[]) {
             if (elapsed_ms >= CHECK_INTERVAL_MS) {
                 char screen[CLEAN_SIZE];
                 int slen = ring_recent_clean(screen, CLEAN_SIZE - 1);
-                state_t new_state = detect_state(screen, osc_title);
+                /* Expire stale OSC title after 30s — prevents stuck "working" state */
+                const char *title = osc_title;
+                if (osc_title_time > 0 && time(NULL) - osc_title_time > 30) title = "";
+                state_t new_state = detect_state(screen, title);
 
                 /* Debug: dump screen + state when CDASH_DEBUG is set */
                 if (getenv("CDASH_DEBUG")) {
@@ -437,6 +460,37 @@ int main(int argc, char *argv[]) {
                     current_state = new_state;
                 }
                 last_check = now;
+            }
+        }
+
+        /* Check for inject file when idle */
+        if (current_state == ST_IDLE || idle_confirmations > 0) {
+            char inject_path[128];
+            snprintf(inject_path, sizeof(inject_path), STATE_DIR "/%d.inject", child_pid);
+            FILE *inj = fopen(inject_path, "r");
+            if (inj) {
+                char inject_buf[4096];
+                size_t n = fread(inject_buf, 1, sizeof(inject_buf) - 1, inj);
+                fclose(inj);
+                unlink(inject_path);
+                if (n > 0) {
+                    /* Strip trailing newlines */
+                    while (n > 0 && (inject_buf[n-1] == '\n' || inject_buf[n-1] == '\r')) n--;
+                    inject_buf[n] = '\0';
+                    if (inject_buf[0] == '-' && inject_buf[1] == ' ') {
+                        /* Chat messages — wrap with header/footer */
+                        const char *prefix = "New chat messages:\n";
+                        const char *suffix = "\nRun `cdash chat read` for full context, `cdash chat send \"reply\"` to respond.";
+                        write(master_fd, prefix, strlen(prefix));
+                        write(master_fd, inject_buf, n);
+                        write(master_fd, suffix, strlen(suffix));
+                    } else {
+                        /* System notice (join/remove/intro) — send as-is */
+                        write(master_fd, inject_buf, n);
+                    }
+                    usleep(50000);
+                    write(master_fd, "\r", 1);
+                }
             }
         }
 

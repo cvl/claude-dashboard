@@ -1,27 +1,144 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+AGENT_CHAT_PY="/usr/local/lib/claude-dashboard/agent-chat.py"
+
+git_root_name() {
+  local root
+  root=$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null) || { basename "$(pwd)"; return; }
+  basename "$root"
+}
+
 if [ $# -eq 0 ]; then
   echo "Usage:"
-  echo "  cdash <name>              Register terminal tab"
-  echo "  cdash claude [args...]    Launch Claude with state tracking"
-  echo "  cdash codex [args...]     Launch Codex with state tracking"
+  echo "  cdash <name>                          Register terminal tab"
+  echo "  cdash claude [--project P] [--name N] [args...]  Launch Claude"
+  echo "  cdash codex  [--project P] [--name N] [args...]  Launch Codex"
+  echo "  cdash chat send \"message\" [--to NAME] Send chat message"
+  echo "  cdash chat read [--all]               Read chat messages"
+  echo "  cdash chat list                       List sessions in project"
   exit 1
 fi
 
-# Route to pty-proxy for agent commands
+# ── Chat subcommand ──
+if [ "$1" = "chat" ]; then
+  shift
+  subcmd="${1:-read}"; shift 2>/dev/null || true
+
+  agent_type="${CDASH_AGENT_TYPE:-claude}"
+  pid="${CDASH_PID:-$$}"
+  proxy_pid="${CDASH_PROXY_PID:-}"
+
+  # Session name + channel: state file is the single source of truth
+  chat_db="$HOME/.claude/dashboard-chat.db"
+  result=$(python3 -c "
+import os, json, subprocess, sqlite3
+state_dir = '/tmp/claude-dash'
+# Walk up process tree to find our state file
+pids = set()
+p = os.getpid()
+while p > 1:
+    pids.add(p)
+    try:
+        out = subprocess.check_output(['ps', '-o', 'ppid=', '-p', str(p)], text=True).strip()
+        p = int(out) if out else 0
+    except: break
+name = ''
+for fname in os.listdir(state_dir):
+    if not fname.endswith('.state'): continue
+    pid = int(fname[:-6])
+    if pid in pids:
+        with open(f'{state_dir}/{fname}') as f:
+            d = json.load(f)
+            name = d.get('name', '')
+            if name: break
+if not name: name = os.environ.get('CDASH_SESSION_NAME', os.path.basename(os.getcwd()))
+# Look up channel from chat db
+channel = ''
+db_path = os.path.expanduser('~/.claude/dashboard-chat.db')
+if os.path.exists(db_path):
+    db = sqlite3.connect(db_path)
+    db.execute('PRAGMA journal_mode=WAL')
+    row = db.execute('SELECT project_id FROM sessions WHERE display_name=? ORDER BY last_seen DESC LIMIT 1', (name,)).fetchone()
+    if row: channel = row[0]
+    db.close()
+print(f'{name}|{channel}')
+" 2>/dev/null)
+  session_name="${result%%|*}"
+  project="${result#*|}"
+  if [ -z "$session_name" ]; then
+    echo "Error: no cdash session found. Launch with: cdash claude" >&2
+    exit 1
+  fi
+  project="${project:-${CDASH_PROJECT:-$(git_root_name)}}"
+
+  case "$subcmd" in
+    send)
+      msg="${1:-}"; shift 2>/dev/null || true
+      to_args=""
+      if [ "${1:-}" = "--to" ]; then
+        to_args="--to ${2:-}"
+        shift 2 2>/dev/null || true
+      fi
+      python3 "$AGENT_CHAT_PY" send --project "$project" --name "$session_name" \
+        --type "$agent_type" --pid "$pid" ${proxy_pid:+--proxy-pid "$proxy_pid"} \
+        ${to_args} --message "$msg"
+      ;;
+    read)
+      python3 "$AGENT_CHAT_PY" read --project "$project" --name "$session_name" \
+        --type "$agent_type" --pid "$pid" ${proxy_pid:+--proxy-pid "$proxy_pid"} "$@"
+      ;;
+    list)
+      python3 "$AGENT_CHAT_PY" list --project "$project" "$@"
+      ;;
+    *)
+      echo "Unknown chat command: $subcmd" >&2
+      echo "Usage: cdash chat <send|read|list>" >&2
+      exit 1
+      ;;
+  esac
+  exit 0
+fi
+
+# ── Agent launch (claude|codex) with optional --project/--name ──
 case "$1" in
   claude|codex)
+    agent_type="$1"; shift
+
+    # Parse --project and --name flags (--name passed through to claude only, codex doesn't support it)
+    project=""
+    session_name=""
+    agent_args=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --project) project="$2"; shift 2 ;;
+        --name)    session_name="$2"
+                   [ "$agent_type" = "claude" ] && agent_args+=("--name" "$2")
+                   shift 2 ;;
+        *)         agent_args+=("$1"); shift ;;
+      esac
+    done
+
+    export CDASH_PROJECT="${project:-$(git_root_name)}"
+    export CDASH_SESSION_NAME="${session_name:-$(basename "$(pwd)")}"
+    export CDASH_AGENT_TYPE="$agent_type"
     export CDASH_PROXY=1
-    exec claude-dashboard-proxy "$@"
+    # Default --effort max for claude
+    if [ "$agent_type" = "claude" ]; then
+      has_effort=false
+      for a in "${agent_args[@]+"${agent_args[@]}"}"; do
+        [ "$a" = "--effort" ] && has_effort=true
+      done
+      [ "$has_effort" = "false" ] && agent_args+=("--effort" "max")
+    fi
+    exec claude-dashboard-proxy "$agent_type" "${agent_args[@]+"${agent_args[@]}"}"
     ;;
 esac
 
+# ── Terminal registration (cdash <name>) ──
 name="$1"
 tty_name=$(tty | sed 's|/dev/||')
 cwd="$(pwd)"
-# Find the long-lived shell PID (walk up from script to terminal shell)
-# The script's $$ dies immediately, so store the parent shell's PID
 pid=$PPID
 file="$HOME/.claude/dashboard-terminals.json"
 mkdir -p "$(dirname "$file")"
@@ -36,7 +153,6 @@ d = {}
 if os.path.exists(f):
     with open(f) as fh:
         d = json.load(fh)
-# Key by name, store shell PID for liveness check
 d[name] = {'name': name, 'tty': tty, 'cwd': cwd, 'pid': pid, 'registeredAt': time.time()}
 with open(f, 'w') as fh:
     json.dump(d, fh)
@@ -51,11 +167,9 @@ tabs_file, name, tab_id = sys.argv[1], sys.argv[2], sys.argv[3]
 if not os.path.exists(tabs_file): sys.exit(0)
 with open(tabs_file) as f:
     tabs = json.load(f)
-# Remove from all tabs first
 for t in tabs:
     if name in t.get('terminalTTYs', []):
         t['terminalTTYs'].remove(name)
-# Add to active tab
 for t in tabs:
     if t['id'] == tab_id and name not in t.get('terminalTTYs', []):
         t.setdefault('terminalTTYs', []).append(name)
