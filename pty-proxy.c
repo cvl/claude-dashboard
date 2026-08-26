@@ -463,25 +463,8 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        /* Check for inject file when idle + prompt empty */
+        /* Check for inject file when idle */
         if (current_state == ST_IDLE || idle_confirmations > 0) {
-            /* Check if prompt has user-typed text (❯ = E2 9D AF) */
-            int prompt_empty = 1;
-            {
-                char scr[CLEAN_SIZE];
-                ring_recent_clean(scr, CLEAN_SIZE - 1);
-                /* Find last ❯ and check for text after it */
-                char *found = NULL;
-                for (char *p = scr; *p; p++)
-                    if ((unsigned char)p[0]==0xE2 && (unsigned char)p[1]==0x9D && (unsigned char)p[2]==0xAF)
-                        found = p;
-                if (found) {
-                    char *after = found + 3;
-                    while (*after == ' ' || *after == '\t') after++;
-                    if (*after && *after != '\n') prompt_empty = 0;
-                }
-            }
-            if (!prompt_empty) goto skip_inject; /* wait until prompt is clear */
             char inject_path[128];
             snprintf(inject_path, sizeof(inject_path), STATE_DIR "/%d.inject", child_pid);
             FILE *inj = fopen(inject_path, "r");
@@ -510,7 +493,6 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-        skip_inject:
 
         /* Check if child exited */
         int status;
