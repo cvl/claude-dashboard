@@ -3238,6 +3238,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_: Notification) {
         dashLog("APP LAUNCH")
+        // Clean stale inject files on launch
+        if let files = try? FileManager.default.contentsOfDirectory(atPath: stateDir) {
+            for f in files where f.hasSuffix(".inject") {
+                let path = "\(stateDir)/\(f)"
+                try? FileManager.default.removeItem(atPath: path)
+            }
+        }
         setupDependencies()
         NSApp.setActivationPolicy(.regular)
 
@@ -3304,10 +3311,16 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Shared: add session to a specific chat channel
         let addSessionToChannel: (Session, String) -> Void = { [weak self] s, project in
             guard let self else { return }
-            guard !isInChat(name: s.name, sessionId: s.sessionId) else { return }
-            // Remove from any existing channel first (one channel at a time)
-            let _ = shell("/usr/bin/sqlite3", chatDbPath,
-                          "DELETE FROM sessions WHERE display_name='\(s.name.replacingOccurrences(of: "'", with: "''"))'")
+            if isInChat(name: s.name, sessionId: s.sessionId) {
+                // Already in a channel — tell the user
+                let alert = NSAlert()
+                alert.messageText = "\(s.name) is already in a chat channel"
+                alert.informativeText = "Remove from current channel first (right-click agent chip → Remove from Chat)"
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+                return
+            }
             // Register in chat db
             let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
                           "send", "--project", project, "--name", s.name,
