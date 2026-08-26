@@ -66,7 +66,10 @@ print(f'{name}|{channel}')
 " 2>/dev/null)
   session_name="${result%%|*}"
   project="${result#*|}"
-  session_name="${session_name:-${CDASH_SESSION_NAME:-$(basename "$(pwd)")}}"
+  if [ -z "$session_name" ]; then
+    echo "Error: no cdash session found. Launch with: cdash claude" >&2
+    exit 1
+  fi
   project="${project:-${CDASH_PROJECT:-$(git_root_name)}}"
 
   case "$subcmd" in
