@@ -123,6 +123,14 @@ case "$1" in
     export CDASH_SESSION_NAME="${session_name:-$(basename "$(pwd)")}"
     export CDASH_AGENT_TYPE="$agent_type"
     export CDASH_PROXY=1
+    # Default --effort max for claude
+    if [ "$agent_type" = "claude" ]; then
+      local has_effort=false
+      for a in "${agent_args[@]+"${agent_args[@]}"}"; do
+        [ "$a" = "--effort" ] && has_effort=true
+      done
+      [ "$has_effort" = "false" ] && agent_args+=("--effort" "max")
+    fi
     exec claude-dashboard-proxy "$agent_type" "${agent_args[@]+"${agent_args[@]}"}"
     ;;
 esac
