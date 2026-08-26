@@ -457,8 +457,8 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        /* Check for inject file when idle */
-        if (current_state == ST_IDLE) {
+        /* Check for inject file when idle (use raw state, bypass debounce) */
+        if (current_state == ST_IDLE || idle_confirmations > 0) {
             char inject_path[128];
             snprintf(inject_path, sizeof(inject_path), STATE_DIR "/%d.inject", child_pid);
             FILE *inj = fopen(inject_path, "r");
