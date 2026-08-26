@@ -3256,7 +3256,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // Build member list for intro
             let members = loadChatMembers(project: project)
                 .filter { $0.name != s.name && $0.name != "human" }
-                .map { "\($0.agentType)/\($0.name)" }
+                .map { $0.name }
             let memberList = members.isEmpty ? "none yet" : members.joined(separator: ", ")
 
             // Inject intro via state file's child PID
