@@ -1777,16 +1777,6 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             dot.layer?.cornerRadius = dotSize / 2
             chip.addSubview(dot)
 
-            // Clickable button
-            let btn = PointerButton(frame: NSRect(x: 0, y: 0, width: chipW, height: chipH))
-            btn.title = ""
-            btn.isBordered = false
-            btn.tag = i
-            btn.target = self
-            btn.action = #selector(memberClicked(_:))
-            btn.hoverBackground = NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1)
-            chip.addSubview(btn)
-
             // Name label
             let nameLabel = NSTextField(labelWithString: m.name)
             nameLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
@@ -1799,6 +1789,17 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             nameLabel.sizeToFit()
             nameLabel.frame.origin = NSPoint(x: 14, y: (chipH - nameLabel.frame.height) / 2)
             chip.addSubview(nameLabel)
+
+            // Clickable button — LAST so it's on top, catches all clicks
+            let btn = PointerButton(frame: NSRect(x: 0, y: 0, width: chipW, height: chipH))
+            btn.title = ""
+            btn.isBordered = false
+            btn.isTransparent = true
+            btn.tag = i
+            btn.target = self
+            btn.action = #selector(memberClicked(_:))
+            btn.hoverBackground = NSColor(calibratedRed: 0.88, green: 0.93, blue: 1.0, alpha: 1)
+            chip.addSubview(btn)
 
             mv.addSubview(chip)
             x += chipW + 6
