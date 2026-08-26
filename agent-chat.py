@@ -22,9 +22,13 @@ def get_db():
         project_id TEXT NOT NULL REFERENCES projects(id),
         display_name TEXT NOT NULL, agent_type TEXT NOT NULL,
         working_directory TEXT, pid INTEGER, proxy_pid INTEGER,
+        session_id TEXT,
         connected_at INTEGER DEFAULT (unixepoch()),
         last_seen INTEGER DEFAULT (unixepoch()),
         PRIMARY KEY(project_id, display_name))""")
+    # Add session_id column if missing (migration)
+    try: db.execute("ALTER TABLE sessions ADD COLUMN session_id TEXT")
+    except: pass
     db.execute("""CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id TEXT NOT NULL, sender_name TEXT NOT NULL,
@@ -42,16 +46,17 @@ def ensure_project(db, project_id):
     db.execute("INSERT OR IGNORE INTO projects(id, name) VALUES(?, ?)",
                (project_id, project_id))
 
-def ensure_session(db, project_id, name, agent_type, pid=None, proxy_pid=None, cwd=None):
+def ensure_session(db, project_id, name, agent_type, pid=None, proxy_pid=None, cwd=None, session_id=None):
     ensure_project(db, project_id)
-    db.execute("""INSERT INTO sessions(project_id, display_name, agent_type, working_directory, pid, proxy_pid)
-        VALUES(?, ?, ?, ?, ?, ?)
+    db.execute("""INSERT INTO sessions(project_id, display_name, agent_type, working_directory, pid, proxy_pid, session_id)
+        VALUES(?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project_id, display_name) DO UPDATE SET
             agent_type=excluded.agent_type, pid=COALESCE(excluded.pid, pid),
             proxy_pid=COALESCE(excluded.proxy_pid, proxy_pid),
             working_directory=COALESCE(excluded.working_directory, working_directory),
+            session_id=COALESCE(excluded.session_id, session_id),
             last_seen=unixepoch()""",
-        (project_id, name, agent_type, cwd, pid, proxy_pid))
+        (project_id, name, agent_type, cwd, pid, proxy_pid, session_id))
     db.commit()
 
 def read_state_file(pid):
@@ -99,9 +104,10 @@ def cmd_send(args):
     pid = args.get("pid")
     proxy_pid = args.get("proxy_pid")
     cwd = args.get("cwd")
+    session_id = args.get("session_id")
 
     db = get_db()
-    ensure_session(db, project, name, agent_type, pid, proxy_pid, cwd)
+    ensure_session(db, project, name, agent_type, pid, proxy_pid, cwd, session_id)
 
     db.execute("INSERT INTO messages(project_id, sender_name, sender_type, recipient, body) VALUES(?,?,?,?,?)",
                (project, name, agent_type, recipient, message))

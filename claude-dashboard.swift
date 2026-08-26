@@ -1438,16 +1438,17 @@ func loadChatProjects() -> [String] {
     return projects
 }
 
-func isInChat(name: String) -> Bool {
+func isInChat(name: String, sessionId: String = "") -> Bool {
     var db: OpaquePointer?
     guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
           let db else { return false }
     defer { sqlite3_close(db) }
     var stmt: OpaquePointer?
-    let sql = "SELECT COUNT(*) FROM sessions WHERE display_name=?"
+    let sql = "SELECT COUNT(*) FROM sessions WHERE display_name=? OR (session_id=? AND session_id!='')"
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_text(stmt, 1, name, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    sqlite3_bind_text(stmt, 2, sessionId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
     return sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) > 0
 }
 
@@ -1458,7 +1459,7 @@ func loadChatMembers(project: String) -> [ChatMember] {
     defer { sqlite3_close(db) }
 
     var stmt: OpaquePointer?
-    let sql = "SELECT display_name, agent_type, pid FROM sessions WHERE project_id=? ORDER BY display_name"
+    let sql = "SELECT display_name, agent_type, pid, COALESCE(session_id,'') FROM sessions WHERE project_id=? ORDER BY display_name"
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_text(stmt, 1, project, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
@@ -1468,13 +1469,14 @@ func loadChatMembers(project: String) -> [ChatMember] {
         let name = String(cString: sqlite3_column_text(stmt, 0))
         let atype = String(cString: sqlite3_column_text(stmt, 1))
         let pid = Int(sqlite3_column_int(stmt, 2))
+        let sid = String(cString: sqlite3_column_text(stmt, 3))
         let state: State
         if pid > 0 && kill(pid_t(pid), 0) == 0 {
             state = resolveState(pid_t(pid))
         } else {
             state = .dead
         }
-        result.append(ChatMember(name: name, agentType: atype, state: state))
+        result.append(ChatMember(name: name, agentType: atype, state: state, sessionId: sid))
     }
     return result
 }
@@ -1518,7 +1520,8 @@ func updateHumanReadCursor(project: String, maxId: Int) {
 struct ChatMember {
     let name: String
     let agentType: String
-    let state: State  // working/idle/needsInput/dead
+    let state: State
+    let sessionId: String
 }
 
 class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
@@ -2288,7 +2291,7 @@ class DashboardView: NSView {
             closeItem.target = self
             closeItem.tag = idx
             menu.addItem(closeItem)
-            if s.state != .dead && !isInChat(name: s.name) {
+            if s.state != .dead && !isInChat(name: s.name, sessionId: s.sessionId) {
                 let chatItem = NSMenuItem(title: "Add to Chat",
                     action: #selector(contextAddToChat(_:)), keyEquivalent: "")
                 chatItem.target = self
@@ -2330,7 +2333,7 @@ class DashboardView: NSView {
             closeItem.target = self
             closeItem.tag = idx
             menu.addItem(closeItem)
-            if let s = allSessions.first(where: { $0.sessionId == item.id }), s.state != .dead, !isInChat(name: s.name) {
+            if let s = allSessions.first(where: { $0.sessionId == item.id }), s.state != .dead, !isInChat(name: s.name, sessionId: s.sessionId) {
                 let chatItem = NSMenuItem(title: "Add to Chat",
                     action: #selector(contextAddPinnedToChat(_:)), keyEquivalent: "")
                 chatItem.target = self
@@ -3269,7 +3272,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         dashView.onAddToChat = { [weak self] s in
             guard let self else { return }
-            guard !isInChat(name: s.name) else { return }
+            guard !isInChat(name: s.name, sessionId: s.sessionId) else { return }
             // Project = tab the session belongs to, or active tab for unassigned (main) sessions
             let sessionTab = self.tabs.first(where: { $0.sessionIds.contains(s.sessionId) })
             let project: String
@@ -3280,10 +3283,11 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let activeTab = self.tabs.first(where: { $0.id == self.activeTabId })
                 project = activeTab?.name ?? "main"
             }
-            // Register in chat db
+            // Register in chat db with session_id for stable identity
             let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
                           "send", "--project", project, "--name", s.name,
                           "--type", s.source, "--pid", "\(s.pid)",
+                          "--session-id", s.sessionId,
                           "--message", "\(s.name) joined the chat")
             // Build member list for intro
             let members = loadChatMembers(project: project)
@@ -3864,14 +3868,23 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard !chatView.activeProject.isEmpty else { return }
         // Load members and feed names for autocomplete
         var mbrs = loadChatMembers(project: chatView.activeProject)
-        // Fix state from live session data — prefer alive sessions over dead ones
+        // Match members to live sessions by session_id (stable) or name (fallback)
         let allSess = dashView.allSessions
         for i in 0..<mbrs.count {
-            let name = mbrs[i].name
-            let live = allSess.first(where: { $0.name == name && $0.state != .dead })
-                    ?? allSess.first(where: { $0.name == name })
+            let sid = mbrs[i].sessionId
+            let dbName = mbrs[i].name
+            // Match by session_id first (stable across renames), then by name
+            let live = (!sid.isEmpty ? allSess.first(where: { $0.sessionId == sid && $0.state != .dead }) : nil)
+                    ?? allSess.first(where: { $0.name == dbName && $0.state != .dead })
+                    ?? (!sid.isEmpty ? allSess.first(where: { $0.sessionId == sid }) : nil)
+                    ?? allSess.first(where: { $0.name == dbName })
             if let live {
-                mbrs[i] = ChatMember(name: name, agentType: mbrs[i].agentType, state: live.state)
+                mbrs[i] = ChatMember(name: live.name, agentType: mbrs[i].agentType, state: live.state, sessionId: sid)
+                // Sync name in chat db if it changed (e.g. session renamed)
+                if live.name != dbName {
+                    let _ = shell("/usr/bin/sqlite3", chatDbPath,
+                        "UPDATE sessions SET display_name='\(live.name.replacingOccurrences(of: "'", with: "''"))' WHERE project_id='\(chatView.activeProject.replacingOccurrences(of: "'", with: "''"))' AND display_name='\(dbName.replacingOccurrences(of: "'", with: "''"))'")
+                }
             }
         }
         chatView.members = mbrs
