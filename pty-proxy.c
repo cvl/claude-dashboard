@@ -468,18 +468,21 @@ int main(int argc, char *argv[]) {
                 fclose(inj);
                 unlink(inject_path);
                 if (n > 0) {
-                    inject_buf[n] = '\0';
-                    /* Wrap accumulated messages in a single prompt */
-                    const char *prefix = "New chat messages:\n";
-                    const char *suffix = "Run `cdash chat read` for full context, `cdash chat send \"reply\"` to respond.";
-                    write(master_fd, prefix, strlen(prefix));
                     /* Strip trailing newlines */
                     while (n > 0 && (inject_buf[n-1] == '\n' || inject_buf[n-1] == '\r')) n--;
                     inject_buf[n] = '\0';
-                    write(master_fd, inject_buf, n);
-                    write(master_fd, "\n", 1);
-                    write(master_fd, suffix, strlen(suffix));
-                    usleep(50000); /* 50ms delay before Enter */
+                    if (inject_buf[0] == '-' && inject_buf[1] == ' ') {
+                        /* Chat messages — wrap with header/footer */
+                        const char *prefix = "New chat messages:\n";
+                        const char *suffix = "\nRun `cdash chat read` for full context, `cdash chat send \"reply\"` to respond.";
+                        write(master_fd, prefix, strlen(prefix));
+                        write(master_fd, inject_buf, n);
+                        write(master_fd, suffix, strlen(suffix));
+                    } else {
+                        /* System notice (join/remove/intro) — send as-is */
+                        write(master_fd, inject_buf, n);
+                    }
+                    usleep(50000);
                     write(master_fd, "\r", 1);
                 }
             }
