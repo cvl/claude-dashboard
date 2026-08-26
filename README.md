@@ -1,151 +1,185 @@
 # Claude Dashboard
 
-A native macOS menu bar + floating window app for monitoring multiple [Claude Code](https://claude.ai/code) and [Codex CLI](https://github.com/openai/codex) sessions at a glance, with terminal window management.
+A native macOS menu bar app for monitoring and managing multiple [Claude Code](https://claude.ai/code) and [Codex CLI](https://github.com/openai/codex) sessions — with inter-agent chat, terminal management, and automatic state detection.
 
-## What it does
+## Features
 
-### Agent Sessions (Claude & Codex)
-- **Live session status** — shows each session as a card with real-time state: Working (green), Needs Input (amber), Idle (gray), Dead (red)
-- **Source tags** — blue "claude", purple "codex", or teal "terminal" tag on each card
-- **Menu bar indicator** — colored dot reflects the most urgent session state; count shown when sessions are active
-- **Click to reveal** — click a session card to bring its Terminal window to the foreground (works across monitors)
-- **Resume command** — play button copies a resume command to clipboard (`claude --resume` or `codex resume`)
-- **Session notes** — each session has a notes button that opens a plain text file in your default editor
-- **Persistent sessions** — ended sessions stay in the dashboard until explicitly removed
-- **Drag to reorder** — drag session cards to arrange them manually; order persists across restarts
-- **Permission prompt detection** — detects when a session is blocked waiting for user approval
-- **Session history** — all sessions are logged to `~/.claude/dashboard-notes/history.txt` with resume commands
+### Session Monitoring
+- **Live status** — real-time state for each session: Working (green), Needs Input (amber), Idle (gray), Dead (red)
+- **CL/CX tags** — visual indicator showing Claude or Codex source on each session
+- **Menu bar dot** — colored indicator reflects the most urgent session state
+- **Click to reveal** — click any session to bring its terminal window to the foreground (works across monitors)
+- **Resume command** — copies a `cdash claude --resume` or `cdash codex --name ... resume` command to clipboard
+- **Session notes** — per-session plain text notes, migrated automatically on resume
+- **Drag to reorder** — manual ordering persists across restarts
+- **Permission prompt detection** — detects when a session is blocked waiting for approval; dock bounce + repeated ping sound
+- **Session history** — all sessions logged to `~/.claude/dashboard-notes/history.txt`
+- **Dead session muting** — dead sessions show muted names and red dot
 
-### Launching Sessions with `cdash`
+### Agent Chat
 
-For reliable state tracking, launch sessions through `cdash`:
+Agents can communicate with each other and with you through shared chat channels.
 
+**Adding agents to chat:**
+- Right-click a session → "Add to Chat"
+- The agent receives an auto-injected prompt telling it about the chat commands
+- The chat panel opens showing the channel
+
+**Chat commands** (agents use these via Bash tool):
 ```bash
-# Claude
-cdash claude
-cdash claude --resume <session-id> --name 'my-session' --effort max
-
-# Codex
-cdash codex
-cdash codex resume <session-id>
+cdash chat send "message"              # broadcast to channel
+cdash chat send "message" --to name    # DM to specific agent
+cdash chat send "message" --to all     # ping all agents
+cdash chat send "message" --to human   # escalate to human
+cdash chat read                        # check new messages
+cdash chat list                        # see who's online
 ```
 
-`cdash` intercepts the terminal output stream and detects agent state directly from what the agent renders — spinner characters for working, prompt symbols for idle, permission dialogs for needs-input. The agent behaves exactly as normal; `cdash` is fully transparent.
+**Dashboard chat panel:**
+- Type messages as the human participant
+- `@name message` sends a DM (Tab to autocomplete)
+- `@all message` broadcasts to all agents
+- Click agent chips to reveal their terminal
+- Right-click chips to remove from channel
 
-Sessions launched without `cdash` (plain `claude` or `codex`) still work via hook-based state detection as a fallback, though hooks are less reliable.
+**Auto-injection:**
+- When a message is sent to an idle agent, the proxy types a notification into its terminal
+- Multiple messages accumulate into a single prompt (no spam)
+- The agent sees the message and can respond with `cdash chat read` / `cdash chat send`
 
-### Named Terminals
+**Channels:**
+- Each tab in the dashboard = a chat channel
+- Moving a session to another tab removes it from the old channel
+- Channel selector (▾) to switch between channels in the chat panel
 
-Register any terminal tab with a name so you can find it from the dashboard:
+### Launching Sessions
+
+All sessions must be launched through `cdash` for state tracking and chat:
 
 ```bash
+# New sessions
+cdash claude                                    # defaults: --effort max
+cdash claude --name backend --project myapp
+cdash codex --name frontend
+
+# Resume
+cdash claude --resume <session-id> --name 'backend'
+cdash codex --name 'frontend' resume <session-id>
+
+# Named terminal (not an agent)
 cdash dev-server
 ```
 
-This registers the current terminal tab as "dev-server". It appears in the TERMINALS section with name, live path (updates on `cd`), and active/closed status. Click to reveal.
+`cdash` wraps the agent in a transparent PTY proxy that:
+1. Reads terminal output to detect state (spinners, prompts, permission dialogs)
+2. Writes state to `/tmp/claude-dash/<pid>.state`
+3. Injects chat prompts when the agent is idle
+4. Passes all I/O transparently — the agent behaves identically
 
 ### Tab Buckets
+- Default "main" tab shows unassigned sessions
+- Drag sessions onto tabs to organize
+- Tabs = chat channels
+- Floating sidebar to the left of the dashboard
 
-Organize sessions into tabs:
-- Default "main" tab shows all unassigned sessions
-- Drag sessions or terminals onto tabs to organize
-- New terminals registered with `cdash` go into the currently selected tab
-- Tabs are a floating sidebar to the left of the dashboard
+### Pinned Sessions
+- Pin button on each session/terminal
+- Pinned section shows items from all tabs
+- Click to switch tab and reveal terminal
+- Same action buttons as regular sessions (pin, resume, notes)
 
-### Pin Sessions
-
-Pin important sessions for quick access:
-- Pin button on each session/terminal card
-- Pinned section at the bottom shows items from all tabs
-- Click pinned item to switch to its tab and reveal terminal
-- Right-click for pin/unpin/close
-
-### Terminal Window Layout
-
-Automatically saves and restores terminal window positions across sleep/wake and monitor reconnects:
-
-- **Auto-save** — layout saved on launch and every 5 minutes
-- **Auto-restore** — triggers on screen wake and display reconfiguration
-- **Screen-aware** — skips saving when monitors are disconnected (prevents saving scrambled positions)
+### Terminal Layout
+- **Auto-save** — window positions saved on launch and every 5 minutes
+- **Auto-restore** — triggers on screen wake and monitor reconnect
+- **Screen-aware** — skips saving when monitors are disconnected
 
 ### Notifications
-
-In-app notification panel when sessions finish working:
-- Appears to the left of the tab sidebar
+- In-app panel when sessions finish working or need input
+- Needs input: dock icon bounce + repeated ping sound every 5s
 - Click to reveal terminal, X to dismiss
 - Auto-dismissed when session starts working again
-- Toggle in tray menu
 
-## How it works
+## How State Detection Works
 
-### State Detection via `cdash` (recommended)
+The `cdash` proxy reads the agent's terminal output and detects state from:
+- **OSC title sequences** — braille spinner characters = working, ✳ = idle
+- **Screen content** — "Do you want to proceed?" + "Yes" = needs input, "Esc to cancel" = needs input
+- **Screen checks run before title checks** — permission prompts override the working spinner
 
-When launched via `cdash claude` or `cdash codex`, the terminal output passes through a transparent layer that:
+State is written to `/tmp/claude-dash/<pid>.state` every 200ms. The dashboard polls these files every 0.5s.
 
-1. Reads every byte the agent writes to the terminal
-2. Watches for OSC title sequences (agents set spinner characters when working, status indicators when idle)
-3. Scans the recent screen content for known patterns — permission prompts, working indicators, idle prompts
-4. Writes the detected state to `/tmp/claude-dash/<pid>.state` every 500ms
+Working→idle transitions are debounced (4 × 200ms = 800ms) to prevent flicker.
 
-The agent sees a real terminal and behaves identically. You see the exact same output. Detection patterns are based on [herdr](https://github.com/nicoulaj/herdr)'s agent detection manifests.
-
-### Hook-based fallback
-
-Sessions launched without `cdash` use Claude Code / Codex hooks:
-- `UserPromptSubmit` → marks session as working
-- `Stop` → marks session as idle
-- `Notification` (permission_prompt) → marks as needs input
-
-Hooks are auto-installed on app launch.
-
-### Session discovery
-
-- **Claude**: polls `~/.claude/sessions/*.json` every second
-- **Codex**: finds running `codex` processes, reads session ID from open JSONL files, queries `~/.codex/state_5.sqlite` for names
-
-## Requirements
-
-- **macOS** (uses AppKit, SF Symbols)
-- **Xcode Command Line Tools** (`xcode-select --install`)
-- **Claude Code** and/or **Codex CLI** installed
-
-## Install & Run
+## Install
 
 ```bash
 git clone https://github.com/cvl/claude-dashboard.git && cd claude-dashboard
-./install.sh
+./scripts/install.sh
 open /Applications/ClaudeDashboard.app
 ```
 
-The install script compiles the dashboard app, the state detection layer, and the `cdash` CLI.
+The install script compiles and installs:
+- Dashboard app → `/Applications/ClaudeDashboard.app`
+- PTY proxy → `/usr/local/bin/claude-dashboard-proxy` (code-signed)
+- CLI → `/usr/local/bin/cdash`
+- Chat backend → `/usr/local/lib/claude-dashboard/agent-chat.py`
 
-## Keyboard shortcuts
+### Development
+
+```bash
+./scripts/rebuild-relaunch.sh    # kill, rebuild, relaunch
+```
+
+## Requirements
+
+- **macOS** (AppKit, SF Symbols, SQLite3)
+- **Xcode Command Line Tools** (`xcode-select --install`)
+- **Claude Code** and/or **Codex CLI**
+
+## Keyboard Shortcuts
 
 | Shortcut | Action |
 |----------|--------|
-| `Cmd+H` | Toggle dashboard window |
+| `Cmd+H` | Toggle dashboard |
 | `Cmd+Q` | Quit |
 
-## File locations
+## File Locations
 
 | Path | Purpose |
 |------|---------|
-| `~/.claude/dashboard-store.json` | Persisted session metadata (Claude + Codex) |
-| `~/.claude/dashboard-notes/` | Session notes (plain text, never auto-deleted) |
-| `~/.claude/dashboard-notes/history.txt` | Full session history with resume commands |
-| `~/.claude/dashboard-terminals.json` | Registered terminal tabs |
-| `~/.claude/dashboard-tabs.json` | Tab buckets and assignments |
+| `~/.claude/dashboard-store.json` | Session metadata |
+| `~/.claude/dashboard-notes/` | Session notes |
+| `~/.claude/dashboard-notes/history.txt` | Session history with resume commands |
+| `~/.claude/dashboard-terminals.json` | Registered terminals |
+| `~/.claude/dashboard-tabs.json` | Tab assignments |
 | `~/.claude/dashboard-pinned.json` | Pinned items |
-| `~/.claude/dashboard-layout.json` | Saved terminal window positions |
-| `~/.claude/dashboard.log` | Diagnostic log (auto-rotates at 5000 lines) |
-| `/tmp/claude-dash/*.state` | Live state files (working/stop/needs_input) |
+| `~/.claude/dashboard-layout.json` | Terminal window positions |
+| `~/.claude/dashboard-chat.db` | Chat messages and sessions (SQLite) |
+| `~/.claude/dashboard.log` | Diagnostic log |
+| `/tmp/claude-dash/*.state` | Live state files |
+| `/tmp/claude-dash/*.inject` | Queued chat prompts |
 | `/usr/local/bin/cdash` | CLI entry point |
+| `/usr/local/bin/claude-dashboard-proxy` | PTY proxy binary |
+| `/usr/local/lib/claude-dashboard/agent-chat.py` | Chat backend |
 
-## Known limitations
+## Architecture
 
-- **Hook reliability** — `UserPromptSubmit` hook doesn't always fire in Claude Code. Use `cdash claude` for reliable state tracking.
-- **Codex session names** — Codex may overwrite `/rename`d titles on interaction. The dashboard preserves names in its own store.
-- **Layout restore timing** — after sleep/wake, there's a 3-second delay before windows are repositioned to allow monitors to fully reconnect.
+```
+Terminal → cdash → claude-dashboard-proxy → claude/codex
+                        ↓                       ↓
+                  state files ←──── terminal output parsing
+                        ↓
+              ClaudeDashboard.app ←── polls state files + chat db
+                        ↓
+              menu bar + floating panels (sessions, tabs, notifications, chat)
+```
+
+## Known Limitations
+
+- **Codex inject submit** — `\r` (Enter) doesn't always submit in Codex's TUI. Claude Code works reliably.
+- **Codex session names** — Codex may overwrite `/rename`d titles. Dashboard preserves names in its own store.
+- **Layout restore** — 3-second delay after sleep/wake for monitors to reconnect.
+- **Non-cdash sessions** — sessions launched without `cdash` are not tracked.
 
 ## License
 
