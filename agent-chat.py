@@ -119,10 +119,10 @@ def cmd_send(args):
     target_names = {recipient} if recipient else {r[0] for r in rows}
 
     for sf_pid, sf_event, sf_proxy_pid, sf_tty, sf_name, sf_project in state_files:
-        if sf_event != "stop": continue  # only inject idle
         if sf_name not in target_names: continue
+        # Write inject file — proxy will pick it up when agent goes idle
         snippet = message[:100] + ("..." if len(message) > 100 else "")
-        inject_text = (f"Chat from {agent_type}/{name}: \"{snippet}\" "
+        inject_text = (f"Chat from {name}: \"{snippet}\" "
                       f"— Run `cdash chat read` for context, `cdash chat send \"reply\"` to respond.\n")
         write_inject(sf_pid, inject_text)
 
