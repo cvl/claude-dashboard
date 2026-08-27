@@ -3527,7 +3527,19 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         notifView.onClickNotification = { [weak self] notif in
             self?.dismissNotification(notif.id)
-            // Switch to the tab containing this session
+            // Chat notification — open chat panel
+            if notif.tty.hasPrefix("chat:") {
+                let channel = String(notif.tty.dropFirst(5))
+                if let self {
+                    if !self.showChat { self.showChat = true }
+                    self.chatView.activeProject = channel
+                    self.chatView.updateChannelLabel()
+                    self.lastChatFingerprint = ""
+                    self.pollChat()
+                }
+                return
+            }
+            // Session notification — switch tab + reveal terminal
             if let self {
                 let sid = notif.id
                 let targetTab = self.tabs.first(where: { $0.sessionIds.contains(sid) })?.id ?? "main"
@@ -3970,15 +3982,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if msg.recipient == "human" && msg.senderType != "human" {
                         NSApp.requestUserAttention(.informationalRequest)
                         NSSound(named: "Ping")?.play()
-                        // Add notification
                         let notifId = "chat-\(msg.id)"
                         if !dashNotifications.contains(where: { $0.id == notifId }) {
+                            let snippet = msg.body.prefix(60) + (msg.body.count > 60 ? "…" : "")
                             dashNotifications.append(DashNotification(
-                                id: notifId, sessionName: msg.senderName,
-                                cwd: chatView.activeProject, tty: "",
-                                time: Date(), isInputNeeded: true))
+                                id: notifId, sessionName: "\(msg.senderName) → you",
+                                cwd: String(snippet), tty: "chat:\(chatView.activeProject)",
+                                time: Date(timeIntervalSince1970: Double(msg.timestamp)),
+                                isInputNeeded: false))
                             layoutNotifPanel()
-                            updateInputSoundTimer()
                         }
                     }
                 }
