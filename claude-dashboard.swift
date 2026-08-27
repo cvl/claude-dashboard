@@ -647,9 +647,16 @@ func loadCodexSessions() -> [Session] {
                 if sid.hasPrefix("codex-") && !dbSid.isEmpty { sid = dbSid }
             }
         }
-        // Check dashboard store for existing name
-        if sname.isEmpty, let storedName = loadStore().store[sid]?.name, !storedName.isEmpty {
-            sname = storedName
+        // Try state file name (CDASH_SESSION_NAME set at launch)
+        if sname.isEmpty {
+            if let sf = stateFileEvent(proc.pid), let _ = sf.tty {
+                let sfPath = "\(stateDir)/\(proc.pid).state"
+                if let data = try? Data(contentsOf: URL(fileURLWithPath: sfPath)),
+                   let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let sfName = j["name"] as? String, !sfName.isEmpty {
+                    sname = sfName
+                }
+            }
         }
         if sname.isEmpty {
             sname = (cwd as NSString).lastPathComponent.isEmpty ? "codex-\(proc.pid)" : (cwd as NSString).lastPathComponent
