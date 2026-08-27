@@ -453,10 +453,23 @@ func loadSessions() -> [Session] {
                 let oldPath = notesPath(name: stored.name, sessionId: sid)
                 let newPath = notesPath(name: live.name, sessionId: live.sessionId)
                 if oldPath != newPath && fm.fileExists(atPath: oldPath) {
+                    let oldSize = (try? fm.attributesOfItem(atPath: oldPath)[.size] as? Int) ?? 0
                     let newSize = (try? fm.attributesOfItem(atPath: newPath)[.size] as? Int) ?? 0
-                    if !fm.fileExists(atPath: newPath) || newSize == 0 {
-                        try? fm.removeItem(atPath: newPath)
-                        try? fm.moveItem(atPath: oldPath, toPath: newPath)
+                    if oldSize > 0 {
+                        if !fm.fileExists(atPath: newPath) || newSize == 0 {
+                            // New file empty or missing — just move
+                            try? fm.removeItem(atPath: newPath)
+                            try? fm.moveItem(atPath: oldPath, toPath: newPath)
+                        } else if oldSize > newSize {
+                            // Both have content — prepend old to new (old notes are more valuable)
+                            if let oldData = fm.contents(atPath: oldPath),
+                               let newData = fm.contents(atPath: newPath) {
+                                let separator = "\n---\n".data(using: .utf8) ?? Data()
+                                let merged = oldData + separator + newData
+                                fm.createFile(atPath: newPath, contents: merged)
+                                try? fm.removeItem(atPath: oldPath)
+                            }
+                        }
                     }
                 }
                 resumedOldIds.append(sid)
