@@ -16,16 +16,24 @@ The `detect_state` function order is critical and was tuned through many iterati
 
 **Screen checks MUST come before title checks.** The spinner persists in the title during permission prompts — if title is checked first, needs_input is never detected.
 
-Reverted to this exact logic in `d9581ac`.
+Current working version: `dae5b41` — removed the "esc to cancel" + "enter to confirm/select" check entirely. Only `"do you want to proceed?"` check remains.
+
+```
+1. Screen: "do you want to proceed?" + ("yes" | ❯) → needs_input
+2. Title: braille spinner → working
+3. Title: ✳ sparkle → idle
+4. Fallback: idle
+```
 
 ### What failed (do NOT repeat)
 
 | Change | Why it failed | Commits |
 |--------|--------------|---------|
+| "esc to cancel" + "enter to confirm/select" check | These strings appear in normal Claude Code UI, not just prompts — constant false positives | `dae5b41` removed it |
 | Title checks first, screen only when idle | Needs_input never detected — spinner overrides | `22e06a7` |
 | Title expiry (30s/5min) | Causes working↔idle flicker when spinner update frequency varies | `37712e9`, `3ac6c36` |
-| Require "esc to cancel" for all needs_input | "Esc to cancel" appears in Claude Code's normal UI tips → false positive | `9899a9a`, `033ca0c` |
-| Require both "do you want to proceed?" + "esc to cancel" only | Removes detection of "enter to confirm/select" dialog prompts | `033ca0c` |
+| Require "esc to cancel" for all needs_input | "Esc to cancel" appears in Claude Code's normal UI — false positive | `9899a9a`, `033ca0c` |
+| Require both "do you want to proceed?" + "esc to cancel" only | Too broad, still matches normal UI | `033ca0c` |
 | Tighten to remove ❯ from needs_input check | Breaks detection of standard permission prompts | `5f600d5` |
 
 ### ANSI Stripping
