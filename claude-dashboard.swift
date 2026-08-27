@@ -3958,7 +3958,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let msgs = loadChatMessages(project: project)
             for msg in msgs where msg.id > lastChatMaxId {
                 if msg.recipient == "human" && msg.senderType != "human" {
-                    NSApp.requestUserAttention(.criticalRequest)
                     let notifId = "chat-\(msg.id)"
                     if !dashNotifications.contains(where: { $0.id == notifId }) {
                         let snippet = msg.body.prefix(60) + (msg.body.count > 60 ? "…" : "")
