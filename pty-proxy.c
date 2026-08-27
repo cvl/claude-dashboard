@@ -285,12 +285,34 @@ static state_t detect_state(const char *screen, const char *title) {
     if (!agent_type) return ST_IDLE;
 
     if (strcmp(agent_type, "claude") == 0) {
-        /* Permission prompt — requires BOTH "do you want to proceed?" AND "esc to cancel" on screen.
-           "do you want to proceed?" alone can appear in agent output text.
-           "esc to cancel" only appears in the actual permission prompt UI footer. */
-        if (contains_ci(screen, "do you want to proceed?") &&
-            contains_ci(screen, "esc to cancel"))
-            return ST_NEEDS_INPUT;
+        /* Permission prompt — structural match:
+           a) "do you want to proceed?" must be on its own line (or start of line)
+           b) "esc to cancel" must start a line
+           This prevents matching against agent output that mentions these phrases inline. */
+        {
+            int has_proceed_line = 0, has_esc_line = 0;
+            const char *p = screen;
+            while (*p) {
+                /* Skip leading whitespace */
+                const char *linestart = p;
+                while (*p == ' ' || *p == '\t') p++;
+                /* Check if line starts with "do you want to proceed?" */
+                if (!has_proceed_line && contains_ci(p, "do you want to proceed?")) {
+                    /* Verify it's at or near start of line (within first few chars) */
+                    if (p - linestart < 5) has_proceed_line = 1;
+                }
+                /* Check if line starts with "esc to cancel" */
+                if (!has_esc_line && contains_ci(p, "esc to cancel")) {
+                    if (p - linestart < 5 &&
+                        (p[0]=='E'||p[0]=='e') && (p[1]=='s'||p[1]=='S') && (p[2]=='c'||p[2]=='C'))
+                        has_esc_line = 1;
+                }
+                /* Skip to next line */
+                while (*p && *p != '\n') p++;
+                if (*p == '\n') p++;
+            }
+            if (has_proceed_line && has_esc_line) return ST_NEEDS_INPUT;
+        }
         /* OSC title: braille spinner = working */
         if (title_has_braille(title)) return ST_WORKING;
         /* OSC title: ✳ = idle */
