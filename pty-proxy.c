@@ -285,17 +285,25 @@ static state_t detect_state(const char *screen, const char *title) {
     if (!agent_type) return ST_IDLE;
 
     if (strcmp(agent_type, "claude") == 0) {
-        /* Permission prompt — match the selection UI: ❯ followed by "1."
-           This pattern (❯ + numbered list) ONLY appears in Claude Code's permission/selection prompts.
-           ❯ = U+276F = E2 9D AF in UTF-8 */
-        if (strstr(screen, "\xe2\x9d\xaf") && contains_ci(screen, "do you want to proceed?")) {
-            /* Find ❯ and check if "1." follows nearby */
-            const char *arrow = strstr(screen, "\xe2\x9d\xaf");
-            while (arrow) {
-                const char *after = arrow + 3; /* skip ❯ bytes */
-                while (*after == ' ') after++;
-                if (after[0] == '1' && after[1] == '.') return ST_NEEDS_INPUT;
-                arrow = strstr(arrow + 3, "\xe2\x9d\xaf");
+        /* Permission prompt — line-start matching:
+           a) One line must START WITH "do you want to proceed?"
+           b) Another line must START WITH "esc to cancel"
+           Uses strncasecmp to check line start, not contains_ci which searches whole string. */
+        {
+            int has_proceed = 0, has_esc = 0;
+            const char *p = screen;
+            while (*p) {
+                /* Skip whitespace at line start */
+                while (*p == ' ' || *p == '\t') p++;
+                /* Check if this line starts with target phrase */
+                if (!has_proceed && strncasecmp(p, "do you want to proceed", 22) == 0)
+                    has_proceed = 1;
+                if (!has_esc && strncasecmp(p, "esc to cancel", 13) == 0)
+                    has_esc = 1;
+                if (has_proceed && has_esc) return ST_NEEDS_INPUT;
+                /* Skip to next line */
+                while (*p && *p != '\n') p++;
+                if (*p == '\n') p++;
             }
         }
         /* OSC title: braille spinner = working */
