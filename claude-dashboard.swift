@@ -3938,6 +3938,34 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    func checkChatNotifications() {
+        // Check ALL channels for human-directed messages — runs even when chat panel is closed
+        let projects = loadChatProjects()
+        for project in projects {
+            let msgs = loadChatMessages(project: project)
+            for msg in msgs where msg.id > lastChatMaxId {
+                if msg.recipient == "human" && msg.senderType != "human" {
+                    NSApp.requestUserAttention(.informationalRequest)
+                    NSSound(named: "Ping")?.play()
+                    let notifId = "chat-\(msg.id)"
+                    if !dashNotifications.contains(where: { $0.id == notifId }) {
+                        let snippet = msg.body.prefix(60) + (msg.body.count > 60 ? "…" : "")
+                        dashNotifications.append(DashNotification(
+                            id: notifId, sessionName: "\(msg.senderName) → you",
+                            cwd: String(snippet), tty: "chat:\(project)",
+                            time: Date(timeIntervalSince1970: Double(msg.timestamp)),
+                            isInputNeeded: true))
+                        layoutNotifPanel()
+                        updateInputSoundTimer()
+                    }
+                }
+            }
+            if let maxId = msgs.last?.id, maxId > lastChatMaxId {
+                lastChatMaxId = maxId
+            }
+        }
+    }
+
     func pollChat() {
         let projects = loadChatProjects()
         chatView.updateProjects(projects)
@@ -3976,27 +4004,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             chatView.refreshMessages()
 
             // Track max ID for human-directed message alerts
-            if let maxId = msgs.last?.id, maxId > lastChatMaxId {
-                // Check for new human-directed messages
-                for msg in msgs where msg.id > lastChatMaxId {
-                    if msg.recipient == "human" && msg.senderType != "human" {
-                        NSApp.requestUserAttention(.informationalRequest)
-                        NSSound(named: "Ping")?.play()
-                        let notifId = "chat-\(msg.id)"
-                        if !dashNotifications.contains(where: { $0.id == notifId }) {
-                            let snippet = msg.body.prefix(60) + (msg.body.count > 60 ? "…" : "")
-                            dashNotifications.append(DashNotification(
-                                id: notifId, sessionName: "\(msg.senderName) → you",
-                                cwd: String(snippet), tty: "chat:\(chatView.activeProject)",
-                                time: Date(timeIntervalSince1970: Double(msg.timestamp)),
-                                isInputNeeded: true))
-                            layoutNotifPanel()
-                            updateInputSoundTimer()
-                        }
-                    }
-                }
-                lastChatMaxId = maxId
-            }
         }
     }
 
@@ -4203,6 +4210,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let terms = loadRegisteredTerminals()
             DispatchQueue.main.async {
                 self?.updateUI(ss, terminals: terms)
+                self?.checkChatNotifications()
                 if self?.showChat == true { self?.pollChat() }
             }
         }
