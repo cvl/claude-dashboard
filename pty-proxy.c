@@ -285,17 +285,18 @@ static state_t detect_state(const char *screen, const char *title) {
     if (!agent_type) return ST_IDLE;
 
     if (strcmp(agent_type, "claude") == 0) {
-        /* Screen checks first — needs_input overrides title spinner */
-        if (contains_ci(screen, "do you want to proceed?") &&
-            (contains_ci(screen, "yes") || strstr(screen, "\xe2\x9d\xaf") /* ❯ */))
-            return ST_NEEDS_INPUT;
-        if (contains_ci(screen, "esc to cancel") &&
-            (contains_ci(screen, "enter to confirm") || contains_ci(screen, "enter to select")))
-            return ST_NEEDS_INPUT;
-        /* OSC title: braille spinner = working */
+        /* OSC title first — most reliable signal */
         if (title_has_braille(title)) return ST_WORKING;
-        /* OSC title: ✳ = idle */
-        if (title_starts_with_sparkle(title)) return ST_IDLE;
+        if (title_starts_with_sparkle(title)) {
+            /* Idle title, but check if permission prompt is showing */
+            if (contains_ci(screen, "do you want to proceed?") &&
+                contains_ci(screen, "esc to cancel"))
+                return ST_NEEDS_INPUT;
+            if (contains_ci(screen, "esc to cancel") &&
+                (contains_ci(screen, "enter to confirm") || contains_ci(screen, "enter to select")))
+                return ST_NEEDS_INPUT;
+            return ST_IDLE;
+        }
     } else if (strcmp(agent_type, "codex") == 0) {
         /* OSC title: "Action Required" = blocked */
         if (contains_ci(title, "Action Required")) return ST_NEEDS_INPUT;
