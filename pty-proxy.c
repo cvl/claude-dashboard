@@ -285,9 +285,11 @@ static state_t detect_state(const char *screen, const char *title) {
     if (!agent_type) return ST_IDLE;
 
     if (strcmp(agent_type, "claude") == 0) {
-        /* Permission prompt — "do you want to proceed?" is unique to permission dialogs */
+        /* Permission prompt — requires BOTH "do you want to proceed?" AND "esc to cancel" on screen.
+           "do you want to proceed?" alone can appear in agent output text.
+           "esc to cancel" only appears in the actual permission prompt UI footer. */
         if (contains_ci(screen, "do you want to proceed?") &&
-            (contains_ci(screen, "yes") || strstr(screen, "\xe2\x9d\xaf") /* ❯ */))
+            contains_ci(screen, "esc to cancel"))
             return ST_NEEDS_INPUT;
         /* OSC title: braille spinner = working */
         if (title_has_braille(title)) return ST_WORKING;
