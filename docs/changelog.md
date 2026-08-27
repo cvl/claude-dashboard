@@ -16,28 +16,34 @@ The `detect_state` function order is critical and was tuned through many iterati
 
 **Screen checks MUST come before title checks.** The spinner persists in the title during permission prompts — if title is checked first, needs_input is never detected.
 
-Current working version: `48f08b2` — requires BOTH "do you want to proceed?" AND "esc to cancel" on screen.
+Current working version: `4e4fe12` — uses `strncasecmp` LINE-START matching for both phrases.
 
 ```
-1. Screen: "do you want to proceed?" + "esc to cancel" → needs_input
+1. Screen: line starts with "do you want to proceed" + another line starts with "esc to cancel" → needs_input
 2. Title: braille spinner → working
 3. Title: ✳ sparkle → idle
 4. Fallback: idle
 ```
 
-**Why this works:** "do you want to proceed?" alone can appear in agent output text (e.g. writing about permission prompts). "Esc to cancel" only appears in the actual permission prompt UI footer. Together they uniquely identify a real prompt.
+**Why this works:**
+- The REAL permission prompt renders "Do you want to proceed?" and "Esc to cancel" each at the START of their own line
+- Agent output text mentions these phrases INLINE (mid-sentence, indented, prefixed with `- ` or `|` etc.) — never at line start
+- `strncasecmp(p, phrase, len)` checks ONLY the characters at position `p` — unlike `contains_ci` which searches the entire rest of the string from that position
+- The critical bug in earlier attempts: `contains_ci(p, "do you want to proceed?")` was used to check "line start" but it actually searches the whole remaining buffer from `p`, finding the phrase anywhere
+
+**Key insight:** The previous `contains_ci` function does substring search from a given position to end of string. Using it for "line start" checking is WRONG — it finds matches anywhere after the line start. Must use `strncasecmp` which compares exactly N chars at the given position.
 
 ### What failed (do NOT repeat)
 
 | Change | Why it failed | Commits |
 |--------|--------------|---------|
-| "do you want to proceed?" + "yes"/❯ (without "esc to cancel") | "do you want to proceed?" can appear in agent output text → false positives | original PR #24, fixed in `48f08b2` |
-| "esc to cancel" + "enter to confirm/select" (without "do you want to proceed?") | Too broad, matches normal UI elements | `dae5b41` removed it |
+| `contains_ci` for "line start" matching | `contains_ci` searches whole remaining string, not just line start — still matches inline mentions | `dd1888e` |
+| "do you want to proceed?" + "yes"/❯ (without line-start check) | "do you want to proceed?" appears in agent output text, ❯ is the normal prompt character | original PR #24 |
+| "do you want to proceed?" + "esc to cancel" (without line-start check) | Both can appear in agent output about permission prompts (changelogs, docs) | `48f08b2` |
+| ❯ + "1." proximity check | ❯ is always on screen (it's the input prompt), "1." appears in any numbered text | `62a8483` |
+| "esc to cancel" + "enter to confirm/select" (without "do you want to proceed?") | Matches normal Claude Code UI elements | `dae5b41` |
 | Title checks first, screen only when idle | Needs_input never detected — spinner overrides | `22e06a7` |
-| Title expiry (30s/5min) | Causes working↔idle flicker when spinner update frequency varies | `37712e9`, `3ac6c36` |
-| Require "esc to cancel" for all needs_input | "Esc to cancel" appears in Claude Code's normal UI — false positive | `9899a9a`, `033ca0c` |
-| Require both "do you want to proceed?" + "esc to cancel" only | Too broad, still matches normal UI | `033ca0c` |
-| Tighten to remove ❯ from needs_input check | Breaks detection of standard permission prompts | `5f600d5` |
+| Title expiry (30s/5min) | Causes working↔idle flicker | `37712e9`, `3ac6c36` |
 
 ### ANSI Stripping
 
