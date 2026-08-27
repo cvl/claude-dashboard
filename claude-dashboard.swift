@@ -3989,8 +3989,9 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                 id: notifId, sessionName: "\(msg.senderName) → you",
                                 cwd: String(snippet), tty: "chat:\(chatView.activeProject)",
                                 time: Date(timeIntervalSince1970: Double(msg.timestamp)),
-                                isInputNeeded: false))
+                                isInputNeeded: true))
                             layoutNotifPanel()
+                            updateInputSoundTimer()
                         }
                     }
                 }
