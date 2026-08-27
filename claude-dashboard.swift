@@ -429,12 +429,7 @@ func loadSessions() -> [Session] {
             existingKey = store.first(where: { $0.value.activeSessionId == sid })?.key
         }
         // 3. Match by name+cwd (resumed under new sessionId)
-        if existingKey == nil {
-            existingKey = store.first(where: {
-                $0.value.source != "codex" && $0.value.name == s.name && $0.value.cwd == s.cwd
-                && liveBySessionId[$0.key] == nil  // old entry must not be live
-            })?.key
-        }
+        // No name+cwd matching — session_id only. Multiple sessions can share same cwd.
 
         if let key = existingKey {
             // Update existing entry — keep internal ID, update reference
@@ -697,12 +692,7 @@ func loadCodexSessions() -> [Session] {
         if existingKey == nil {
             existingKey = store.first(where: { $0.value.activeSessionId == s.sessionId })?.key
         }
-        if existingKey == nil {
-            existingKey = store.first(where: {
-                $0.value.source == "codex" && $0.value.name == s.name && $0.value.cwd == s.cwd
-                && kill(pid_t($0.value.lastPid), 0) != 0  // old entry must be dead
-            })?.key
-        }
+        // No name+cwd matching — session_id only. Multiple sessions can share same cwd.
         if let key = existingKey {
             var entry = store[key]!
             entry = StoredSession(sessionId: key, currentSessionId: s.sessionId,
