@@ -630,7 +630,8 @@ func loadCodexSessions() -> [Session] {
         guard !usedIds.contains(sid) else { continue }
         usedIds.insert(sid)
 
-        // Get name: 1) codex db (short title = /rename'd), 2) dashboard store, 3) folder name
+        // Get name: 1) codex db by session ID, 2) codex db by cwd (for new sessions without JSONL),
+        //           3) dashboard store, 4) folder name
         var sname = ""
         let dbPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/state_5.sqlite").path
         if !sid.hasPrefix("codex-"), sid.count > 10 {
@@ -639,7 +640,19 @@ func loadCodexSessions() -> [Session] {
             let candidate = dbOut.trimmingCharacters(in: .whitespacesAndNewlines)
             if !candidate.isEmpty && candidate.count <= 40 { sname = candidate }
         }
-        // Check dashboard store for existing name (user may have renamed in codex previously)
+        // For temp IDs (no JSONL yet), try matching by cwd in codex db
+        if sname.isEmpty && !procCwd.isEmpty {
+            let dbOut = shell("/usr/bin/sqlite3", dbPath,
+                "SELECT COALESCE(NULLIF(name,''), title), id FROM threads WHERE cwd='\(procCwd.replacingOccurrences(of: "'", with: "''"))' ORDER BY updated_at DESC LIMIT 1")
+            let parts = dbOut.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "|")
+            if parts.count >= 2 {
+                let candidate = String(parts[0])
+                let dbSid = String(parts[1])
+                if !candidate.isEmpty && candidate.count <= 40 { sname = candidate }
+                if sid.hasPrefix("codex-") && !dbSid.isEmpty { sid = dbSid }
+            }
+        }
+        // Check dashboard store for existing name
         if sname.isEmpty, let storedName = loadStore().store[sid]?.name, !storedName.isEmpty {
             sname = storedName
         }
