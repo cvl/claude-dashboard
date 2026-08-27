@@ -320,13 +320,21 @@ static state_t detect_state(const char *screen, const char *title) {
         if (contains_ci(title, "Action Required")) return ST_NEEDS_INPUT;
         /* OSC title: spinner = working */
         if (title_has_braille(title)) return ST_WORKING;
-        /* Screen: working indicator */
-        if (contains_ci(screen, "working") && contains_ci(screen, "esc to interrupt"))
-            return ST_WORKING;
-        /* Permission prompts */
-        if (contains_ci(screen, "allow command?") ||
-            contains_ci(screen, "press enter to confirm or esc to cancel"))
-            return ST_NEEDS_INPUT;
+        /* Screen checks — line-start matching to avoid false positives from agent output */
+        {
+            const char *p = screen;
+            while (*p) {
+                while (*p == ' ' || *p == '\t') p++;
+                /* "Esc to interrupt" at line start = working */
+                if (strncasecmp(p, "esc to interrupt", 16) == 0) return ST_WORKING;
+                /* "Allow command?" at line start = needs_input */
+                if (strncasecmp(p, "allow command?", 14) == 0) return ST_NEEDS_INPUT;
+                /* "Press enter to confirm or esc to cancel" at line start = needs_input */
+                if (strncasecmp(p, "press enter to confirm", 22) == 0) return ST_NEEDS_INPUT;
+                while (*p && *p != '\n') p++;
+                if (*p == '\n') p++;
+            }
+        }
     }
 
     return ST_IDLE;
