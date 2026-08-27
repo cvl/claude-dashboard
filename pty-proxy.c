@@ -285,10 +285,12 @@ static state_t detect_state(const char *screen, const char *title) {
     if (!agent_type) return ST_IDLE;
 
     if (strcmp(agent_type, "claude") == 0) {
-        /* Permission prompt detection — require BOTH "do you want to proceed?" AND
-           "esc to cancel" on screen. "Esc to cancel" alone appears in normal UI tips. */
+        /* Screen checks first — needs_input overrides title spinner */
         if (contains_ci(screen, "do you want to proceed?") &&
-            contains_ci(screen, "esc to cancel"))
+            (contains_ci(screen, "yes") || strstr(screen, "\xe2\x9d\xaf") /* ❯ */))
+            return ST_NEEDS_INPUT;
+        if (contains_ci(screen, "esc to cancel") &&
+            (contains_ci(screen, "enter to confirm") || contains_ci(screen, "enter to select")))
             return ST_NEEDS_INPUT;
         /* OSC title: braille spinner = working */
         if (title_has_braille(title)) return ST_WORKING;
