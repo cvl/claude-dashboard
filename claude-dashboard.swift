@@ -1497,17 +1497,17 @@ func loadChatProjects() -> [String] {
     return projects
 }
 
-func isInChat(name: String, sessionId: String = "") -> Bool {
+func isInChat(name: String, sessionId: String) -> Bool {
+    guard !sessionId.isEmpty else { return false }
     var db: OpaquePointer?
     guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
           let db else { return false }
     defer { sqlite3_close(db) }
     var stmt: OpaquePointer?
-    let sql = "SELECT COUNT(*) FROM sessions WHERE display_name=? OR (session_id=? AND session_id!='')"
+    let sql = "SELECT COUNT(*) FROM sessions WHERE session_id=?"
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, name, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-    sqlite3_bind_text(stmt, 2, sessionId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    sqlite3_bind_text(stmt, 1, sessionId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
     return sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) > 0
 }
 
@@ -3999,16 +3999,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard !chatView.activeProject.isEmpty else { return }
         // Load members and feed names for autocomplete
         var mbrs = loadChatMembers(project: chatView.activeProject)
-        // Match members to live sessions by session_id (stable) or name (fallback)
+        // Match members to live sessions by session_id ONLY
         let allSess = dashView.allSessions
         for i in 0..<mbrs.count {
             let sid = mbrs[i].sessionId
             let dbName = mbrs[i].name
-            // Match by session_id first (stable across renames), then by name
-            let live = (!sid.isEmpty ? allSess.first(where: { $0.sessionId == sid && $0.state != .dead }) : nil)
-                    ?? allSess.first(where: { $0.name == dbName && $0.state != .dead })
-                    ?? (!sid.isEmpty ? allSess.first(where: { $0.sessionId == sid }) : nil)
-                    ?? allSess.first(where: { $0.name == dbName })
+            let live = !sid.isEmpty
+                ? (allSess.first(where: { $0.sessionId == sid && $0.state != .dead })
+                   ?? allSess.first(where: { $0.sessionId == sid }))
+                : nil
             if let live {
                 mbrs[i] = ChatMember(name: live.name, agentType: mbrs[i].agentType, state: live.state, sessionId: sid)
                 // Sync name in chat db if it changed (e.g. session renamed)
