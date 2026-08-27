@@ -285,19 +285,24 @@ static state_t detect_state(const char *screen, const char *title) {
     if (!agent_type) return ST_IDLE;
 
     if (strcmp(agent_type, "claude") == 0) {
-        /* Permission prompt — line-start matching:
-           a) One line must START WITH "do you want to proceed?"
-           b) Another line must START WITH "esc to cancel"
-           Uses strncasecmp to check line start, not contains_ci which searches whole string. */
+        /* Permission prompt:
+           a) "do you want to proceed" must be the ONLY content on its line (starts line, only whitespace/? after)
+           b) "esc to cancel" must START a line (other text like "· Tab to amend" follows)
+           Uses strncasecmp for line-start matching. */
         {
             int has_proceed = 0, has_esc = 0;
             const char *p = screen;
             while (*p) {
                 /* Skip whitespace at line start */
                 while (*p == ' ' || *p == '\t') p++;
-                /* Check if this line starts with target phrase */
-                if (!has_proceed && strncasecmp(p, "do you want to proceed", 22) == 0)
-                    has_proceed = 1;
+                /* "do you want to proceed" — must be alone on the line */
+                if (!has_proceed && strncasecmp(p, "do you want to proceed", 22) == 0) {
+                    const char *after = p + 22;
+                    /* Skip trailing punctuation and whitespace */
+                    while (*after == '?' || *after == ' ' || *after == '\t') after++;
+                    if (*after == '\n' || *after == '\0') has_proceed = 1;
+                }
+                /* "esc to cancel" — must start the line */
                 if (!has_esc && strncasecmp(p, "esc to cancel", 13) == 0)
                     has_esc = 1;
                 if (has_proceed && has_esc) return ST_NEEDS_INPUT;
