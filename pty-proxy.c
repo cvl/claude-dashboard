@@ -429,7 +429,7 @@ int main(int argc, char *argv[]) {
                 int slen = ring_recent_clean(screen, CLEAN_SIZE - 1);
                 /* Expire stale OSC title after 30s — prevents stuck "working" state */
                 const char *title = osc_title;
-                if (osc_title_time > 0 && time(NULL) - osc_title_time > 30) title = "";
+                if (osc_title_time > 0 && time(NULL) - osc_title_time > 300) title = ""; /* 5 min */
                 state_t new_state = detect_state(screen, title);
 
                 /* Debug: dump screen + state when CDASH_DEBUG is set */
