@@ -285,33 +285,18 @@ static state_t detect_state(const char *screen, const char *title) {
     if (!agent_type) return ST_IDLE;
 
     if (strcmp(agent_type, "claude") == 0) {
-        /* Permission prompt — structural match:
-           a) "do you want to proceed?" must be on its own line (or start of line)
-           b) "esc to cancel" must start a line
-           This prevents matching against agent output that mentions these phrases inline. */
-        {
-            int has_proceed_line = 0, has_esc_line = 0;
-            const char *p = screen;
-            while (*p) {
-                /* Skip leading whitespace */
-                const char *linestart = p;
-                while (*p == ' ' || *p == '\t') p++;
-                /* Check if line starts with "do you want to proceed?" */
-                if (!has_proceed_line && contains_ci(p, "do you want to proceed?")) {
-                    /* Verify it's at or near start of line (within first few chars) */
-                    if (p - linestart < 5) has_proceed_line = 1;
-                }
-                /* Check if line starts with "esc to cancel" */
-                if (!has_esc_line && contains_ci(p, "esc to cancel")) {
-                    if (p - linestart < 5 &&
-                        (p[0]=='E'||p[0]=='e') && (p[1]=='s'||p[1]=='S') && (p[2]=='c'||p[2]=='C'))
-                        has_esc_line = 1;
-                }
-                /* Skip to next line */
-                while (*p && *p != '\n') p++;
-                if (*p == '\n') p++;
+        /* Permission prompt — match the selection UI: ❯ followed by "1."
+           This pattern (❯ + numbered list) ONLY appears in Claude Code's permission/selection prompts.
+           ❯ = U+276F = E2 9D AF in UTF-8 */
+        if (strstr(screen, "\xe2\x9d\xaf") && contains_ci(screen, "do you want to proceed?")) {
+            /* Find ❯ and check if "1." follows nearby */
+            const char *arrow = strstr(screen, "\xe2\x9d\xaf");
+            while (arrow) {
+                const char *after = arrow + 3; /* skip ❯ bytes */
+                while (*after == ' ') after++;
+                if (after[0] == '1' && after[1] == '.') return ST_NEEDS_INPUT;
+                arrow = strstr(arrow + 3, "\xe2\x9d\xaf");
             }
-            if (has_proceed_line && has_esc_line) return ST_NEEDS_INPUT;
         }
         /* OSC title: braille spinner = working */
         if (title_has_braille(title)) return ST_WORKING;
