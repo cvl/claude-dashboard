@@ -672,25 +672,54 @@ func loadCodexSessions() -> [Session] {
 
     }
 
-    // Persist live codex sessions + load dead ones — single store read/write
-    let liveIds = Set(result.map(\.sessionId))
+    // Persist live codex sessions + load dead ones — stable internal IDs
     var (store, storeOk) = loadStore()
-    // Save live sessions (skip temp IDs — can't be resumed)
-    for s in result where !s.sessionId.hasPrefix("codex-") {
-        let stored = StoredSession(sessionId: s.sessionId, name: s.name, cwd: s.cwd,
-                                    startedAt: s.startedAt, lastPid: Int(s.pid),
-                                    lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970,
-                                    source: "codex")
-        store[s.sessionId] = stored
-        appendToHistory(stored)
+    var internalIds: [String: String] = [:] // codex sessionId → internal ID
+    for i in 0..<result.count {
+        let s = result[i]
+        guard !s.sessionId.hasPrefix("codex-") else { continue }
+        // Find existing store entry by activeSessionId or name+cwd
+        var existingKey: String? = nil
+        if store[s.sessionId] != nil { existingKey = s.sessionId }
+        if existingKey == nil {
+            existingKey = store.first(where: { $0.value.activeSessionId == s.sessionId })?.key
+        }
+        if existingKey == nil {
+            existingKey = store.first(where: {
+                $0.value.source == "codex" && $0.value.name == s.name && $0.value.cwd == s.cwd
+                && kill(pid_t($0.value.lastPid), 0) != 0  // old entry must be dead
+            })?.key
+        }
+        if let key = existingKey {
+            var entry = store[key]!
+            entry = StoredSession(sessionId: key, currentSessionId: s.sessionId,
+                name: s.name, cwd: s.cwd, startedAt: entry.startedAt,
+                lastPid: Int(s.pid), lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970,
+                source: "codex")
+            store[key] = entry
+            internalIds[s.sessionId] = key
+            // Update result to use internal ID
+            result[i] = Session(pid: s.pid, sessionId: key, name: s.name, cwd: s.cwd,
+                startedAt: s.startedAt, state: s.state, tty: s.tty,
+                hasNotes: hasNotesFile(name: s.name, sessionId: key),
+                lastActive: s.lastActive, hookTs: s.hookTs, source: "codex")
+        } else {
+            let stored = StoredSession(sessionId: s.sessionId, name: s.name, cwd: s.cwd,
+                                        startedAt: s.startedAt, lastPid: Int(s.pid),
+                                        lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970,
+                                        source: "codex")
+            store[s.sessionId] = stored
+            internalIds[s.sessionId] = s.sessionId
+        }
+        appendToHistory(store[internalIds[s.sessionId]!]!)
     }
-    // Filter removed
     for rid in removedSessionIds { store.removeValue(forKey: rid) }
     if storeOk { saveStore(store) }
-    // Load dead
+    // Load dead codex sessions
+    let liveInternalIds = Set(result.map(\.sessionId))
     for (sid, stored) in store {
         guard stored.source == "codex" else { continue }
-        guard !liveIds.contains(sid) else { continue }
+        guard !liveInternalIds.contains(sid) else { continue }
         guard !removedSessionIds.contains(sid) else { continue }
         let p = pid_t(stored.lastPid)
         let fallback = Date(timeIntervalSince1970: stored.startedAt / 1000)
