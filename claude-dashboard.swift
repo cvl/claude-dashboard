@@ -3386,6 +3386,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 "Commands: `cdash chat read` (check messages), " +
                 "`cdash chat send \"msg\"` (broadcast), " +
                 "`cdash chat send \"msg\" --to name` (DM agent), " +
+                "`cdash chat send \"msg\" --to human` (escalate to human), " +
                 "`cdash chat list` (see who's online). " +
                 "Check messages now and before making breaking changes."
             try? intro.write(toFile: injectPath, atomically: true, encoding: .utf8)
@@ -3969,6 +3970,16 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if msg.recipient == "human" && msg.senderType != "human" {
                         NSApp.requestUserAttention(.informationalRequest)
                         NSSound(named: "Ping")?.play()
+                        // Add notification
+                        let notifId = "chat-\(msg.id)"
+                        if !dashNotifications.contains(where: { $0.id == notifId }) {
+                            dashNotifications.append(DashNotification(
+                                id: notifId, sessionName: msg.senderName,
+                                cwd: chatView.activeProject, tty: "",
+                                time: Date(), isInputNeeded: true))
+                            layoutNotifPanel()
+                            updateInputSoundTimer()
+                        }
                     }
                 }
                 lastChatMaxId = maxId
