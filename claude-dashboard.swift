@@ -647,14 +647,17 @@ func loadCodexSessions() -> [Session] {
                 if sid.hasPrefix("codex-") && !dbSid.isEmpty { sid = dbSid }
             }
         }
-        // Try state file name (CDASH_SESSION_NAME set at launch)
+        // Try state file name (CDASH_SESSION_NAME set at launch) — check proc PID and children
         if sname.isEmpty {
-            if let sf = stateFileEvent(proc.pid), let _ = sf.tty {
-                let sfPath = "\(stateDir)/\(proc.pid).state"
+            var pidsToCheck = [proc.pid]
+            let kids = shell("/usr/bin/pgrep", "-P", "\(proc.pid)")
+            pidsToCheck += kids.components(separatedBy: "\n").compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }.filter { $0 > 0 }
+            for checkPid in pidsToCheck {
+                let sfPath = "\(stateDir)/\(checkPid).state"
                 if let data = try? Data(contentsOf: URL(fileURLWithPath: sfPath)),
                    let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let sfName = j["name"] as? String, !sfName.isEmpty {
-                    sname = sfName
+                    sname = sfName; break
                 }
             }
         }
