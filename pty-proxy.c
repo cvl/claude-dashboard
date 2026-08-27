@@ -285,13 +285,10 @@ static state_t detect_state(const char *screen, const char *title) {
     if (!agent_type) return ST_IDLE;
 
     if (strcmp(agent_type, "claude") == 0) {
-        /* Screen checks first — needs_input overrides title spinner.
-           Require "esc to cancel" on screen — only present during ACTIVE prompts,
-           not in stale ring buffer content from previous interactions. */
-        if (contains_ci(screen, "esc to cancel") &&
-            (contains_ci(screen, "do you want to proceed?") ||
-             contains_ci(screen, "enter to confirm") ||
-             contains_ci(screen, "enter to select")))
+        /* Permission prompt detection — require BOTH "do you want to proceed?" AND
+           "esc to cancel" on screen. "Esc to cancel" alone appears in normal UI tips. */
+        if (contains_ci(screen, "do you want to proceed?") &&
+            contains_ci(screen, "esc to cancel"))
             return ST_NEEDS_INPUT;
         /* OSC title: braille spinner = working */
         if (title_has_braille(title)) return ST_WORKING;
