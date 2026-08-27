@@ -100,7 +100,6 @@ def cmd_send(args):
     agent_type = args["type"]
     message = args["message"]
     recipient = args.get("to")
-    if recipient == "all": recipient = None  # @all = broadcast to everyone
     pid = args.get("pid")
     proxy_pid = args.get("proxy_pid")
     cwd = args.get("cwd")
@@ -156,17 +155,24 @@ def cmd_read(args):
 
     # Get read cursor
     cursor = 0
+    first_read = True
     if not show_all:
         row = db.execute("SELECT last_read_id FROM read_cursors WHERE project_id=? AND display_name=?",
                          (project, name)).fetchone()
         if row:
             cursor = row[0]
+            first_read = False
 
     # Fetch messages: broadcasts + DMs to this session
-    rows = db.execute("""SELECT id, sender_name, sender_type, recipient, body, created_at
+    # First read: only last 5 days to avoid dumping entire history
+    time_filter = ""
+    if first_read and not show_all:
+        time_filter = f"AND created_at > {int(time.time()) - 5 * 86400}"
+    rows = db.execute(f"""SELECT id, sender_name, sender_type, recipient, body, created_at
         FROM messages WHERE project_id=? AND id>? AND (recipient IS NULL OR recipient=? OR sender_name=?)
-        ORDER BY id ASC LIMIT ?""",
-        (project, cursor, name, name, limit)).fetchall()
+        {time_filter}
+        ORDER BY id ASC""",
+        (project, cursor, name, name)).fetchall()
 
     if not rows:
         print(f"No new messages in {project}")

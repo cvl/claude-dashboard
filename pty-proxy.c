@@ -46,7 +46,6 @@ static char osc_title[TITLE_SIZE];
 static int osc_collecting = 0;
 static int osc_pos = 0;
 static int osc_st_pending = 0; /* waiting for \ after ESC in ST terminator */
-static time_t osc_title_time = 0; /* when title was last set */
 
 /* State tracking */
 typedef enum { ST_IDLE, ST_WORKING, ST_NEEDS_INPUT } state_t;
@@ -207,7 +206,6 @@ static void track_osc(const char *data, int len) {
                 osc_title[osc_pos] = '\0';
                 osc_collecting = 0;
                 osc_pos = 0;
-                osc_title_time = time(NULL);
             }
             continue;
         }
@@ -217,7 +215,6 @@ static void track_osc(const char *data, int len) {
                 osc_title[osc_pos] = '\0';
                 osc_collecting = 0;
                 osc_pos = 0;
-                osc_title_time = time(NULL);
             } else if (c == 0x1b) { /* ESC — might be start of ST (\x1b\\) */
                 osc_st_pending = 1;
             } else if (osc_pos < TITLE_SIZE - 1) {
@@ -288,13 +285,32 @@ static state_t detect_state(const char *screen, const char *title) {
     if (!agent_type) return ST_IDLE;
 
     if (strcmp(agent_type, "claude") == 0) {
-        /* Screen checks first — needs_input overrides title spinner */
-        if (contains_ci(screen, "do you want to proceed?") &&
-            (contains_ci(screen, "yes") || strstr(screen, "\xe2\x9d\xaf") /* ❯ */))
-            return ST_NEEDS_INPUT;
-        if (contains_ci(screen, "esc to cancel") &&
-            (contains_ci(screen, "enter to confirm") || contains_ci(screen, "enter to select")))
-            return ST_NEEDS_INPUT;
+        /* Permission prompt:
+           a) "do you want to proceed" must be the ONLY content on its line (starts line, only whitespace/? after)
+           b) "esc to cancel" must START a line (other text like "· Tab to amend" follows)
+           Uses strncasecmp for line-start matching. */
+        {
+            int has_proceed = 0, has_esc = 0;
+            const char *p = screen;
+            while (*p) {
+                /* Skip whitespace at line start */
+                while (*p == ' ' || *p == '\t') p++;
+                /* "do you want to proceed" — must be alone on the line */
+                if (!has_proceed && strncasecmp(p, "do you want to proceed", 22) == 0) {
+                    const char *after = p + 22;
+                    /* Skip trailing punctuation and whitespace */
+                    while (*after == '?' || *after == ' ' || *after == '\t') after++;
+                    if (*after == '\n' || *after == '\0') has_proceed = 1;
+                }
+                /* "esc to cancel" — must start the line */
+                if (!has_esc && strncasecmp(p, "esc to cancel", 13) == 0)
+                    has_esc = 1;
+                if (has_proceed && has_esc) return ST_NEEDS_INPUT;
+                /* Skip to next line */
+                while (*p && *p != '\n') p++;
+                if (*p == '\n') p++;
+            }
+        }
         /* OSC title: braille spinner = working */
         if (title_has_braille(title)) return ST_WORKING;
         /* OSC title: ✳ = idle */
@@ -304,13 +320,21 @@ static state_t detect_state(const char *screen, const char *title) {
         if (contains_ci(title, "Action Required")) return ST_NEEDS_INPUT;
         /* OSC title: spinner = working */
         if (title_has_braille(title)) return ST_WORKING;
-        /* Screen: working indicator */
-        if (contains_ci(screen, "working") && contains_ci(screen, "esc to interrupt"))
-            return ST_WORKING;
-        /* Permission prompts */
-        if (contains_ci(screen, "allow command?") ||
-            contains_ci(screen, "press enter to confirm or esc to cancel"))
-            return ST_NEEDS_INPUT;
+        /* Screen checks — line-start matching to avoid false positives from agent output */
+        {
+            const char *p = screen;
+            while (*p) {
+                while (*p == ' ' || *p == '\t') p++;
+                /* "Esc to interrupt" at line start = working */
+                if (strncasecmp(p, "esc to interrupt", 16) == 0) return ST_WORKING;
+                /* "Allow command?" at line start = needs_input */
+                if (strncasecmp(p, "allow command?", 14) == 0) return ST_NEEDS_INPUT;
+                /* "Press enter to confirm or esc to cancel" at line start = needs_input */
+                if (strncasecmp(p, "press enter to confirm", 22) == 0) return ST_NEEDS_INPUT;
+                while (*p && *p != '\n') p++;
+                if (*p == '\n') p++;
+            }
+        }
     }
 
     return ST_IDLE;
@@ -427,10 +451,7 @@ int main(int argc, char *argv[]) {
             if (elapsed_ms >= CHECK_INTERVAL_MS) {
                 char screen[CLEAN_SIZE];
                 int slen = ring_recent_clean(screen, CLEAN_SIZE - 1);
-                /* Expire stale OSC title after 30s — prevents stuck "working" state */
-                const char *title = osc_title;
-                if (osc_title_time > 0 && time(NULL) - osc_title_time > 30) title = "";
-                state_t new_state = detect_state(screen, title);
+                state_t new_state = detect_state(screen, osc_title);
 
                 /* Debug: dump screen + state when CDASH_DEBUG is set */
                 if (getenv("CDASH_DEBUG")) {
