@@ -996,6 +996,7 @@ class TabSidebarView: NSView {
     var activeTabId: String = "main" { didSet { needsDisplay = true } }
     var dropTargetTabId: String? { didSet { needsDisplay = true } }
     var workingTabIds: Set<String> = [] { didSet { needsDisplay = true } }
+    var needsInputTabIds: Set<String> = [] { didSet { needsDisplay = true } }
     private var hoveredTabIdx: Int? = nil
 
     var onTabSelect: ((String) -> Void)?
@@ -1146,9 +1147,12 @@ class TabSidebarView: NSView {
                 bg.fill()
             }
 
+            let hasNeedsInput = needsInputTabIds.contains(tab.id)
             let hasWorking = workingTabIds.contains(tab.id)
-            if hasWorking {
-                // Green accent for tabs with working sessions
+            if hasNeedsInput {
+                NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 1).setFill()
+                NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY + 4, width: 3, height: rect.height - 8)).fill()
+            } else if hasWorking {
                 NSColor.systemGreen.setFill()
                 NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY + 4, width: 3, height: rect.height - 8)).fill()
             }
@@ -4287,6 +4291,16 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let prev = prevStates[sid]
                 prevStates[sid] = s.state
 
+                // First time seeing this session — notify if already needs_input
+                if prev == nil && s.state == .needsInput && pollCount > 5 {
+                    dashNotifications.append(DashNotification(
+                        id: sid, sessionName: s.name,
+                        cwd: s.cwd, tty: s.tty, time: Date(),
+                        isInputNeeded: true))
+                    layoutNotifPanel()
+                    NSApp.requestUserAttention(.informationalRequest)
+                    updateInputSoundTimer()
+                }
                 guard prev != nil else { continue }
 
                 if s.state == .working {
@@ -4374,16 +4388,20 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if pinChanged { savePinned(pinned) }
         dashView.pinnedItems = pinned
 
-        // Compute which tabs have working sessions
+        // Compute which tabs have working / needsInput sessions
         let workingSessions = Set(orderedSessions.filter { $0.state == .working }.map(\.sessionId))
+        let needsInputSessions = Set(orderedSessions.filter { $0.state == .needsInput }.map(\.sessionId))
         var wTabIds = Set<String>()
-        // Check "main" — sessions not assigned to any tab
+        var niTabIds = Set<String>()
         let allAssigned = Set(tabs.filter { $0.id != "main" }.flatMap(\.sessionIds))
         if workingSessions.contains(where: { !allAssigned.contains($0) }) { wTabIds.insert("main") }
+        if needsInputSessions.contains(where: { !allAssigned.contains($0) }) { niTabIds.insert("main") }
         for tab in tabs where tab.id != "main" {
             if tab.sessionIds.contains(where: { workingSessions.contains($0) }) { wTabIds.insert(tab.id) }
+            if tab.sessionIds.contains(where: { needsInputSessions.contains($0) }) { niTabIds.insert(tab.id) }
         }
         tabSidebar.workingTabIds = wTabIds
+        tabSidebar.needsInputTabIds = niTabIds
         let idealH = dashView.idealHeight
         var frame = panel.frame
         let topY = frame.maxY
