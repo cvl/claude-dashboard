@@ -9,20 +9,51 @@ git_root_name() {
   basename "$root"
 }
 
-if [ $# -eq 0 ]; then
+show_help() {
+  echo "cdash — Claude Dashboard CLI"
+  echo ""
   echo "Usage:"
-  echo "  cdash <name>                          Register terminal tab"
-  echo "  cdash claude [--project P] [--name N] [args...]  Launch Claude"
+  echo "  cdash claude [--project P] [--name N] [args...]  Launch Claude (--effort max default)"
   echo "  cdash codex  [--project P] [--name N] [args...]  Launch Codex"
-  echo "  cdash chat send \"message\" [--to NAME] Send chat message"
-  echo "  cdash chat read [--all]               Read chat messages"
-  echo "  cdash chat list                       List sessions in project"
-  exit 1
+  echo "  cdash <name>                                     Register terminal tab"
+  echo "  cdash chat send \"message\" [--to NAME]            Send chat message"
+  echo "  cdash chat send \"message\" --to human             Escalate to human"
+  echo "  cdash chat read [--all]                          Read chat messages"
+  echo "  cdash chat list                                  List sessions in channel"
+  echo "  cdash --help                                     Show this help"
+  echo "  cdash chat --help                                Show chat help"
+  echo ""
+  echo "Options:"
+  echo "  --project P   Chat channel / project name (default: git root)"
+  echo "  --name N      Session display name (default: folder name)"
+}
+
+show_chat_help() {
+  echo "cdash chat — Inter-agent communication"
+  echo ""
+  echo "Commands:"
+  echo "  cdash chat send \"message\"            Broadcast to all agents in channel"
+  echo "  cdash chat send \"message\" --to NAME  DM a specific agent"
+  echo "  cdash chat send \"message\" --to human Escalate to human (triggers notification)"
+  echo "  cdash chat read                      Show new messages since last read"
+  echo "  cdash chat read --all                Show all messages (last 5 days on first read)"
+  echo "  cdash chat list                      Show agents in current channel"
+  echo ""
+  echo "Channel is resolved from the chat database by session name."
+  echo "Session name comes from the proxy state file (set at launch)."
+}
+
+if [ $# -eq 0 ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  show_help
+  exit 0
 fi
 
 # ── Chat subcommand ──
 if [ "$1" = "chat" ]; then
   shift
+  if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    show_chat_help; exit 0
+  fi
   subcmd="${1:-read}"; shift 2>/dev/null || true
 
   agent_type="${CDASH_AGENT_TYPE:-claude}"
