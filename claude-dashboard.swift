@@ -270,13 +270,17 @@ func track(_ pid: pid_t, _ state: State) -> State {
 // MARK: - Session Store (persistence)
 
 struct StoredSession: Codable {
-    let sessionId: String
+    let sessionId: String       // internal stable ID (never changes, = first Claude sessionId)
+    var currentSessionId: String?  // Claude's current sessionId (updates on resume)
     let name: String
     let cwd: String
     let startedAt: Double
     var lastPid: Int
     var lastActiveTs: Double?
     var source: String?  // "claude" or "codex", nil = claude (backward compat)
+
+    /// The active Claude/Codex sessionId — currentSessionId if set, otherwise sessionId
+    var activeSessionId: String { currentSessionId ?? sessionId }
 }
 
 /// Returns (store, didLoad). didLoad=false means file exists but failed to parse.
@@ -315,9 +319,10 @@ func appendToHistory(_ session: StoredSession) {
     let date = df.string(from: Date(timeIntervalSince1970: session.startedAt / 1000))
     let notes = notesFileName(name: session.name, sessionId: session.sessionId)
     let isCodex = session.source == "codex"
+    let activeId = loadStore().store[session.sessionId]?.activeSessionId ?? session.sessionId
     let resume = isCodex
-        ? "cd \(session.cwd) && cdash codex --name '\(session.name)' resume \(session.sessionId)"
-        : "cd \(session.cwd) && cdash claude --resume \(session.sessionId) --name '\(session.name)' --effort max"
+        ? "cd \(session.cwd) && cdash codex --name '\(session.name)' resume \(activeId)"
+        : "cd \(session.cwd) && cdash claude --resume \(activeId) --name '\(session.name)' --effort max"
 
     let prefix = prev != nil ? "[renamed from '\(prev!)'] " : ""
     let entry = """
@@ -413,55 +418,70 @@ func loadSessions() -> [Session] {
         }
     }
 
-    // Merge with store — carry over lastActiveTime when PID changes (resume)
+    // Match live sessions to store entries — find existing entry by currentSessionId or name+cwd
     for (sid, s) in liveBySessionId {
-        if let old = store[sid], old.lastPid != Int(s.pid) {
-            let oldPid = pid_t(old.lastPid)
-            if let t = lastActiveTime[oldPid], lastActiveTime[s.pid] == nil {
+        // Find existing store entry for this live session
+        var existingKey: String? = nil
+        // 1. Direct match by Claude sessionId (same session, not resumed)
+        if store[sid] != nil { existingKey = sid }
+        // 2. Match by currentSessionId (already tracked)
+        if existingKey == nil {
+            existingKey = store.first(where: { $0.value.activeSessionId == sid })?.key
+        }
+        // 3. Match by name+cwd (resumed under new sessionId)
+        // No name+cwd matching — session_id only. Multiple sessions can share same cwd.
+
+        if let key = existingKey {
+            // Update existing entry — keep internal ID, update reference
+            var entry = store[key]!
+            if key != sid { entry = StoredSession(sessionId: key, currentSessionId: sid,
+                name: s.name, cwd: s.cwd, startedAt: entry.startedAt,
+                lastPid: Int(s.pid), lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970,
+                source: entry.source)
+            } else {
+                entry = StoredSession(sessionId: key, currentSessionId: entry.currentSessionId,
+                    name: s.name, cwd: s.cwd, startedAt: entry.startedAt,
+                    lastPid: Int(s.pid), lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970,
+                    source: entry.source)
+            }
+            // Carry over lastActiveTime from old PID
+            if let oldPid = store[key].map({ pid_t($0.lastPid) }),
+               oldPid != s.pid,
+               let t = lastActiveTime[oldPid], lastActiveTime[s.pid] == nil {
                 lastActiveTime[s.pid] = t
                 previousState[s.pid] = previousState[oldPid]
             }
+            store[key] = entry
+        } else {
+            // New session — create store entry with internal ID = Claude sessionId
+            let stored = StoredSession(sessionId: sid, name: s.name, cwd: s.cwd,
+                                       startedAt: s.startedAt, lastPid: Int(s.pid),
+                                       lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970)
+            store[sid] = stored
         }
-        // Remove stale store entries whose PID is now used by this live session
-        let staleKeys = store.filter { $0.key != sid && $0.value.lastPid == Int(s.pid) }.map(\.key)
-        for k in staleKeys { store.removeValue(forKey: k) }
-
-        let stored = StoredSession(sessionId: sid, name: s.name, cwd: s.cwd,
-                                   startedAt: s.startedAt, lastPid: Int(s.pid),
-                                   lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970)
-        store[sid] = stored
-        appendToHistory(stored)
+        appendToHistory(store[existingKey ?? sid]!)
     }
     // Remove explicitly deleted sessions before saving
     for rid in removedSessionIds { store.removeValue(forKey: rid) }
     if storeOk { saveStore(store) }
 
-    // Build final list: live sessions + dead stored sessions
-    // Remove dead sessions that were resumed under a new sessionId (same name+cwd as a live one)
-    let liveByKey: [String: Session] = Dictionary(
-        liveBySessionId.values.map { ("\($0.name)\0\($0.cwd)", $0) },
-        uniquingKeysWith: { a, _ in a })
-    var resumedOldIds: [String] = []
-    var result = Array(liveBySessionId.values)
+    // Build final list: live sessions (using internal IDs) + dead stored sessions
+    var result: [Session] = []
+    for (sid, s) in liveBySessionId {
+        // Find the internal ID for this live session
+        let internalId = store.first(where: { $0.value.activeSessionId == sid })?.key ?? sid
+        var session = s
+        session = Session(pid: s.pid, sessionId: internalId, name: s.name, cwd: s.cwd,
+                         startedAt: s.startedAt, state: s.state, tty: s.tty,
+                         hasNotes: hasNotesFile(name: s.name, sessionId: internalId),
+                         lastActive: s.lastActive, hookTs: s.hookTs, source: s.source)
+        result.append(session)
+    }
     for (sid, stored) in store {
-        // Skip codex sessions — handled by loadCodexSessions
         if stored.source == "codex" { continue }
-        if liveBySessionId[sid] == nil {
-            let key = "\(stored.name)\0\(stored.cwd)"
-            if let live = liveByKey[key] {
-                // Resumed under new sessionId — migrate notes, remove old entry
-                let oldPath = notesPath(name: stored.name, sessionId: sid)
-                let newPath = notesPath(name: live.name, sessionId: live.sessionId)
-                if oldPath != newPath && fm.fileExists(atPath: oldPath) {
-                    let newSize = (try? fm.attributesOfItem(atPath: newPath)[.size] as? Int) ?? 0
-                    if !fm.fileExists(atPath: newPath) || newSize == 0 {
-                        try? fm.removeItem(atPath: newPath)
-                        try? fm.moveItem(atPath: oldPath, toPath: newPath)
-                    }
-                }
-                resumedOldIds.append(sid)
-                continue
-            }
+        // Skip if this internal ID has a live session
+        let isLive = result.contains(where: { $0.sessionId == sid })
+        if !isLive && !removedSessionIds.contains(sid) {
             let p = pid_t(stored.lastPid)
             let fallback = Date(timeIntervalSince1970: stored.startedAt / 1000)
             result.append(Session(
@@ -473,18 +493,6 @@ func loadSessions() -> [Session] {
                 hookTs: 0,
                 source: "claude"))
         }
-    }
-    // Remove old resumed entries from store, queue tab transfers for main thread
-    if !resumedOldIds.isEmpty {
-        for oldId in resumedOldIds {
-            if let stored = store[oldId],
-               let liveKey = "\(stored.name)\0\(stored.cwd)" as String?,
-               let live = liveByKey[liveKey] {
-                pendingTabTransfers.append(TabTransfer(oldId: oldId, newId: live.sessionId))
-            }
-            store.removeValue(forKey: oldId)
-        }
-        if storeOk { saveStore(store) }
     }
     return result.filter { !removedSessionIds.contains($0.sessionId) }
         .sorted { $0.startedAt > $1.startedAt }
@@ -617,7 +625,8 @@ func loadCodexSessions() -> [Session] {
         guard !usedIds.contains(sid) else { continue }
         usedIds.insert(sid)
 
-        // Get name: 1) codex db (short title = /rename'd), 2) dashboard store, 3) folder name
+        // Get name: 1) codex db by session ID, 2) codex db by cwd (for new sessions without JSONL),
+        //           3) dashboard store, 4) folder name
         var sname = ""
         let dbPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/state_5.sqlite").path
         if !sid.hasPrefix("codex-"), sid.count > 10 {
@@ -626,9 +635,31 @@ func loadCodexSessions() -> [Session] {
             let candidate = dbOut.trimmingCharacters(in: .whitespacesAndNewlines)
             if !candidate.isEmpty && candidate.count <= 40 { sname = candidate }
         }
-        // Check dashboard store for existing name (user may have renamed in codex previously)
-        if sname.isEmpty, let storedName = loadStore().store[sid]?.name, !storedName.isEmpty {
-            sname = storedName
+        // For temp IDs ONLY (no JSONL yet), try matching by cwd in codex db
+        if sname.isEmpty && sid.hasPrefix("codex-") && !procCwd.isEmpty {
+            let dbOut = shell("/usr/bin/sqlite3", dbPath,
+                "SELECT COALESCE(NULLIF(name,''), title), id FROM threads WHERE cwd='\(procCwd.replacingOccurrences(of: "'", with: "''"))' ORDER BY updated_at DESC LIMIT 1")
+            let parts = dbOut.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "|")
+            if parts.count >= 2 {
+                let candidate = String(parts[0])
+                let dbSid = String(parts[1])
+                if !candidate.isEmpty && candidate.count <= 40 { sname = candidate }
+                if sid.hasPrefix("codex-") && !dbSid.isEmpty { sid = dbSid }
+            }
+        }
+        // Try state file name (CDASH_SESSION_NAME set at launch) — check proc PID and children
+        if sname.isEmpty {
+            var pidsToCheck = [proc.pid]
+            let kids = shell("/usr/bin/pgrep", "-P", "\(proc.pid)")
+            pidsToCheck += kids.components(separatedBy: "\n").compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }.filter { $0 > 0 }
+            for checkPid in pidsToCheck {
+                let sfPath = "\(stateDir)/\(checkPid).state"
+                if let data = try? Data(contentsOf: URL(fileURLWithPath: sfPath)),
+                   let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let sfName = j["name"] as? String, !sfName.isEmpty {
+                    sname = sfName; break
+                }
+            }
         }
         if sname.isEmpty {
             sname = (cwd as NSString).lastPathComponent.isEmpty ? "codex-\(proc.pid)" : (cwd as NSString).lastPathComponent
@@ -659,25 +690,49 @@ func loadCodexSessions() -> [Session] {
 
     }
 
-    // Persist live codex sessions + load dead ones — single store read/write
-    let liveIds = Set(result.map(\.sessionId))
+    // Persist live codex sessions + load dead ones — stable internal IDs
     var (store, storeOk) = loadStore()
-    // Save live sessions (skip temp IDs — can't be resumed)
-    for s in result where !s.sessionId.hasPrefix("codex-") {
-        let stored = StoredSession(sessionId: s.sessionId, name: s.name, cwd: s.cwd,
-                                    startedAt: s.startedAt, lastPid: Int(s.pid),
-                                    lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970,
-                                    source: "codex")
-        store[s.sessionId] = stored
-        appendToHistory(stored)
+    var internalIds: [String: String] = [:] // codex sessionId → internal ID
+    for i in 0..<result.count {
+        let s = result[i]
+        guard !s.sessionId.hasPrefix("codex-") else { continue }
+        // Find existing store entry by activeSessionId or name+cwd
+        var existingKey: String? = nil
+        if store[s.sessionId] != nil { existingKey = s.sessionId }
+        if existingKey == nil {
+            existingKey = store.first(where: { $0.value.activeSessionId == s.sessionId })?.key
+        }
+        // No name+cwd matching — session_id only. Multiple sessions can share same cwd.
+        if let key = existingKey {
+            var entry = store[key]!
+            entry = StoredSession(sessionId: key, currentSessionId: s.sessionId,
+                name: s.name, cwd: s.cwd, startedAt: entry.startedAt,
+                lastPid: Int(s.pid), lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970,
+                source: "codex")
+            store[key] = entry
+            internalIds[s.sessionId] = key
+            // Update result to use internal ID
+            result[i] = Session(pid: s.pid, sessionId: key, name: s.name, cwd: s.cwd,
+                startedAt: s.startedAt, state: s.state, tty: s.tty,
+                hasNotes: hasNotesFile(name: s.name, sessionId: key),
+                lastActive: s.lastActive, hookTs: s.hookTs, source: "codex")
+        } else {
+            let stored = StoredSession(sessionId: s.sessionId, name: s.name, cwd: s.cwd,
+                                        startedAt: s.startedAt, lastPid: Int(s.pid),
+                                        lastActiveTs: lastActiveTime[s.pid]?.timeIntervalSince1970,
+                                        source: "codex")
+            store[s.sessionId] = stored
+            internalIds[s.sessionId] = s.sessionId
+        }
+        appendToHistory(store[internalIds[s.sessionId]!]!)
     }
-    // Filter removed
     for rid in removedSessionIds { store.removeValue(forKey: rid) }
     if storeOk { saveStore(store) }
-    // Load dead
+    // Load dead codex sessions
+    let liveInternalIds = Set(result.map(\.sessionId))
     for (sid, stored) in store {
         guard stored.source == "codex" else { continue }
-        guard !liveIds.contains(sid) else { continue }
+        guard !liveInternalIds.contains(sid) else { continue }
         guard !removedSessionIds.contains(sid) else { continue }
         let p = pid_t(stored.lastPid)
         let fallback = Date(timeIntervalSince1970: stored.startedAt / 1000)
@@ -1442,17 +1497,17 @@ func loadChatProjects() -> [String] {
     return projects
 }
 
-func isInChat(name: String, sessionId: String = "") -> Bool {
+func isInChat(name: String, sessionId: String) -> Bool {
+    guard !sessionId.isEmpty else { return false }
     var db: OpaquePointer?
     guard sqlite3_open_v2(chatDbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_WAL, nil) == SQLITE_OK,
           let db else { return false }
     defer { sqlite3_close(db) }
     var stmt: OpaquePointer?
-    let sql = "SELECT COUNT(*) FROM sessions WHERE display_name=? OR (session_id=? AND session_id!='')"
+    let sql = "SELECT COUNT(*) FROM sessions WHERE session_id=?"
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, name, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-    sqlite3_bind_text(stmt, 2, sessionId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    sqlite3_bind_text(stmt, 1, sessionId, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
     return sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) > 0
 }
 
@@ -3280,11 +3335,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         dashView.onNotesClick = { s in openNotes(for: s) }
         dashView.onResumeClick = { [weak self] s in
+            // Use activeSessionId (Claude's current ID) for resume, not internal ID
+            let (store, _) = loadStore()
+            let resumeId = store[s.sessionId]?.activeSessionId ?? s.sessionId
             let cmd: String
             if s.source == "codex" {
-                cmd = "cd \(s.cwd) && cdash codex --name '\(s.name)' resume \(s.sessionId)"
+                cmd = "cd \(s.cwd) && cdash codex --name '\(s.name)' resume \(resumeId)"
             } else {
-                cmd = "cd \(s.cwd) && cdash claude --resume \(s.sessionId) --name '\(s.name)' --effort max"
+                cmd = "cd \(s.cwd) && cdash claude --resume \(resumeId) --name '\(s.name)' --effort max"
             }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(cmd, forType: .string)
@@ -3341,6 +3399,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 "Commands: `cdash chat read` (check messages), " +
                 "`cdash chat send \"msg\"` (broadcast), " +
                 "`cdash chat send \"msg\" --to name` (DM agent), " +
+                "`cdash chat send \"msg\" --to human` (escalate to human), " +
                 "`cdash chat list` (see who's online). " +
                 "Check messages now and before making breaking changes."
             try? intro.write(toFile: injectPath, atomically: true, encoding: .utf8)
@@ -3481,7 +3540,19 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         notifView.onClickNotification = { [weak self] notif in
             self?.dismissNotification(notif.id)
-            // Switch to the tab containing this session
+            // Chat notification — open chat panel
+            if notif.tty.hasPrefix("chat:") {
+                let channel = String(notif.tty.dropFirst(5))
+                if let self {
+                    if !self.showChat { self.showChat = true }
+                    self.chatView.activeProject = channel
+                    self.chatView.updateChannelLabel()
+                    self.lastChatFingerprint = ""
+                    self.pollChat()
+                }
+                return
+            }
+            // Session notification — switch tab + reveal terminal
             if let self {
                 let sid = notif.id
                 let targetTab = self.tabs.first(where: { $0.sessionIds.contains(sid) })?.id ?? "main"
@@ -3880,6 +3951,45 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    private var chatMaxIdInitialized = false
+
+    func checkChatNotifications() {
+        // Check ALL channels for human-directed messages — runs even when chat panel is closed
+        let projects = loadChatProjects()
+        // First run: set cursor to current max to avoid notifying on old messages
+        if !chatMaxIdInitialized {
+            chatMaxIdInitialized = true
+            for project in projects {
+                let msgs = loadChatMessages(project: project)
+                if let maxId = msgs.last?.id, maxId > lastChatMaxId {
+                    lastChatMaxId = maxId
+                }
+            }
+            return
+        }
+        for project in projects {
+            let msgs = loadChatMessages(project: project)
+            for msg in msgs where msg.id > lastChatMaxId {
+                if msg.recipient == "human" && msg.senderType != "human" {
+                    let notifId = "chat-\(msg.id)"
+                    if !dashNotifications.contains(where: { $0.id == notifId }) {
+                        let snippet = msg.body.prefix(60) + (msg.body.count > 60 ? "…" : "")
+                        dashNotifications.append(DashNotification(
+                            id: notifId, sessionName: "\(msg.senderName) → you",
+                            cwd: String(snippet), tty: "chat:\(project)",
+                            time: Date(timeIntervalSince1970: Double(msg.timestamp)),
+                            isInputNeeded: true))
+                        layoutNotifPanel()
+                        updateInputSoundTimer()
+                    }
+                }
+            }
+            if let maxId = msgs.last?.id, maxId > lastChatMaxId {
+                lastChatMaxId = maxId
+            }
+        }
+    }
+
     func pollChat() {
         let projects = loadChatProjects()
         chatView.updateProjects(projects)
@@ -3889,16 +3999,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard !chatView.activeProject.isEmpty else { return }
         // Load members and feed names for autocomplete
         var mbrs = loadChatMembers(project: chatView.activeProject)
-        // Match members to live sessions by session_id (stable) or name (fallback)
+        // Match members to live sessions by session_id ONLY
         let allSess = dashView.allSessions
         for i in 0..<mbrs.count {
             let sid = mbrs[i].sessionId
             let dbName = mbrs[i].name
-            // Match by session_id first (stable across renames), then by name
-            let live = (!sid.isEmpty ? allSess.first(where: { $0.sessionId == sid && $0.state != .dead }) : nil)
-                    ?? allSess.first(where: { $0.name == dbName && $0.state != .dead })
-                    ?? (!sid.isEmpty ? allSess.first(where: { $0.sessionId == sid }) : nil)
-                    ?? allSess.first(where: { $0.name == dbName })
+            let live = !sid.isEmpty
+                ? (allSess.first(where: { $0.sessionId == sid && $0.state != .dead })
+                   ?? allSess.first(where: { $0.sessionId == sid }))
+                : nil
             if let live {
                 mbrs[i] = ChatMember(name: live.name, agentType: mbrs[i].agentType, state: live.state, sessionId: sid)
                 // Sync name in chat db if it changed (e.g. session renamed)
@@ -3918,16 +4027,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             chatView.refreshMessages()
 
             // Track max ID for human-directed message alerts
-            if let maxId = msgs.last?.id, maxId > lastChatMaxId {
-                // Check for new human-directed messages
-                for msg in msgs where msg.id > lastChatMaxId {
-                    if msg.recipient == "human" && msg.senderType != "human" {
-                        NSApp.requestUserAttention(.informationalRequest)
-                        NSSound(named: "Ping")?.play()
-                    }
-                }
-                lastChatMaxId = maxId
-            }
         }
     }
 
@@ -4134,6 +4233,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let terms = loadRegisteredTerminals()
             DispatchQueue.main.async {
                 self?.updateUI(ss, terminals: terms)
+                self?.checkChatNotifications()
                 if self?.showChat == true { self?.pollChat() }
             }
         }
