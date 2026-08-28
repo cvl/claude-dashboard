@@ -635,8 +635,8 @@ func loadCodexSessions() -> [Session] {
             let candidate = dbOut.trimmingCharacters(in: .whitespacesAndNewlines)
             if !candidate.isEmpty && candidate.count <= 40 { sname = candidate }
         }
-        // For temp IDs (no JSONL yet), try matching by cwd in codex db
-        if sname.isEmpty && !procCwd.isEmpty {
+        // For temp IDs ONLY (no JSONL yet), try matching by cwd in codex db
+        if sname.isEmpty && sid.hasPrefix("codex-") && !procCwd.isEmpty {
             let dbOut = shell("/usr/bin/sqlite3", dbPath,
                 "SELECT COALESCE(NULLIF(name,''), title), id FROM threads WHERE cwd='\(procCwd.replacingOccurrences(of: "'", with: "''"))' ORDER BY updated_at DESC LIMIT 1")
             let parts = dbOut.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "|")
