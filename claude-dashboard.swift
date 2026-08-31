@@ -1058,6 +1058,7 @@ class TabSidebarView: NSView {
     var onTabAdd: (() -> Void)?
     var onTabRename: ((String, String) -> Void)?  // (tabId, newName)
     var onTabDelete: ((String) -> Void)?
+    var onTabReorder: ((String, Int) -> Void)?  // (tabId, direction: -1=up, +1=down)
 
     private let tabW: CGFloat = 56
     private let tabH: CGFloat = 28
@@ -1135,6 +1136,20 @@ class TabSidebarView: NSView {
         renameItem.target = self
         renameItem.representedObject = tab.id
         menu.addItem(renameItem)
+        // Move Up (not for first tab)
+        if let idx = tabs.firstIndex(where: { $0.id == tab.id }), idx > 0 {
+            let upItem = NSMenuItem(title: "Move Up", action: #selector(contextMoveUp(_:)), keyEquivalent: "")
+            upItem.target = self
+            upItem.representedObject = tab.id
+            menu.addItem(upItem)
+        }
+        // Move Down (not for last tab)
+        if let idx = tabs.firstIndex(where: { $0.id == tab.id }), idx < tabs.count - 1 {
+            let downItem = NSMenuItem(title: "Move Down", action: #selector(contextMoveDown(_:)), keyEquivalent: "")
+            downItem.target = self
+            downItem.representedObject = tab.id
+            menu.addItem(downItem)
+        }
         if tab.id != "main" {
             let deleteItem = NSMenuItem(title: "Delete", action: #selector(contextDelete(_:)), keyEquivalent: "")
             deleteItem.target = self
@@ -1181,6 +1196,16 @@ class TabSidebarView: NSView {
     @objc func contextDelete(_ sender: NSMenuItem) {
         guard let tabId = sender.representedObject as? String else { return }
         onTabDelete?(tabId)
+    }
+
+    @objc func contextMoveUp(_ sender: NSMenuItem) {
+        guard let tabId = sender.representedObject as? String else { return }
+        onTabReorder?(tabId, -1)
+    }
+
+    @objc func contextMoveDown(_ sender: NSMenuItem) {
+        guard let tabId = sender.representedObject as? String else { return }
+        onTabReorder?(tabId, 1)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -2848,7 +2873,7 @@ class DashboardView: NSView {
     // ── Draw ──
     override func draw(_ dirtyRect: NSRect) {
         let ss = sessions // local snapshot
-        if ss.isEmpty {
+        if ss.isEmpty && pinnedItems.isEmpty {
             let str = NSAttributedString(string: "No sessions", attributes: [
                 .font: NSFont.systemFont(ofSize: 13, weight: .regular),
                 .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
@@ -3724,6 +3749,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.tabSidebar.tabs = self.tabs
             self.poll()
         }
+        tabSidebar.onTabReorder = { [weak self] id, direction in
+            guard let self,
+                  let idx = self.tabs.firstIndex(where: { $0.id == id }) else { return }
+            let newIdx = idx + direction
+            guard newIdx >= 0, newIdx < self.tabs.count else { return }
+            self.tabs.swapAt(idx, newIdx)
+            saveTabs(self.tabs)
+            self.tabSidebar.tabs = self.tabs
+        }
 
         layoutViews()
         panel.center()
@@ -4463,6 +4497,19 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             saveTabs(tabs)
             tabSidebar.tabs = tabs
             pendingTabTransfers.removeAll()
+        }
+
+        // ── Auto-assign new sessions to first tab ──
+        if tabs.count > 1 {
+            let allAssigned = Set(tabs.flatMap(\.sessionIds))
+            let unassigned = ss.filter { !allAssigned.contains($0.sessionId) }
+            if !unassigned.isEmpty {
+                for s in unassigned {
+                    tabs[0].sessionIds.append(s.sessionId)
+                }
+                saveTabs(tabs)
+                tabSidebar.tabs = tabs
+            }
         }
 
         // ── Window ──
