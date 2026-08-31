@@ -1610,6 +1610,7 @@ struct ChatMember {
 
 class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     var messages: [ChatMessage] = [] { didSet { needsDisplay = true } }
+    var scrollToMessageId: Int?  // set before display to scroll to specific message
     var activeProject: String = ""
     var projects: [String] = []
     var members: [ChatMember] = [] { didSet { refreshMembers() } }
@@ -1980,8 +1981,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         let full = NSMutableAttributedString()
         let df = DateFormatter()
         df.dateFormat = "HH:mm"
+        var targetCharIdx: Int?
 
         for (i, msg) in messages.enumerated() {
+            if msg.id == scrollToMessageId { targetCharIdx = full.length }
             let timeStr = df.string(from: Date(timeIntervalSince1970: Double(msg.timestamp)))
             let senderColor: NSColor = msg.senderType == "claude" ?
                 NSColor(calibratedRed: 0.25, green: 0.72, blue: 0.35, alpha: 1) :
@@ -2032,8 +2035,15 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         } else {
             (tv as! ChatMessageTextView).topPadding = 4
             tv.sizeToFit()
-            tv.scrollToEndOfDocument(nil)
+            if let idx = targetCharIdx {
+                let glyphIdx = lm.glyphIndexForCharacter(at: idx)
+                let rect = lm.boundingRect(forGlyphRange: NSRange(location: glyphIdx, length: 1), in: tv.textContainer!)
+                tv.scroll(NSPoint(x: 0, y: rect.origin.y + tv.textContainerOrigin.y))
+            } else {
+                tv.scrollToEndOfDocument(nil)
+            }
         }
+        scrollToMessageId = nil
     }
 }
 
@@ -3565,13 +3575,17 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         notifView.onClickNotification = { [weak self] notif in
             self?.dismissNotification(notif.id)
-            // Chat notification — open chat panel
+            // Chat notification — open chat panel and scroll to message
             if notif.tty.hasPrefix("chat:") {
                 let channel = String(notif.tty.dropFirst(5))
                 if let self {
                     if !self.showChat { self.showChat = true }
                     self.chatView.activeProject = channel
                     self.chatView.updateChannelLabel()
+                    // Extract message id from "chat-123" notification id
+                    if notif.id.hasPrefix("chat-"), let msgId = Int(notif.id.dropFirst(5)) {
+                        self.chatView.scrollToMessageId = msgId
+                    }
                     self.lastChatFingerprint = ""
                     self.pollChat()
                 }
