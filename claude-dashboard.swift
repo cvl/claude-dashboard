@@ -4552,12 +4552,12 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             pendingTabTransfers.removeAll()
         }
 
-        // ── Auto-assign new sessions to first tab ──
+        // ── Auto-assign truly new sessions to first tab ──
         if tabs.count > 1 {
             let allAssigned = Set(tabs.flatMap(\.sessionIds))
-            let unassigned = ss.filter { !allAssigned.contains($0.sessionId) }
-            if !unassigned.isEmpty {
-                for s in unassigned {
+            let brandNew = ss.filter { !allAssigned.contains($0.sessionId) && knownSessions[$0.sessionId] == nil }
+            if !brandNew.isEmpty {
+                for s in brandNew {
                     tabs[0].sessionIds.append(s.sessionId)
                 }
                 saveTabs(tabs)

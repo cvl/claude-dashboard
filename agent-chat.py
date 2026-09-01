@@ -164,15 +164,20 @@ def cmd_read(args):
             first_read = False
 
     # Fetch messages: broadcasts + DMs to this session
-    # First read: only last 5 days to avoid dumping entire history
+    # First read: show ALL recent messages (last 5 days) so new agents get context
     time_filter = ""
     if first_read and not show_all:
         time_filter = f"AND created_at > {int(time.time()) - 5 * 86400}"
-    rows = db.execute(f"""SELECT id, sender_name, sender_type, recipient, body, created_at
-        FROM messages WHERE project_id=? AND id>? AND (recipient IS NULL OR recipient=? OR sender_name=?)
-        {time_filter}
-        ORDER BY id ASC""",
-        (project, cursor, name, name)).fetchall()
+        rows = db.execute(f"""SELECT id, sender_name, sender_type, recipient, body, created_at
+            FROM messages WHERE project_id=? AND id>?
+            {time_filter}
+            ORDER BY id ASC""",
+            (project, cursor)).fetchall()
+    else:
+        rows = db.execute(f"""SELECT id, sender_name, sender_type, recipient, body, created_at
+            FROM messages WHERE project_id=? AND id>? AND (recipient IS NULL OR recipient=? OR sender_name=?)
+            ORDER BY id ASC""",
+            (project, cursor, name, name)).fetchall()
 
     if not rows:
         print(f"No new messages in {project}")
