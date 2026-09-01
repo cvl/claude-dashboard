@@ -1814,6 +1814,17 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
 
     var onSendDM: ((String, String, String) -> Void)?  // (project, message, target)
 
+    func startReply(to sender: String, quote: String) {
+        let truncated = quote.prefix(100)
+        let ellipsis = quote.count > 100 ? "…" : ""
+        inputTV?.string = "@\(sender) re: \"\(truncated)\(ellipsis)\" — "
+        inputTV?.window?.makeFirstResponder(inputTV)
+        // Move cursor to end
+        if let tv = inputTV {
+            tv.setSelectedRange(NSRange(location: tv.string.count, length: 0))
+        }
+    }
+
     // NSTextViewDelegate
     func textDidChange(_ notification: Notification) {}
 
@@ -1974,6 +1985,9 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             tv.isVerticallyResizable = true
             tv.isHorizontallyResizable = false
             tv.textContainer?.widthTracksTextView = true
+            (tv as! ChatMessageTextView).onReply = { [weak self] sender, quote in
+                self?.startReply(to: sender, quote: quote)
+            }
             sv.documentView = tv
             chatTextView = tv
         }
@@ -2007,8 +2021,19 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             }
             full.append(NSAttributedString(string: "\(sender)\(dm)", attributes: [
                 .font: font, .foregroundColor: senderColor]))
-            full.append(NSAttributedString(string: "  \(timeStr)\n", attributes: [
+            full.append(NSAttributedString(string: "  \(timeStr)", attributes: [
                 .font: smallFont, .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)]))
+            // Reply link for non-human messages
+            if msg.senderType != "human" {
+                let quotedBody = msg.body.prefix(200).replacingOccurrences(of: "|", with: "/")
+                full.append(NSAttributedString(string: "  Reply", attributes: [
+                    .font: smallFont,
+                    .foregroundColor: NSColor.controlAccentColor,
+                    .underlineStyle: NSUnderlineStyle.single.rawValue,
+                    .link: "reply:\(msg.senderName)|\(quotedBody)",
+                    .cursor: NSCursor.pointingHand]))
+            }
+            full.append(NSAttributedString(string: "\n"))
             // Body
             full.append(NSAttributedString(string: msg.body, attributes: [
                 .font: bodyFont, .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)]))
@@ -2082,6 +2107,7 @@ class AttachedChildWindow: NSWindow {
 /// Message display — selectable but doesn't grab focus on its own
 class ChatMessageTextView: NSTextView {
     var topPadding: CGFloat = 4
+    var onReply: ((String, String) -> Void)?  // (senderName, quotedBody)
 
     override var acceptsFirstResponder: Bool { false }
     override func becomeFirstResponder() -> Bool { false }
@@ -2091,6 +2117,19 @@ class ChatMessageTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        // Check for reply link click
+        let loc = convert(event.locationInWindow, from: nil)
+        let adjusted = NSPoint(x: loc.x - textContainerOrigin.x, y: loc.y - textContainerOrigin.y)
+        let charIdx = layoutManager!.characterIndex(for: adjusted, in: textContainer!, fractionOfDistanceBetweenInsertionPoints: nil)
+        if charIdx < textStorage!.length,
+           let link = textStorage!.attribute(.link, at: charIdx, effectiveRange: nil) as? String,
+           link.hasPrefix("reply:") {
+            let parts = link.dropFirst(6).split(separator: "|", maxSplits: 1)
+            if parts.count == 2 {
+                onReply?(String(parts[0]), String(parts[1]))
+            }
+            return
+        }
         window?.makeFirstResponder(self)
         super.mouseDown(with: event)
     }
