@@ -1058,6 +1058,7 @@ class TabSidebarView: NSView {
     var onTabAdd: (() -> Void)?
     var onTabRename: ((String, String) -> Void)?  // (tabId, newName)
     var onTabDelete: ((String) -> Void)?
+    var onTabReorder: ((String, Int) -> Void)?  // (tabId, direction: -1=up, +1=down)
 
     private let tabW: CGFloat = 56
     private let tabH: CGFloat = 28
@@ -1135,6 +1136,20 @@ class TabSidebarView: NSView {
         renameItem.target = self
         renameItem.representedObject = tab.id
         menu.addItem(renameItem)
+        // Move Up (not for first tab)
+        if let idx = tabs.firstIndex(where: { $0.id == tab.id }), idx > 0 {
+            let upItem = NSMenuItem(title: "Move Up", action: #selector(contextMoveUp(_:)), keyEquivalent: "")
+            upItem.target = self
+            upItem.representedObject = tab.id
+            menu.addItem(upItem)
+        }
+        // Move Down (not for last tab)
+        if let idx = tabs.firstIndex(where: { $0.id == tab.id }), idx < tabs.count - 1 {
+            let downItem = NSMenuItem(title: "Move Down", action: #selector(contextMoveDown(_:)), keyEquivalent: "")
+            downItem.target = self
+            downItem.representedObject = tab.id
+            menu.addItem(downItem)
+        }
         if tab.id != "main" {
             let deleteItem = NSMenuItem(title: "Delete", action: #selector(contextDelete(_:)), keyEquivalent: "")
             deleteItem.target = self
@@ -1181,6 +1196,16 @@ class TabSidebarView: NSView {
     @objc func contextDelete(_ sender: NSMenuItem) {
         guard let tabId = sender.representedObject as? String else { return }
         onTabDelete?(tabId)
+    }
+
+    @objc func contextMoveUp(_ sender: NSMenuItem) {
+        guard let tabId = sender.representedObject as? String else { return }
+        onTabReorder?(tabId, -1)
+    }
+
+    @objc func contextMoveDown(_ sender: NSMenuItem) {
+        guard let tabId = sender.representedObject as? String else { return }
+        onTabReorder?(tabId, 1)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -1585,6 +1610,7 @@ struct ChatMember {
 
 class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     var messages: [ChatMessage] = [] { didSet { needsDisplay = true } }
+    var scrollToMessageId: Int?  // set before display to scroll to specific message
     var activeProject: String = ""
     var projects: [String] = []
     var members: [ChatMember] = [] { didSet { refreshMembers() } }
@@ -1788,6 +1814,17 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
 
     var onSendDM: ((String, String, String) -> Void)?  // (project, message, target)
 
+    func startReply(to sender: String, quote: String) {
+        let truncated = quote.prefix(100)
+        let ellipsis = quote.count > 100 ? "…" : ""
+        inputTV?.string = "@\(sender) re: \"\(truncated)\(ellipsis)\" — "
+        inputTV?.window?.makeFirstResponder(inputTV)
+        // Move cursor to end
+        if let tv = inputTV {
+            tv.setSelectedRange(NSRange(location: tv.string.count, length: 0))
+        }
+    }
+
     // NSTextViewDelegate
     func textDidChange(_ notification: Notification) {}
 
@@ -1948,6 +1985,9 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             tv.isVerticallyResizable = true
             tv.isHorizontallyResizable = false
             tv.textContainer?.widthTracksTextView = true
+            (tv as! ChatMessageTextView).onReply = { [weak self] sender, quote in
+                self?.startReply(to: sender, quote: quote)
+            }
             sv.documentView = tv
             chatTextView = tv
         }
@@ -1955,8 +1995,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         let full = NSMutableAttributedString()
         let df = DateFormatter()
         df.dateFormat = "HH:mm"
+        var targetCharIdx: Int?
 
         for (i, msg) in messages.enumerated() {
+            if msg.id == scrollToMessageId { targetCharIdx = full.length }
             let timeStr = df.string(from: Date(timeIntervalSince1970: Double(msg.timestamp)))
             let senderColor: NSColor = msg.senderType == "claude" ?
                 NSColor(calibratedRed: 0.25, green: 0.72, blue: 0.35, alpha: 1) :
@@ -1979,8 +2021,19 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             }
             full.append(NSAttributedString(string: "\(sender)\(dm)", attributes: [
                 .font: font, .foregroundColor: senderColor]))
-            full.append(NSAttributedString(string: "  \(timeStr)\n", attributes: [
+            full.append(NSAttributedString(string: "  \(timeStr)", attributes: [
                 .font: smallFont, .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)]))
+            // Reply link for non-human messages
+            if msg.senderType != "human" {
+                let quotedBody = msg.body.prefix(200).replacingOccurrences(of: "|", with: "/")
+                full.append(NSAttributedString(string: "  Reply", attributes: [
+                    .font: smallFont,
+                    .foregroundColor: NSColor.controlAccentColor,
+                    .underlineStyle: NSUnderlineStyle.single.rawValue,
+                    .link: "reply:\(msg.senderName)|\(quotedBody)",
+                    .cursor: NSCursor.pointingHand]))
+            }
+            full.append(NSAttributedString(string: "\n"))
             // Body
             full.append(NSAttributedString(string: msg.body, attributes: [
                 .font: bodyFont, .foregroundColor: NSColor(calibratedWhite: 0.11, alpha: 1)]))
@@ -2007,8 +2060,15 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         } else {
             (tv as! ChatMessageTextView).topPadding = 4
             tv.sizeToFit()
-            tv.scrollToEndOfDocument(nil)
+            if let idx = targetCharIdx {
+                let glyphIdx = lm.glyphIndexForCharacter(at: idx)
+                let rect = lm.boundingRect(forGlyphRange: NSRange(location: glyphIdx, length: 1), in: tv.textContainer!)
+                tv.scroll(NSPoint(x: 0, y: rect.origin.y + tv.textContainerOrigin.y))
+            } else {
+                tv.scrollToEndOfDocument(nil)
+            }
         }
+        scrollToMessageId = nil
     }
 }
 
@@ -2047,6 +2107,7 @@ class AttachedChildWindow: NSWindow {
 /// Message display — selectable but doesn't grab focus on its own
 class ChatMessageTextView: NSTextView {
     var topPadding: CGFloat = 4
+    var onReply: ((String, String) -> Void)?  // (senderName, quotedBody)
 
     override var acceptsFirstResponder: Bool { false }
     override func becomeFirstResponder() -> Bool { false }
@@ -2056,6 +2117,19 @@ class ChatMessageTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        // Check for reply link click
+        let loc = convert(event.locationInWindow, from: nil)
+        let adjusted = NSPoint(x: loc.x - textContainerOrigin.x, y: loc.y - textContainerOrigin.y)
+        let charIdx = layoutManager!.characterIndex(for: adjusted, in: textContainer!, fractionOfDistanceBetweenInsertionPoints: nil)
+        if charIdx < textStorage!.length,
+           let link = textStorage!.attribute(.link, at: charIdx, effectiveRange: nil) as? String,
+           link.hasPrefix("reply:") {
+            let parts = link.dropFirst(6).split(separator: "|", maxSplits: 1)
+            if parts.count == 2 {
+                onReply?(String(parts[0]), String(parts[1]))
+            }
+            return
+        }
         window?.makeFirstResponder(self)
         super.mouseDown(with: event)
     }
@@ -2848,7 +2922,7 @@ class DashboardView: NSView {
     // ── Draw ──
     override func draw(_ dirtyRect: NSRect) {
         let ss = sessions // local snapshot
-        if ss.isEmpty {
+        if ss.isEmpty && pinnedItems.isEmpty {
             let str = NSAttributedString(string: "No sessions", attributes: [
                 .font: NSFont.systemFont(ofSize: 13, weight: .regular),
                 .foregroundColor: NSColor(calibratedWhite: 0.56, alpha: 1)])
@@ -3540,13 +3614,17 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         notifView.onClickNotification = { [weak self] notif in
             self?.dismissNotification(notif.id)
-            // Chat notification — open chat panel
+            // Chat notification — open chat panel and scroll to message
             if notif.tty.hasPrefix("chat:") {
                 let channel = String(notif.tty.dropFirst(5))
                 if let self {
                     if !self.showChat { self.showChat = true }
                     self.chatView.activeProject = channel
                     self.chatView.updateChannelLabel()
+                    // Extract message id from "chat-123" notification id
+                    if notif.id.hasPrefix("chat-"), let msgId = Int(notif.id.dropFirst(5)) {
+                        self.chatView.scrollToMessageId = msgId
+                    }
                     self.lastChatFingerprint = ""
                     self.pollChat()
                 }
@@ -3723,6 +3801,15 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.tabSidebar.activeTabId = self.activeTabId
             self.tabSidebar.tabs = self.tabs
             self.poll()
+        }
+        tabSidebar.onTabReorder = { [weak self] id, direction in
+            guard let self,
+                  let idx = self.tabs.firstIndex(where: { $0.id == id }) else { return }
+            let newIdx = idx + direction
+            guard newIdx >= 0, newIdx < self.tabs.count else { return }
+            self.tabs.swapAt(idx, newIdx)
+            saveTabs(self.tabs)
+            self.tabSidebar.tabs = self.tabs
         }
 
         layoutViews()
@@ -4463,6 +4550,19 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             saveTabs(tabs)
             tabSidebar.tabs = tabs
             pendingTabTransfers.removeAll()
+        }
+
+        // ── Auto-assign new sessions to first tab ──
+        if tabs.count > 1 {
+            let allAssigned = Set(tabs.flatMap(\.sessionIds))
+            let unassigned = ss.filter { !allAssigned.contains($0.sessionId) }
+            if !unassigned.isEmpty {
+                for s in unassigned {
+                    tabs[0].sessionIds.append(s.sessionId)
+                }
+                saveTabs(tabs)
+                tabSidebar.tabs = tabs
+            }
         }
 
         // ── Window ──
