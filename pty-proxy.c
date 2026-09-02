@@ -497,14 +497,18 @@ int main(int argc, char *argv[]) {
                 if (n > 0) {
                     /* Strip trailing newlines */
                     while (n > 0 && (inject_buf[n-1] == '\n' || inject_buf[n-1] == '\r')) n--;
+                    /* Truncate to 2KB to stay well within PTY buffer limits */
+                    if (n > 2048) n = 2048;
                     inject_buf[n] = '\0';
-                    /* Non-blocking write to avoid hanging if PTY buffer is full */
+                    /* Non-blocking write to avoid stalling the proxy poll loop */
                     int flags = fcntl(master_fd, F_GETFL);
                     fcntl(master_fd, F_SETFL, flags | O_NONBLOCK);
-                    write(master_fd, inject_buf, n);
-                    usleep(50000);
-                    write(master_fd, "\r", 1);
-                    fcntl(master_fd, F_SETFL, flags);  /* restore blocking */
+                    ssize_t w = write(master_fd, inject_buf, n);
+                    if (w > 0) {
+                        usleep(50000);
+                        write(master_fd, "\r", 1);
+                    }
+                    fcntl(master_fd, F_SETFL, flags);
                 }
             }
         }
