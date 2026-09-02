@@ -4528,10 +4528,17 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
+        // ── Sync terminalTTYs from disk (cdash registers terminals externally) ──
+        let diskTabs = loadTabs()
+        for dt in diskTabs {
+            if let idx = tabs.firstIndex(where: { $0.id == dt.id }) {
+                tabs[idx].terminalTTYs = dt.terminalTTYs
+            }
+        }
+
         // ── Apply pending tab/order transfers from resume detection ──
         if !pendingTabTransfers.isEmpty {
             for transfer in pendingTabTransfers {
-                // Transfer tab assignment
                 for i in 0..<tabs.count {
                     if tabs[i].sessionIds.contains(transfer.oldId) {
                         tabs[i].sessionIds.removeAll { $0 == transfer.oldId }
@@ -4540,7 +4547,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         }
                     }
                 }
-                // Transfer order position
                 var order = sessionOrder
                 if let idx = order.firstIndex(of: transfer.oldId) {
                     order[idx] = transfer.newId
@@ -4564,19 +4570,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 tabSidebar.tabs = tabs
             }
         }
-
-        // ── Sync terminalTTYs from disk (cdash registers terminals externally) ──
-        let diskTabs = loadTabs()
-        var termTabsChanged = false
-        for dt in diskTabs {
-            if let idx = tabs.firstIndex(where: { $0.id == dt.id }) {
-                if tabs[idx].terminalTTYs != dt.terminalTTYs {
-                    tabs[idx].terminalTTYs = dt.terminalTTYs
-                    termTabsChanged = true
-                }
-            }
-        }
-        if termTabsChanged { tabSidebar.tabs = tabs }
 
         // ── Window ──
         let orderedSessions = applyCustomOrder(ss)
