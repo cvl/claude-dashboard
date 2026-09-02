@@ -114,13 +114,12 @@ static void init_session_info(void) {
     if (p) snprintf(session_project, sizeof(session_project), "%s", p);
 }
 
-/* Logging — appends to /tmp/claude-dash/<pid>.proxy.log, keeps last 200 lines */
+/* Logging — appends to /tmp/claude-dash/<pid>.proxy.log, truncates at 50KB */
 static void proxy_log(const char *fmt, ...) {
     char path[128];
     snprintf(path, sizeof(path), STATE_DIR "/%d.proxy.log", child_pid ? child_pid : (int)getpid());
     FILE *f = fopen(path, "a");
     if (!f) return;
-    /* Timestamp */
     time_t now = time(NULL);
     struct tm tm;
     localtime_r(&now, &tm);
@@ -130,7 +129,21 @@ static void proxy_log(const char *fmt, ...) {
     vfprintf(f, fmt, ap);
     va_end(ap);
     fprintf(f, "\n");
+    long sz = ftell(f);
     fclose(f);
+    /* Truncate: keep last 25KB when file exceeds 50KB */
+    if (sz > 50000) {
+        f = fopen(path, "r");
+        if (f) {
+            fseek(f, sz - 25000, SEEK_SET);
+            char *buf = malloc(25001);
+            size_t n = fread(buf, 1, 25000, f);
+            fclose(f);
+            f = fopen(path, "w");
+            if (f) { fwrite(buf, 1, n, f); fclose(f); }
+            free(buf);
+        }
+    }
 }
 
 static void write_state(pid_t pid, state_t state) {
