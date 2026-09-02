@@ -126,12 +126,17 @@ def cmd_send(args):
 
     for sf_pid, sf_event, sf_proxy_pid, sf_tty, sf_name, sf_project in state_files:
         if sf_name not in target_names: continue
-        # Append to inject file — multiple messages accumulate into single prompt
         snippet = message[:150] + ("..." if len(message) > 150 else "")
         if "joined the chat" in message:
             line = f"- {name} joined the chat channel"
+        elif recipient:
+            line = (f"[CHAT from {name} → you]: {snippet}\n"
+                    f"(Reply with `cdash chat send \"msg\" --to {name}`, or broadcast with `cdash chat send \"msg\"`. "
+                    f"Only respond if you have something substantive to add.)")
         else:
-            line = f"- {name}: {snippet}"
+            line = (f"[CHAT broadcast from {name}]: {snippet}\n"
+                    f"(FYI only — reply with `cdash chat send \"msg\"` ONLY if you have relevant input. "
+                    f"Do not acknowledge or respond unless you have something substantive to add.)")
         append_inject(sf_pid, line + "\n")
 
     active = len([r for r in rows if r[1] and r[1] > 0])
