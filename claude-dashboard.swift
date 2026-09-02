@@ -4565,6 +4565,19 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
+        // ── Sync terminalTTYs from disk (cdash registers terminals externally) ──
+        let diskTabs = loadTabs()
+        var termTabsChanged = false
+        for dt in diskTabs {
+            if let idx = tabs.firstIndex(where: { $0.id == dt.id }) {
+                if tabs[idx].terminalTTYs != dt.terminalTTYs {
+                    tabs[idx].terminalTTYs = dt.terminalTTYs
+                    termTabsChanged = true
+                }
+            }
+        }
+        if termTabsChanged { tabSidebar.tabs = tabs }
+
         // ── Window ──
         let orderedSessions = applyCustomOrder(ss)
         dashView.sessions = sessionsForActiveTab(orderedSessions)
