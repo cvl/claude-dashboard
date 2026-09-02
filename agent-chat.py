@@ -135,8 +135,8 @@ def cmd_send(args):
                     f"Only respond if you have something substantive to add.)")
         else:
             line = (f"[CHAT broadcast from {name}]: {snippet}\n"
-                    f"(FYI only — reply with `cdash chat send \"msg\"` ONLY if you have relevant input. "
-                    f"Do not acknowledge or respond unless you have something substantive to add.)")
+                    f"(FYI — reply with `cdash chat send \"msg\"` ONLY if you have relevant input. "
+                    f"Do not acknowledge or respond in chat unless you have something substantive to add.)")
         append_inject(sf_pid, line + "\n")
 
     active = len([r for r in rows if r[1] and r[1] > 0])
