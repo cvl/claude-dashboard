@@ -498,10 +498,13 @@ int main(int argc, char *argv[]) {
                     /* Strip trailing newlines */
                     while (n > 0 && (inject_buf[n-1] == '\n' || inject_buf[n-1] == '\r')) n--;
                     inject_buf[n] = '\0';
-                    /* Send inject content as-is — chat messages are self-describing */
+                    /* Non-blocking write to avoid hanging if PTY buffer is full */
+                    int flags = fcntl(master_fd, F_GETFL);
+                    fcntl(master_fd, F_SETFL, flags | O_NONBLOCK);
                     write(master_fd, inject_buf, n);
                     usleep(50000);
                     write(master_fd, "\r", 1);
+                    fcntl(master_fd, F_SETFL, flags);  /* restore blocking */
                 }
             }
         }
