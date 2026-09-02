@@ -23,6 +23,7 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <ctype.h>
+#include <stdarg.h>
 
 #define STATE_DIR "/tmp/claude-dash"
 #define RING_SIZE 8192
@@ -111,6 +112,25 @@ static void init_session_info(void) {
     if (n) snprintf(session_name, sizeof(session_name), "%s", n);
     const char *p = getenv("CDASH_PROJECT");
     if (p) snprintf(session_project, sizeof(session_project), "%s", p);
+}
+
+/* Logging — appends to /tmp/claude-dash/<pid>.proxy.log, keeps last 200 lines */
+static void proxy_log(const char *fmt, ...) {
+    char path[128];
+    snprintf(path, sizeof(path), STATE_DIR "/%d.proxy.log", child_pid ? child_pid : (int)getpid());
+    FILE *f = fopen(path, "a");
+    if (!f) return;
+    /* Timestamp */
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    fprintf(f, "%02d:%02d:%02d ", tm.tm_hour, tm.tm_min, tm.tm_sec);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fprintf(f, "\n");
+    fclose(f);
 }
 
 static void write_state(pid_t pid, state_t state) {
@@ -389,6 +409,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* Parent: forward window size */
+    proxy_log("START pid=%d proxy=%d cmd=%s name=%s", child_pid, getpid(), argv[1], session_name);
     struct winsize ws;
     if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0)
         ioctl(master_fd, TIOCSWINSZ, &ws);
@@ -440,7 +461,10 @@ int main(int argc, char *argv[]) {
         }
 
         /* Check for HUP */
-        if (fds[1].revents & (POLLHUP | POLLERR)) break;
+        if (fds[1].revents & (POLLHUP | POLLERR)) {
+            proxy_log("HUP/ERR on master_fd revents=0x%x", fds[1].revents);
+            break;
+        }
 
         /* Periodic state detection */
         if (agent_type) {
@@ -477,6 +501,8 @@ int main(int argc, char *argv[]) {
                 /* needs_input → other: no debounce, transition immediately */
 
                 if (new_state != current_state) {
+                    const char *labels[] = {"idle","working","needs_input"};
+                    proxy_log("STATE %s → %s", labels[current_state], labels[new_state]);
                     write_state(child_pid, new_state);
                     current_state = new_state;
                 }
@@ -504,9 +530,12 @@ int main(int argc, char *argv[]) {
                     int flags = fcntl(master_fd, F_GETFL);
                     fcntl(master_fd, F_SETFL, flags | O_NONBLOCK);
                     ssize_t w = write(master_fd, inject_buf, n);
+                    proxy_log("INJECT %zd/%zu bytes written", w, n);
                     if (w > 0) {
                         usleep(50000);
                         write(master_fd, "\r", 1);
+                    } else {
+                        proxy_log("INJECT FAILED errno=%d", errno);
                     }
                     fcntl(master_fd, F_SETFL, flags);
                 }
@@ -523,6 +552,7 @@ int main(int argc, char *argv[]) {
                 write(STDOUT_FILENO, buf, n);
             }
             /* Write final idle state (cleanup_state will remove it on exit) */
+            proxy_log("EXIT child exited status=%d", status);
             if (agent_type) write_state(child_pid, ST_IDLE);
             cleanup();
             return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
