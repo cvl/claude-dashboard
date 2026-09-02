@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <ctype.h>
 #include <stdarg.h>
+#include <dirent.h>
 
 #define STATE_DIR "/tmp/claude-dash"
 #define RING_SIZE 8192
@@ -423,6 +424,42 @@ int main(int argc, char *argv[]) {
 
     /* Parent: forward window size */
     proxy_log("START pid=%d proxy=%d cmd=%s name=%s", child_pid, getpid(), argv[1], session_name);
+
+    /* Prune old .proxy.log files — keep newest 50 */
+    {
+        DIR *d = opendir(STATE_DIR);
+        if (d) {
+            struct { char name[64]; time_t mtime; } logs[512];
+            int count = 0;
+            struct dirent *ent;
+            while ((ent = readdir(d)) && count < 512) {
+                size_t len = strlen(ent->d_name);
+                if (len > 10 && strcmp(ent->d_name + len - 10, ".proxy.log") == 0) {
+                    snprintf(logs[count].name, 64, "%s", ent->d_name);
+                    char full[192];
+                    snprintf(full, sizeof(full), STATE_DIR "/%s", ent->d_name);
+                    struct stat st;
+                    logs[count].mtime = (stat(full, &st) == 0) ? st.st_mtime : 0;
+                    count++;
+                }
+            }
+            closedir(d);
+            if (count > 50) {
+                /* Sort by mtime ascending (oldest first) */
+                for (int i = 0; i < count - 1; i++)
+                    for (int j = i + 1; j < count; j++)
+                        if (logs[i].mtime > logs[j].mtime) {
+                            typeof(logs[0]) tmp = logs[i]; logs[i] = logs[j]; logs[j] = tmp;
+                        }
+                for (int i = 0; i < count - 50; i++) {
+                    char full[192];
+                    snprintf(full, sizeof(full), STATE_DIR "/%s", logs[i].name);
+                    unlink(full);
+                }
+            }
+        }
+    }
+
     struct winsize ws;
     if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0)
         ioctl(master_fd, TIOCSWINSZ, &ws);
