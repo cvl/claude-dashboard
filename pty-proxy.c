@@ -573,8 +573,12 @@ int main(int argc, char *argv[]) {
                 if (n > 0) {
                     /* Strip trailing newlines */
                     while (n > 0 && (inject_buf[n-1] == '\n' || inject_buf[n-1] == '\r')) n--;
-                    /* Truncate to 2KB to stay well within PTY buffer limits */
-                    if (n > 2048) n = 2048;
+                    /* Truncate to 2KB — keep newest (tail) */
+                    if (n > 2048) {
+                        size_t skip = n - 2048;
+                        memmove(inject_buf, inject_buf + skip, 2048);
+                        n = 2048;
+                    }
                     inject_buf[n] = '\0';
                     /* Append single chat footer based on content type */
                     if (strstr(inject_buf, "[CHAT from ")) {
