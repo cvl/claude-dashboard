@@ -23,6 +23,8 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <ctype.h>
+#include <stdarg.h>
+#include <dirent.h>
 
 #define STATE_DIR "/tmp/claude-dash"
 #define RING_SIZE 8192
@@ -111,6 +113,38 @@ static void init_session_info(void) {
     if (n) snprintf(session_name, sizeof(session_name), "%s", n);
     const char *p = getenv("CDASH_PROJECT");
     if (p) snprintf(session_project, sizeof(session_project), "%s", p);
+}
+
+/* Logging — appends to /tmp/claude-dash/<pid>.proxy.log, truncates at 50KB */
+static void proxy_log(const char *fmt, ...) {
+    char path[128];
+    snprintf(path, sizeof(path), STATE_DIR "/%d.proxy.log", child_pid ? child_pid : (int)getpid());
+    FILE *f = fopen(path, "a");
+    if (!f) return;
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    fprintf(f, "%02d:%02d:%02d ", tm.tm_hour, tm.tm_min, tm.tm_sec);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fprintf(f, "\n");
+    long sz = ftell(f);
+    fclose(f);
+    /* Truncate: keep last 25KB when file exceeds 50KB */
+    if (sz > 50000) {
+        f = fopen(path, "r");
+        if (f) {
+            fseek(f, sz - 25000, SEEK_SET);
+            char *buf = malloc(25001);
+            size_t n = fread(buf, 1, 25000, f);
+            fclose(f);
+            f = fopen(path, "w");
+            if (f) { fwrite(buf, 1, n, f); fclose(f); }
+            free(buf);
+        }
+    }
 }
 
 static void write_state(pid_t pid, state_t state) {
@@ -389,6 +423,43 @@ int main(int argc, char *argv[]) {
     }
 
     /* Parent: forward window size */
+    proxy_log("START pid=%d proxy=%d cmd=%s name=%s", child_pid, getpid(), argv[1], session_name);
+
+    /* Prune old .proxy.log files — keep newest 50 */
+    {
+        DIR *d = opendir(STATE_DIR);
+        if (d) {
+            struct { char name[64]; time_t mtime; } logs[512];
+            int count = 0;
+            struct dirent *ent;
+            while ((ent = readdir(d)) && count < 512) {
+                size_t len = strlen(ent->d_name);
+                if (len > 10 && strcmp(ent->d_name + len - 10, ".proxy.log") == 0) {
+                    snprintf(logs[count].name, 64, "%s", ent->d_name);
+                    char full[192];
+                    snprintf(full, sizeof(full), STATE_DIR "/%s", ent->d_name);
+                    struct stat st;
+                    logs[count].mtime = (stat(full, &st) == 0) ? st.st_mtime : 0;
+                    count++;
+                }
+            }
+            closedir(d);
+            if (count > 50) {
+                /* Sort by mtime ascending (oldest first) */
+                for (int i = 0; i < count - 1; i++)
+                    for (int j = i + 1; j < count; j++)
+                        if (logs[i].mtime > logs[j].mtime) {
+                            typeof(logs[0]) tmp = logs[i]; logs[i] = logs[j]; logs[j] = tmp;
+                        }
+                for (int i = 0; i < count - 50; i++) {
+                    char full[192];
+                    snprintf(full, sizeof(full), STATE_DIR "/%s", logs[i].name);
+                    unlink(full);
+                }
+            }
+        }
+    }
+
     struct winsize ws;
     if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0)
         ioctl(master_fd, TIOCSWINSZ, &ws);
@@ -440,7 +511,10 @@ int main(int argc, char *argv[]) {
         }
 
         /* Check for HUP */
-        if (fds[1].revents & (POLLHUP | POLLERR)) break;
+        if (fds[1].revents & (POLLHUP | POLLERR)) {
+            proxy_log("HUP/ERR on master_fd revents=0x%x", fds[1].revents);
+            break;
+        }
 
         /* Periodic state detection */
         if (agent_type) {
@@ -477,6 +551,8 @@ int main(int argc, char *argv[]) {
                 /* needs_input → other: no debounce, transition immediately */
 
                 if (new_state != current_state) {
+                    const char *labels[] = {"idle","working","needs_input"};
+                    proxy_log("STATE %s → %s", labels[current_state], labels[new_state]);
                     write_state(child_pid, new_state);
                     current_state = new_state;
                 }
@@ -497,20 +573,45 @@ int main(int argc, char *argv[]) {
                 if (n > 0) {
                     /* Strip trailing newlines */
                     while (n > 0 && (inject_buf[n-1] == '\n' || inject_buf[n-1] == '\r')) n--;
-                    inject_buf[n] = '\0';
-                    if (inject_buf[0] == '-' && inject_buf[1] == ' ') {
-                        /* Chat messages — wrap with header/footer */
-                        const char *prefix = "New chat messages:\n";
-                        const char *suffix = "\nRun `cdash chat read` for full context, `cdash chat send \"reply\"` to respond.";
-                        write(master_fd, prefix, strlen(prefix));
-                        write(master_fd, inject_buf, n);
-                        write(master_fd, suffix, strlen(suffix));
-                    } else {
-                        /* System notice (join/remove/intro) — send as-is */
-                        write(master_fd, inject_buf, n);
+                    /* Truncate to 2KB — keep newest (tail) */
+                    if (n > 2048) {
+                        size_t skip = n - 2048;
+                        memmove(inject_buf, inject_buf + skip, 2048);
+                        n = 2048;
                     }
-                    usleep(50000);
-                    write(master_fd, "\r", 1);
+                    inject_buf[n] = '\0';
+                    /* Append single chat footer based on content type */
+                    if (strstr(inject_buf, "[CHAT from ")) {
+                        /* Has DM(s) — use DM footer (covers broadcast syntax too) */
+                        const char *footer = "\n(Reply with `cdash chat send \"msg\" --to NAME`, or broadcast with `cdash chat send \"msg\"`.)";
+                        size_t flen = strlen(footer);
+                        if (n + flen < sizeof(inject_buf) - 1) {
+                            memcpy(inject_buf + n, footer, flen);
+                            n += flen;
+                            inject_buf[n] = '\0';
+                        }
+                    } else if (strstr(inject_buf, "[CHAT broadcast")) {
+                        /* Broadcast only */
+                        const char *footer = "\n(FYI — reply with `cdash chat send \"msg\"` ONLY if you have relevant input. Do not acknowledge or respond in chat unless you have something substantive to add.)";
+                        size_t flen = strlen(footer);
+                        if (n + flen < sizeof(inject_buf) - 1) {
+                            memcpy(inject_buf + n, footer, flen);
+                            n += flen;
+                            inject_buf[n] = '\0';
+                        }
+                    }
+                    /* Non-blocking write to avoid stalling the proxy poll loop */
+                    int flags = fcntl(master_fd, F_GETFL);
+                    fcntl(master_fd, F_SETFL, flags | O_NONBLOCK);
+                    ssize_t w = write(master_fd, inject_buf, n);
+                    proxy_log("INJECT %zd/%zu bytes written", w, n);
+                    if (w > 0) {
+                        usleep(50000);
+                        write(master_fd, "\r", 1);
+                    } else {
+                        proxy_log("INJECT FAILED errno=%d", errno);
+                    }
+                    fcntl(master_fd, F_SETFL, flags);
                 }
             }
         }
@@ -525,6 +626,7 @@ int main(int argc, char *argv[]) {
                 write(STDOUT_FILENO, buf, n);
             }
             /* Write final idle state (cleanup_state will remove it on exit) */
+            proxy_log("EXIT child exited status=%d", status);
             if (agent_type) write_state(child_pid, ST_IDLE);
             cleanup();
             return WIFEXITED(status) ? WEXITSTATUS(status) : 1;

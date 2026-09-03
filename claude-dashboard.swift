@@ -217,7 +217,7 @@ func isCdashSession(_ pid: pid_t) -> Bool {
     return j["proxy_pid"] != nil
 }
 
-func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?)? {
+func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?, name: String?)? {
     let url = URL(fileURLWithPath: "\(stateDir)/\(pid).state")
     guard let data = try? Data(contentsOf: url),
           let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -227,8 +227,9 @@ func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?)? {
     if let proxyPid = j["proxy_pid"] as? Int, proxyPid > 0 {
         if kill(pid_t(proxyPid), 0) != 0 { return nil }
     }
-    let tty = j["tty"] as? String  // set by pty-proxy, nil for hook-based state files
-    return (event, ts, tty)
+    let tty = j["tty"] as? String
+    let name = j["name"] as? String
+    return (event, ts, tty, name)
 }
 
 func resolveState(_ pid: pid_t) -> State {
@@ -396,7 +397,7 @@ func loadSessions() -> [Session] {
             guard kill(p, 0) == 0 else { continue } // skip dead PIDs
             guard isCdashSession(p) else { continue } // skip non-cdash sessions
             let sid = (j["sessionId"] as? String) ?? ""
-            let sname = (j["name"] as? String) ?? "session-\(pid)"
+            let sname = (j["name"] as? String) ?? stateFileEvent(p)?.name ?? "session-\(pid)"
             let startedAt = (j["startedAt"] as? Double) ?? 0
             let fallback = Date(timeIntervalSince1970: startedAt / 1000)
             let resolvedState = resolveState(p)
@@ -477,10 +478,11 @@ func loadSessions() -> [Session] {
                          lastActive: s.lastActive, hookTs: s.hookTs, source: s.source)
         result.append(session)
     }
+    let livePids = Set(result.map(\.pid))
     for (sid, stored) in store {
         if stored.source == "codex" { continue }
-        // Skip if this internal ID has a live session
-        let isLive = result.contains(where: { $0.sessionId == sid })
+        // Skip if this internal ID has a live session or PID matches a live session
+        let isLive = result.contains(where: { $0.sessionId == sid }) || livePids.contains(pid_t(stored.lastPid))
         if !isLive && !removedSessionIds.contains(sid) {
             let p = pid_t(stored.lastPid)
             let fallback = Date(timeIntervalSince1970: stored.startedAt / 1000)
@@ -3363,6 +3365,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var lastChatFingerprint = ""
     var lastChatMaxId = 0
     var prevStates: [String: State] = [:]
+    var previouslyKnownSessionIds: Set<String> = []
     var pollCount = 0
 
     func applicationWillTerminate(_: Notification) {
@@ -4314,11 +4317,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func poll() {
         pollQueue.async { [weak self] in
+            let prevKnown = Set(knownSessions.keys)
             let claudeSessions = loadSessions()
             let codexSessions = loadCodexSessions()
             let ss = claudeSessions + codexSessions
             let terms = loadRegisteredTerminals()
             DispatchQueue.main.async {
+                self?.previouslyKnownSessionIds = prevKnown
                 self?.updateUI(ss, terminals: terms)
                 self?.checkChatNotifications()
                 if self?.showChat == true { self?.pollChat() }
@@ -4528,10 +4533,17 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
+        // ── Sync terminalTTYs from disk (cdash registers terminals externally) ──
+        let diskTabs = loadTabs()
+        for dt in diskTabs {
+            if let idx = tabs.firstIndex(where: { $0.id == dt.id }) {
+                tabs[idx].terminalTTYs = dt.terminalTTYs
+            }
+        }
+
         // ── Apply pending tab/order transfers from resume detection ──
         if !pendingTabTransfers.isEmpty {
             for transfer in pendingTabTransfers {
-                // Transfer tab assignment
                 for i in 0..<tabs.count {
                     if tabs[i].sessionIds.contains(transfer.oldId) {
                         tabs[i].sessionIds.removeAll { $0 == transfer.oldId }
@@ -4540,7 +4552,6 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         }
                     }
                 }
-                // Transfer order position
                 var order = sessionOrder
                 if let idx = order.firstIndex(of: transfer.oldId) {
                     order[idx] = transfer.newId
@@ -4555,7 +4566,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // ── Auto-assign truly new sessions to first tab ──
         if tabs.count > 1 {
             let allAssigned = Set(tabs.flatMap(\.sessionIds))
-            let brandNew = ss.filter { !allAssigned.contains($0.sessionId) && knownSessions[$0.sessionId] == nil }
+            let brandNew = ss.filter { !allAssigned.contains($0.sessionId) && !previouslyKnownSessionIds.contains($0.sessionId) }
             if !brandNew.isEmpty {
                 for s in brandNew {
                     tabs[0].sessionIds.append(s.sessionId)
