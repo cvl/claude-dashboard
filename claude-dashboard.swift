@@ -3363,6 +3363,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var lastChatFingerprint = ""
     var lastChatMaxId = 0
     var prevStates: [String: State] = [:]
+    var previouslyKnownSessionIds: Set<String> = []
     var pollCount = 0
 
     func applicationWillTerminate(_: Notification) {
@@ -4314,11 +4315,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func poll() {
         pollQueue.async { [weak self] in
+            let prevKnown = Set(knownSessions.keys)
             let claudeSessions = loadSessions()
             let codexSessions = loadCodexSessions()
             let ss = claudeSessions + codexSessions
             let terms = loadRegisteredTerminals()
             DispatchQueue.main.async {
+                self?.previouslyKnownSessionIds = prevKnown
                 self?.updateUI(ss, terminals: terms)
                 self?.checkChatNotifications()
                 if self?.showChat == true { self?.pollChat() }
@@ -4561,7 +4564,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // ── Auto-assign truly new sessions to first tab ──
         if tabs.count > 1 {
             let allAssigned = Set(tabs.flatMap(\.sessionIds))
-            let brandNew = ss.filter { !allAssigned.contains($0.sessionId) && knownSessions[$0.sessionId] == nil }
+            let brandNew = ss.filter { !allAssigned.contains($0.sessionId) && !previouslyKnownSessionIds.contains($0.sessionId) }
             if !brandNew.isEmpty {
                 for s in brandNew {
                     tabs[0].sessionIds.append(s.sessionId)
