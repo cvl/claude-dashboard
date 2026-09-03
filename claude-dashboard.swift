@@ -217,7 +217,7 @@ func isCdashSession(_ pid: pid_t) -> Bool {
     return j["proxy_pid"] != nil
 }
 
-func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?)? {
+func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?, name: String?)? {
     let url = URL(fileURLWithPath: "\(stateDir)/\(pid).state")
     guard let data = try? Data(contentsOf: url),
           let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -227,8 +227,9 @@ func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?)? {
     if let proxyPid = j["proxy_pid"] as? Int, proxyPid > 0 {
         if kill(pid_t(proxyPid), 0) != 0 { return nil }
     }
-    let tty = j["tty"] as? String  // set by pty-proxy, nil for hook-based state files
-    return (event, ts, tty)
+    let tty = j["tty"] as? String
+    let name = j["name"] as? String
+    return (event, ts, tty, name)
 }
 
 func resolveState(_ pid: pid_t) -> State {
@@ -396,7 +397,7 @@ func loadSessions() -> [Session] {
             guard kill(p, 0) == 0 else { continue } // skip dead PIDs
             guard isCdashSession(p) else { continue } // skip non-cdash sessions
             let sid = (j["sessionId"] as? String) ?? ""
-            let sname = (j["name"] as? String) ?? "session-\(pid)"
+            let sname = (j["name"] as? String) ?? stateFileEvent(p)?.name ?? "session-\(pid)"
             let startedAt = (j["startedAt"] as? Double) ?? 0
             let fallback = Date(timeIntervalSince1970: startedAt / 1000)
             let resolvedState = resolveState(p)
