@@ -576,6 +576,26 @@ int main(int argc, char *argv[]) {
                     /* Truncate to 2KB to stay well within PTY buffer limits */
                     if (n > 2048) n = 2048;
                     inject_buf[n] = '\0';
+                    /* Append single chat footer based on content type */
+                    if (strstr(inject_buf, "[CHAT from ")) {
+                        /* Has DM(s) — use DM footer (covers broadcast syntax too) */
+                        const char *footer = "\n(Reply with `cdash chat send \"msg\" --to NAME`, or broadcast with `cdash chat send \"msg\"`.)";
+                        size_t flen = strlen(footer);
+                        if (n + flen < sizeof(inject_buf) - 1) {
+                            memcpy(inject_buf + n, footer, flen);
+                            n += flen;
+                            inject_buf[n] = '\0';
+                        }
+                    } else if (strstr(inject_buf, "[CHAT broadcast")) {
+                        /* Broadcast only */
+                        const char *footer = "\n(FYI — reply with `cdash chat send \"msg\"` ONLY if you have relevant input. Do not acknowledge or respond in chat unless you have something substantive to add.)";
+                        size_t flen = strlen(footer);
+                        if (n + flen < sizeof(inject_buf) - 1) {
+                            memcpy(inject_buf + n, footer, flen);
+                            n += flen;
+                            inject_buf[n] = '\0';
+                        }
+                    }
                     /* Non-blocking write to avoid stalling the proxy poll loop */
                     int flags = fcntl(master_fd, F_GETFL);
                     fcntl(master_fd, F_SETFL, flags | O_NONBLOCK);

@@ -130,13 +130,9 @@ def cmd_send(args):
         if "joined the chat" in message:
             line = f"- {name} joined the chat channel"
         elif recipient:
-            line = (f"[CHAT from {name} → you]: {snippet}\n"
-                    f"(Reply with `cdash chat send \"msg\" --to {name}`, or broadcast with `cdash chat send \"msg\"`. "
-                    f"Only respond if you have something substantive to add.)")
+            line = f"[CHAT from {name} → you]: {snippet}"
         else:
-            line = (f"[CHAT broadcast from {name}]: {snippet}\n"
-                    f"(FYI — reply with `cdash chat send \"msg\"` ONLY if you have relevant input. "
-                    f"Do not acknowledge or respond in chat unless you have something substantive to add.)")
+            line = f"[CHAT broadcast from {name}]: {snippet}"
         append_inject(sf_pid, line + "\n")
 
     active = len([r for r in rows if r[1] and r[1] > 0])
