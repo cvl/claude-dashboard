@@ -478,10 +478,11 @@ func loadSessions() -> [Session] {
                          lastActive: s.lastActive, hookTs: s.hookTs, source: s.source)
         result.append(session)
     }
+    let livePids = Set(result.map(\.pid))
     for (sid, stored) in store {
         if stored.source == "codex" { continue }
-        // Skip if this internal ID has a live session
-        let isLive = result.contains(where: { $0.sessionId == sid })
+        // Skip if this internal ID has a live session or PID matches a live session
+        let isLive = result.contains(where: { $0.sessionId == sid }) || livePids.contains(pid_t(stored.lastPid))
         if !isLive && !removedSessionIds.contains(sid) {
             let p = pid_t(stored.lastPid)
             let fallback = Date(timeIntervalSince1970: stored.startedAt / 1000)
