@@ -3490,13 +3490,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let memberList = members.isEmpty ? "none yet" : members.joined(separator: ", ")
             let injectPath = "\(stateDir)/\(s.pid).inject"
             let intro = "You have been added to team chat channel \"\(project)\". " +
-                "Other agents in channel: \(memberList). " +
-                "Commands: `cdash chat read` (check messages), " +
-                "`cdash chat send \"msg\"` (broadcast), " +
-                "`cdash chat send \"msg\" --to name` (DM agent), " +
-                "`cdash chat send \"msg\" --to human` (escalate to human), " +
-                "`cdash chat list` (see who's online). " +
-                "Check messages now and before making breaking changes."
+                "Other agents: \(memberList). " +
+                "Commands: " +
+                "`cdash chat read` — check messages (run regularly and before breaking changes). " +
+                "`cdash chat send \"msg\"` — broadcast (not urgent, others read on next poll). " +
+                "`cdash chat send \"msg\" --all` — urgent broadcast, interrupts all agents (use sparingly). " +
+                "`cdash chat send \"msg\" --to NAME` — DM a specific agent (interrupts them). " +
+                "`cdash chat send \"msg\" --to human` — escalate to human (triggers notification). " +
+                "`cdash chat list` — see who's in the channel."
             try? intro.write(toFile: injectPath, atomically: true, encoding: .utf8)
             if !self.showChat { self.showChat = true }
             self.chatView.activeProject = project
