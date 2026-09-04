@@ -50,8 +50,9 @@ static int osc_pos = 0;
 static int osc_st_pending = 0; /* waiting for \ after ESC in ST terminator */
 
 /* State tracking */
-typedef enum { ST_IDLE, ST_WORKING, ST_NEEDS_INPUT } state_t;
+typedef enum { ST_IDLE, ST_WORKING, ST_NEEDS_INPUT, ST_RATE_LIMITED } state_t;
 static state_t current_state = ST_IDLE;
+static time_t last_retry_time = 0;
 static const char *agent_type = NULL; /* "claude" or "codex" */
 
 /* Debounce: hold working→idle until confirmed N times */
@@ -155,6 +156,7 @@ static void write_state(pid_t pid, state_t state) {
     switch (state) {
         case ST_WORKING: event = "working"; break;
         case ST_NEEDS_INPUT: event = "needs_input"; break;
+        case ST_RATE_LIMITED: event = "rate_limited"; break;
         default: event = "stop"; break;
     }
     char tmp[256];
@@ -317,6 +319,10 @@ static int title_starts_with_sparkle(const char *title) {
 /* Detect state from screen content and OSC title */
 static state_t detect_state(const char *screen, const char *title) {
     if (!agent_type) return ST_IDLE;
+
+    /* Rate limit detection — applies to both Claude and Codex */
+    if (contains_ci(screen, "rate limited") || contains_ci(screen, "429"))
+        return ST_RATE_LIMITED;
 
     if (strcmp(agent_type, "claude") == 0) {
         /* Permission prompt:
@@ -551,12 +557,23 @@ int main(int argc, char *argv[]) {
                 /* needs_input → other: no debounce, transition immediately */
 
                 if (new_state != current_state) {
-                    const char *labels[] = {"idle","working","needs_input"};
+                    const char *labels[] = {"idle","working","needs_input","rate_limited"};
                     proxy_log("STATE %s → %s", labels[current_state], labels[new_state]);
                     write_state(child_pid, new_state);
+                    if (new_state == ST_RATE_LIMITED) last_retry_time = time(NULL);
                     current_state = new_state;
                 }
                 last_check = now;
+            }
+        }
+
+        /* Auto-retry on rate limit — send "continue" every 60s */
+        if (current_state == ST_RATE_LIMITED) {
+            time_t now_t = time(NULL);
+            if (now_t - last_retry_time >= 60) {
+                proxy_log("RETRY rate_limited, sending continue");
+                write(master_fd, "continue\r", 9);
+                last_retry_time = now_t;
             }
         }
 
@@ -582,8 +599,17 @@ int main(int argc, char *argv[]) {
                     inject_buf[n] = '\0';
                     /* Append single chat footer based on content type */
                     if (strstr(inject_buf, "[CHAT from ")) {
-                        /* Has DM(s) — use DM footer (covers broadcast syntax too) */
-                        const char *footer = "\n(Reply with `cdash chat send \"msg\" --to NAME`, or broadcast with `cdash chat send \"msg\"`.)";
+                        /* DM — reply to sender, read context first */
+                        const char *footer = "\n(Reply: `cdash chat send \"msg\" --to NAME`. Run `cdash chat read` for full context.)";
+                        size_t flen = strlen(footer);
+                        if (n + flen < sizeof(inject_buf) - 1) {
+                            memcpy(inject_buf + n, footer, flen);
+                            n += flen;
+                            inject_buf[n] = '\0';
+                        }
+                    } else if (strstr(inject_buf, "[CHAT @all")) {
+                        /* @all — urgent, everyone must act */
+                        const char *footer = "\n(Run `cdash chat read` for full context. Reply: `cdash chat send \"msg\"`, DM: `cdash chat send \"msg\" --to NAME`. Only respond in chat if you have something substantive to add.)";
                         size_t flen = strlen(footer);
                         if (n + flen < sizeof(inject_buf) - 1) {
                             memcpy(inject_buf + n, footer, flen);
@@ -591,8 +617,8 @@ int main(int argc, char *argv[]) {
                             inject_buf[n] = '\0';
                         }
                     } else if (strstr(inject_buf, "[CHAT broadcast")) {
-                        /* Broadcast only */
-                        const char *footer = "\n(FYI — reply with `cdash chat send \"msg\"` ONLY if you have relevant input. Do not acknowledge or respond in chat unless you have something substantive to add.)";
+                        /* Broadcast (shouldn't happen — broadcasts don't inject) */
+                        const char *footer = "\n(FYI only. Do not respond in chat unless you have something substantive to add.)";
                         size_t flen = strlen(footer);
                         if (n + flen < sizeof(inject_buf) - 1) {
                             memcpy(inject_buf + n, footer, flen);

@@ -70,7 +70,7 @@ func saveTabs(_ tabs: [TabBucket]) {
 // MARK: - Model
 
 enum State: String, CaseIterable {
-    case working, needsInput, idle, dead
+    case working, needsInput, idle, dead, rateLimited
 
     var label: String {
         switch self {
@@ -78,14 +78,16 @@ enum State: String, CaseIterable {
         case .needsInput: return "NEEDS INPUT"
         case .idle: return "IDLE"
         case .dead: return "DEAD"
+        case .rateLimited: return "RATE LIMITED"
         }
     }
     var color: NSColor {
         switch self {
-        case .working:    return NSColor(calibratedRed: 0.25, green: 0.72, blue: 0.35, alpha: 1)
-        case .needsInput: return NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 1)
-        case .idle:       return NSColor(calibratedWhite: 0.78, alpha: 1)
-        case .dead:       return NSColor(calibratedRed: 0.85, green: 0.35, blue: 0.35, alpha: 1)
+        case .working:      return NSColor(calibratedRed: 0.25, green: 0.72, blue: 0.35, alpha: 1)
+        case .needsInput:   return NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 1)
+        case .idle:         return NSColor(calibratedWhite: 0.78, alpha: 1)
+        case .dead:         return NSColor(calibratedRed: 0.85, green: 0.35, blue: 0.35, alpha: 1)
+        case .rateLimited:  return NSColor(calibratedRed: 0.9, green: 0.45, blue: 0.15, alpha: 1)
         }
     }
     var emoji: String {
@@ -94,12 +96,13 @@ enum State: String, CaseIterable {
         case .needsInput: return "🟡"
         case .idle: return "⚫"
         case .dead: return "🔴"
+        case .rateLimited: return "🟠"
         }
     }
     var order: Int {
         switch self {
-        case .working: return 0; case .needsInput: return 1
-        case .idle: return 2; case .dead: return 3
+        case .working: return 0; case .needsInput: return 1; case .rateLimited: return 2
+        case .idle: return 3; case .dead: return 4
         }
     }
 }
@@ -245,9 +248,10 @@ func resolveState(_ pid: pid_t) -> State {
     }
     let state: State
     switch sf?.event {
-    case "working":     state = .working
-    case "needs_input": state = .needsInput
-    case "stop":        state = .idle
+    case "working":      state = .working
+    case "needs_input":  state = .needsInput
+    case "rate_limited": state = .rateLimited
+    case "stop":         state = .idle
     default:            state = .idle
     }
     // Log state transitions
@@ -1054,6 +1058,7 @@ class TabSidebarView: NSView {
     var dropTargetTabId: String? { didSet { needsDisplay = true } }
     var workingTabIds: Set<String> = [] { didSet { needsDisplay = true } }
     var needsInputTabIds: Set<String> = [] { didSet { needsDisplay = true } }
+    var notifCountByTab: [String: Int] = [:] { didSet { needsDisplay = true } }
     private var hoveredTabIdx: Int? = nil
 
     var onTabSelect: ((String) -> Void)?
@@ -1247,6 +1252,23 @@ class TabSidebarView: NSView {
             let textY = rect.midY - attr.size().height / 2
             let textX = rect.minX + 8
             attr.draw(at: NSPoint(x: textX, y: textY))
+
+            // Notification badge
+            if let count = notifCountByTab[tab.id], count > 0 {
+                let badgeStr = "\(count)"
+                let badgeFont = NSFont.systemFont(ofSize: 8, weight: .bold)
+                let badgeAttr = NSAttributedString(string: badgeStr, attributes: [
+                    .font: badgeFont, .foregroundColor: NSColor.white])
+                let badgeSize = badgeAttr.size()
+                let badgeW = max(badgeSize.width + 6, 14)
+                let badgeH: CGFloat = 14
+                let badgeX = rect.maxX - badgeW - 4
+                let badgeY = rect.midY - badgeH / 2
+                let badgeRect = NSRect(x: badgeX, y: badgeY, width: badgeW, height: badgeH)
+                NSColor.systemRed.setFill()
+                NSBezierPath(roundedRect: badgeRect, xRadius: badgeH / 2, yRadius: badgeH / 2).fill()
+                badgeAttr.draw(at: NSPoint(x: badgeRect.midX - badgeSize.width / 2, y: badgeRect.midY - badgeSize.height / 2))
+            }
         }
 
         // + button
@@ -1716,7 +1738,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         tv.textContainerInset = NSSize(width: 4, height: 6)
         tv.textContainer?.widthTracksTextView = true
         tv.textContainer?.lineFragmentPadding = 4
-        tv.placeholderString = "@name to DM, Tab to complete"
+        tv.placeholderString = "@name to DM, @all to trigger all, Tab to complete"
         tv.delegate = self
         sc.documentView = tv
         addSubview(sc)
@@ -1798,7 +1820,10 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         guard !text.isEmpty else { return }
         var msg = text
         var target: String? = nil
-        if msg.hasPrefix("@") {
+        var isAll = false
+        if msg.hasPrefix("@all ") || msg == "@all" {
+            isAll = true
+        } else if msg.hasPrefix("@") {
             let parts = msg.dropFirst().split(separator: " ", maxSplits: 1)
             if let name = parts.first {
                 target = String(name)
@@ -1806,7 +1831,9 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             }
         }
         guard !msg.isEmpty else { return }
-        if let target {
+        if isAll {
+            onSendAll?(activeProject, msg)
+        } else if let target {
             onSendDM?(activeProject, msg, target)
         } else {
             onSend?(activeProject, msg)
@@ -1815,6 +1842,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     }
 
     var onSendDM: ((String, String, String) -> Void)?  // (project, message, target)
+    var onSendAll: ((String, String) -> Void)?  // (project, message)
 
     func startReply(to sender: String, quote: String) {
         let truncated = quote.prefix(100)
@@ -2111,8 +2139,7 @@ class ChatMessageTextView: NSTextView {
     var topPadding: CGFloat = 4
     var onReply: ((String, String) -> Void)?  // (senderName, quotedBody)
 
-    override var acceptsFirstResponder: Bool { false }
-    override func becomeFirstResponder() -> Bool { false }
+    override var acceptsFirstResponder: Bool { true }
 
     override var textContainerOrigin: NSPoint {
         NSPoint(x: textContainerInset.width, y: topPadding)
@@ -3471,14 +3498,18 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 .map { $0.name }
             let memberList = members.isEmpty ? "none yet" : members.joined(separator: ", ")
             let injectPath = "\(stateDir)/\(s.pid).inject"
+            let membersLine = members.isEmpty
+                ? "No other agents in the channel yet."
+                : "Other agents in the channel: \(members.joined(separator: ", "))."
             let intro = "You have been added to team chat channel \"\(project)\". " +
-                "Other agents in channel: \(memberList). " +
-                "Commands: `cdash chat read` (check messages), " +
-                "`cdash chat send \"msg\"` (broadcast), " +
-                "`cdash chat send \"msg\" --to name` (DM agent), " +
-                "`cdash chat send \"msg\" --to human` (escalate to human), " +
-                "`cdash chat list` (see who's online). " +
-                "Check messages now and before making breaking changes."
+                "\(membersLine) " +
+                "How messaging works: " +
+                "`cdash chat send \"msg\"` — posts to channel. Nobody is interrupted. Others see it when they check. " +
+                "`cdash chat send \"msg\" --to NAME` — direct message to one agent, interrupts them immediately. " +
+                "`cdash chat send \"msg\" --to human` — escalates to human, triggers desktop notification. " +
+                "`cdash chat send \"msg\" --all` — urgent broadcast. Interrupts ALL agents. Use only when everyone must act now. " +
+                "`cdash chat read` — check for new messages. Run before making breaking changes. " +
+                "`cdash chat list` — see who's in the channel."
             try? intro.write(toFile: injectPath, atomically: true, encoding: .utf8)
             if !self.showChat { self.showChat = true }
             self.chatView.activeProject = project
@@ -3692,6 +3723,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                           "--type", "human", "--message", message, "--to", target)
             self?.pollChat()
         }
+        chatView.onSendAll = { [weak self] project, message in
+            guard !project.isEmpty, !message.isEmpty else { return }
+            let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
+                          "send", "--project", project, "--name", "human",
+                          "--type", "human", "--message", message, "--all")
+            self?.pollChat()
+        }
         chatView.onMemberReveal = { [weak self] name in
             guard let self else { return }
             if let s = self.currentSessions.first(where: { $0.name == name }) {
@@ -3765,6 +3803,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.lastChatFingerprint = ""  // force refresh
             }
             self.refreshView()
+            self.layoutNotifPanel()
             if self.showChat { self.pollChat() }
         }
         tabSidebar.onTabAdd = { [weak self] in
@@ -3874,7 +3913,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func dismissNotification(_ id: String) {
         dashNotifications.removeAll { $0.id == id }
-        notifView.notifications = dashNotifications
+        layoutNotifPanel()
         updateInputSoundTimer()
     }
 
@@ -3895,9 +3934,24 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    func tabForSession(_ sessionId: String) -> String? {
+        for tab in tabs where tab.id != "main" {
+            if tab.sessionIds.contains(sessionId) { return tab.id }
+        }
+        return "main"
+    }
+
+    func isNotifForActiveTab(_ notif: DashNotification) -> Bool {
+        // Chat notifications always show
+        if notif.id.hasPrefix("chat-") { return true }
+        // Session notifications — check tab
+        return tabForSession(notif.id) == activeTabId
+    }
+
     func layoutNotifPanel() {
-        notifView.notifications = dashNotifications
-        if dashNotifications.isEmpty {
+        let visible = dashNotifications.filter { isNotifForActiveTab($0) }
+        notifView.notifications = visible
+        if visible.isEmpty {
             if notifPanel.isVisible { notifPanel.orderOut(nil) }
             return
         }
@@ -4094,10 +4148,11 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for i in 0..<mbrs.count {
             let sid = mbrs[i].sessionId
             let dbName = mbrs[i].name
-            let live = !sid.isEmpty
+            // Match by session_id first, fall back to name match for members without session_id
+            let live: Session? = !sid.isEmpty
                 ? (allSess.first(where: { $0.sessionId == sid && $0.state != .dead })
                    ?? allSess.first(where: { $0.sessionId == sid }))
-                : nil
+                : allSess.first(where: { $0.name == dbName && $0.state != .dead })
             if let live {
                 mbrs[i] = ChatMember(name: live.name, agentType: mbrs[i].agentType, state: live.state, sessionId: sid)
                 // Sync name in chat db if it changed (e.g. session renamed)
@@ -4613,6 +4668,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         tabSidebar.workingTabIds = wTabIds
         tabSidebar.needsInputTabIds = niTabIds
+
+        // Notification counts per tab (session notifications only, not chat)
+        var notifCounts: [String: Int] = [:]
+        for notif in dashNotifications where !notif.id.hasPrefix("chat-") {
+            let tabId = tabForSession(notif.id) ?? "main"
+            notifCounts[tabId, default: 0] += 1
+        }
+        tabSidebar.notifCountByTab = notifCounts
         let idealH = dashView.idealHeight
         var frame = panel.frame
         let topY = frame.maxY

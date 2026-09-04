@@ -27,25 +27,37 @@ Agents can communicate with each other and with you through shared chat channels
 
 **Chat commands** (agents use these via Bash tool):
 ```bash
-cdash chat send "message"              # broadcast to channel
-cdash chat send "message" --to name    # DM to specific agent
-cdash chat send "message" --to all     # ping all agents
-cdash chat send "message" --to human   # escalate to human
-cdash chat read                        # check new messages
-cdash chat list                        # see who's online
+cdash chat send "msg"                  # broadcast — stored, no interruption
+cdash chat send "msg" --to NAME        # DM — interrupts that agent immediately
+cdash chat send "msg" --to human       # escalate to human (triggers notification)
+cdash chat send "msg" --all            # urgent broadcast — interrupts ALL agents
+cdash chat read                        # check new messages since last read
+cdash chat read --all                  # show all messages (last 5 days)
+cdash chat list                        # see who's in the channel
+cdash chat --help                      # show full help
 ```
+
+**Injection rules:**
+- `cdash chat send "msg"` — broadcast, stored only. Nobody is interrupted. Agents see it on their next `cdash chat read`.
+- `cdash chat send "msg" --to NAME` — DM, injected into that agent's terminal immediately.
+- `cdash chat send "msg" --all` — urgent broadcast, injected into ALL agents. Use sparingly.
+- `cdash chat send "msg" --to human` — DM to human, triggers desktop notification + ping.
+
+**External agents** (not launched via cdash, e.g. ChatGPT):
+```bash
+cdash chat send "msg" --name myagent --project myproject
+cdash chat read --name myagent --project myproject
+```
+External agents can send and read but won't receive inject notifications (no PTY proxy).
 
 **Dashboard chat panel:**
 - Type messages as the human participant
 - `@name message` sends a DM (Tab to autocomplete)
-- `@all message` broadcasts to all agents
+- `@all message` — urgent broadcast, interrupts all agents
+- Plain message — broadcast, no interruption
+- Reply link on each message for quick replies with quoted context
 - Click agent chips to reveal their terminal
 - Right-click chips to remove from channel
-
-**Auto-injection:**
-- When a message is sent to an idle agent, the proxy types a notification into its terminal
-- Multiple messages accumulate into a single prompt (no spam)
-- The agent sees the message and can respond with `cdash chat read` / `cdash chat send`
 
 **Channels:**
 - Each tab in the dashboard = a chat channel
@@ -95,8 +107,11 @@ cdash dev-server
 
 ### Notifications
 - In-app panel when sessions finish working or need input
+- **Tab-specific** — only shows notifications for the active tab
+- **Tab badge** — red counter on tabs with pending notifications
+- **Chat notifications** — always visible regardless of active tab
 - Needs input: dock icon bounce + repeated ping sound every 5s
-- Click to reveal terminal, X to dismiss
+- Click to reveal terminal (or scroll to chat message), X to dismiss
 - Auto-dismissed when session starts working again
 
 ## How State Detection Works
@@ -158,6 +173,7 @@ The install script compiles and installs:
 | `~/.claude/dashboard.log` | Diagnostic log |
 | `/tmp/claude-dash/*.state` | Live state files |
 | `/tmp/claude-dash/*.inject` | Queued chat prompts |
+| `/tmp/claude-dash/*.proxy.log` | Proxy diagnostic logs (auto-rotated) |
 | `/usr/local/bin/cdash` | CLI entry point |
 | `/usr/local/bin/claude-dashboard-proxy` | PTY proxy binary |
 | `/usr/local/lib/claude-dashboard/agent-chat.py` | Chat backend |
