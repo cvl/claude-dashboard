@@ -1054,6 +1054,7 @@ class TabSidebarView: NSView {
     var dropTargetTabId: String? { didSet { needsDisplay = true } }
     var workingTabIds: Set<String> = [] { didSet { needsDisplay = true } }
     var needsInputTabIds: Set<String> = [] { didSet { needsDisplay = true } }
+    var notifCountByTab: [String: Int] = [:] { didSet { needsDisplay = true } }
     private var hoveredTabIdx: Int? = nil
 
     var onTabSelect: ((String) -> Void)?
@@ -1247,6 +1248,23 @@ class TabSidebarView: NSView {
             let textY = rect.midY - attr.size().height / 2
             let textX = rect.minX + 8
             attr.draw(at: NSPoint(x: textX, y: textY))
+
+            // Notification badge
+            if let count = notifCountByTab[tab.id], count > 0 {
+                let badgeStr = "\(count)"
+                let badgeFont = NSFont.systemFont(ofSize: 8, weight: .bold)
+                let badgeAttr = NSAttributedString(string: badgeStr, attributes: [
+                    .font: badgeFont, .foregroundColor: NSColor.white])
+                let badgeSize = badgeAttr.size()
+                let badgeW = max(badgeSize.width + 6, 14)
+                let badgeH: CGFloat = 14
+                let badgeX = rect.maxX - badgeW - 4
+                let badgeY = rect.midY - badgeH / 2
+                let badgeRect = NSRect(x: badgeX, y: badgeY, width: badgeW, height: badgeH)
+                NSColor.systemRed.setFill()
+                NSBezierPath(roundedRect: badgeRect, xRadius: badgeH / 2, yRadius: badgeH / 2).fill()
+                badgeAttr.draw(at: NSPoint(x: badgeRect.midX - badgeSize.width / 2, y: badgeRect.midY - badgeSize.height / 2))
+            }
         }
 
         // + button
@@ -3765,6 +3783,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.lastChatFingerprint = ""  // force refresh
             }
             self.refreshView()
+            self.layoutNotifPanel()
             if self.showChat { self.pollChat() }
         }
         tabSidebar.onTabAdd = { [weak self] in
@@ -3874,7 +3893,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func dismissNotification(_ id: String) {
         dashNotifications.removeAll { $0.id == id }
-        notifView.notifications = dashNotifications
+        layoutNotifPanel()
         updateInputSoundTimer()
     }
 
@@ -3895,9 +3914,24 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    func tabForSession(_ sessionId: String) -> String? {
+        for tab in tabs where tab.id != "main" {
+            if tab.sessionIds.contains(sessionId) { return tab.id }
+        }
+        return "main"
+    }
+
+    func isNotifForActiveTab(_ notif: DashNotification) -> Bool {
+        // Chat notifications always show
+        if notif.id.hasPrefix("chat-") { return true }
+        // Session notifications — check tab
+        return tabForSession(notif.id) == activeTabId
+    }
+
     func layoutNotifPanel() {
-        notifView.notifications = dashNotifications
-        if dashNotifications.isEmpty {
+        let visible = dashNotifications.filter { isNotifForActiveTab($0) }
+        notifView.notifications = visible
+        if visible.isEmpty {
             if notifPanel.isVisible { notifPanel.orderOut(nil) }
             return
         }
@@ -4613,6 +4647,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         tabSidebar.workingTabIds = wTabIds
         tabSidebar.needsInputTabIds = niTabIds
+
+        // Notification counts per tab (session notifications only, not chat)
+        var notifCounts: [String: Int] = [:]
+        for notif in dashNotifications where !notif.id.hasPrefix("chat-") {
+            let tabId = tabForSession(notif.id) ?? "main"
+            notifCounts[tabId, default: 0] += 1
+        }
+        tabSidebar.notifCountByTab = notifCounts
         let idealH = dashView.idealHeight
         var frame = panel.frame
         let topY = frame.maxY
