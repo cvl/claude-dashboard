@@ -1734,7 +1734,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         tv.textContainerInset = NSSize(width: 4, height: 6)
         tv.textContainer?.widthTracksTextView = true
         tv.textContainer?.lineFragmentPadding = 4
-        tv.placeholderString = "@name to DM, Tab to complete"
+        tv.placeholderString = "@name to DM, @all to trigger all, Tab to complete"
         tv.delegate = self
         sc.documentView = tv
         addSubview(sc)
