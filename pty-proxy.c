@@ -592,7 +592,7 @@ int main(int argc, char *argv[]) {
                         }
                     } else if (strstr(inject_buf, "[CHAT @all")) {
                         /* @all — urgent, everyone must act */
-                        const char *footer = "\n(Action needed. Run `cdash chat read` for full context before responding. Reply: `cdash chat send \"msg\"`, DM: `cdash chat send \"msg\" --to NAME`.)";
+                        const char *footer = "\n(Run `cdash chat read` for full context. Reply: `cdash chat send \"msg\"`, DM: `cdash chat send \"msg\" --to NAME`. Only respond in chat if you have something substantive to add.)";
                         size_t flen = strlen(footer);
                         if (n + flen < sizeof(inject_buf) - 1) {
                             memcpy(inject_buf + n, footer, flen);

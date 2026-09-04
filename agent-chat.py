@@ -128,18 +128,15 @@ def cmd_send(args):
     # - --all: inject to everyone (use sparingly)
     # - Regular broadcast: no injection — agents see it on next `cdash chat read`
     # - System notices (join): inject to everyone
-    should_inject = recipient or inject_all or "joined the chat" in message
-    if should_inject:
+    # Inject: DMs and --all only. Broadcasts and join notices are read via cdash chat read.
+    if recipient or inject_all:
         for sf_pid, sf_event, sf_proxy_pid, sf_tty, sf_name, sf_project in state_files:
             if sf_name not in target_names: continue
             snippet = message[:150] + ("..." if len(message) > 150 else "")
-            if "joined the chat" in message:
-                line = f"- {name} joined the chat channel"
-            elif recipient:
+            if recipient:
                 line = f"[CHAT from {name} → you]: {snippet}"
             else:
-                line = (f"[CHAT @all from {name}]: {snippet}\n"
-                        f"Run `cdash chat read` for full context.")
+                line = f"[CHAT @all from {name}]: {snippet}"
             append_inject(sf_pid, line + "\n")
 
     active = len([r for r in rows if r[1] and r[1] > 0])
