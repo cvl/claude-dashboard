@@ -2135,8 +2135,7 @@ class ChatMessageTextView: NSTextView {
     var topPadding: CGFloat = 4
     var onReply: ((String, String) -> Void)?  // (senderName, quotedBody)
 
-    override var acceptsFirstResponder: Bool { false }
-    override func becomeFirstResponder() -> Bool { false }
+    override var acceptsFirstResponder: Bool { true }
 
     override var textContainerOrigin: NSPoint {
         NSPoint(x: textContainerInset.width, y: topPadding)
