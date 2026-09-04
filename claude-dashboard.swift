@@ -1816,7 +1816,11 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         guard !text.isEmpty else { return }
         var msg = text
         var target: String? = nil
-        if msg.hasPrefix("@") {
+        var isAll = false
+        if msg.hasPrefix("@all ") || msg == "@all" {
+            isAll = true
+            msg = String(msg.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+        } else if msg.hasPrefix("@") {
             let parts = msg.dropFirst().split(separator: " ", maxSplits: 1)
             if let name = parts.first {
                 target = String(name)
@@ -1824,7 +1828,9 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
             }
         }
         guard !msg.isEmpty else { return }
-        if let target {
+        if isAll {
+            onSendAll?(activeProject, msg)
+        } else if let target {
             onSendDM?(activeProject, msg, target)
         } else {
             onSend?(activeProject, msg)
@@ -1833,6 +1839,7 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
     }
 
     var onSendDM: ((String, String, String) -> Void)?  // (project, message, target)
+    var onSendAll: ((String, String) -> Void)?  // (project, message)
 
     func startReply(to sender: String, quote: String) {
         let truncated = quote.prefix(100)
@@ -3712,6 +3719,13 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
                           "send", "--project", project, "--name", "human",
                           "--type", "human", "--message", message, "--to", target)
+            self?.pollChat()
+        }
+        chatView.onSendAll = { [weak self] project, message in
+            guard !project.isEmpty, !message.isEmpty else { return }
+            let _ = shell("/usr/bin/python3", "/usr/local/lib/claude-dashboard/agent-chat.py",
+                          "send", "--project", project, "--name", "human",
+                          "--type", "human", "--message", message, "--all")
             self?.pollChat()
         }
         chatView.onMemberReveal = { [weak self] name in
