@@ -124,16 +124,17 @@ def cmd_send(args):
     # Match by name in state files — channel is already scoped by the db query above
     target_names = {recipient} if recipient else {r[0] for r in rows}
 
-    for sf_pid, sf_event, sf_proxy_pid, sf_tty, sf_name, sf_project in state_files:
-        if sf_name not in target_names: continue
-        snippet = message[:150] + ("..." if len(message) > 150 else "")
-        if "joined the chat" in message:
-            line = f"- {name} joined the chat channel"
-        elif recipient:
-            line = f"[CHAT from {name} → you]: {snippet}"
-        else:
-            line = f"[CHAT broadcast from {name}]: {snippet}"
-        append_inject(sf_pid, line + "\n")
+    # Only inject DMs and system notices — broadcasts don't inject (avoids rate limit stampede)
+    # Agents see broadcasts on next `cdash chat read`
+    if recipient or "joined the chat" in message:
+        for sf_pid, sf_event, sf_proxy_pid, sf_tty, sf_name, sf_project in state_files:
+            if sf_name not in target_names: continue
+            snippet = message[:150] + ("..." if len(message) > 150 else "")
+            if "joined the chat" in message:
+                line = f"- {name} joined the chat channel"
+            else:
+                line = f"[CHAT from {name} → you]: {snippet}"
+            append_inject(sf_pid, line + "\n")
 
     active = len([r for r in rows if r[1] and r[1] > 0])
     if recipient:
