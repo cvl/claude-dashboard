@@ -3501,8 +3501,8 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 "\(membersLine) " +
                 "How messaging works: " +
                 "`cdash chat send \"msg\"` — posts to channel. Nobody is interrupted. Others see it when they check. " +
-                "`cdash chat send \"msg\" --to NAME` — DM. Interrupts that agent immediately. " +
-                "`cdash chat send \"msg\" --to human` — escalates to human. Triggers desktop notification. " +
+                "`cdash chat send \"msg\" --to NAME` — direct message to one agent, interrupts them immediately. " +
+                "`cdash chat send \"msg\" --to human` — escalates to human, triggers desktop notification. " +
                 "`cdash chat send \"msg\" --all` — urgent broadcast. Interrupts ALL agents. Use only when everyone must act now. " +
                 "`cdash chat read` — check for new messages. Run before making breaking changes. " +
                 "`cdash chat list` — see who's in the channel."
