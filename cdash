@@ -32,15 +32,19 @@ show_chat_help() {
   echo "cdash chat — Inter-agent communication"
   echo ""
   echo "Commands:"
-  echo "  cdash chat send \"message\"            Broadcast (no injection, agents see on next read)"
-  echo "  cdash chat send \"message\" --to NAME  DM a specific agent (injects immediately)"
-  echo "  cdash chat send \"message\" --to human Escalate to human (triggers notification)"
-  echo "  cdash chat send \"message\" --all      Broadcast + inject to all agents (use sparingly)"
+  echo "  cdash chat send \"msg\"                Broadcast (stored, no interruption)"
+  echo "  cdash chat send \"msg\" --to NAME      Direct message (interrupts that agent)"
+  echo "  cdash chat send \"msg\" --to human     Escalate to human (triggers notification)"
+  echo "  cdash chat send \"msg\" --all          Urgent broadcast (interrupts ALL agents)"
   echo "  cdash chat read                      Show new messages since last read"
-  echo "  cdash chat read --all                Show all messages (last 5 days on first read)"
+  echo "  cdash chat read --all                Show all messages (last 5 days)"
   echo "  cdash chat list                      Show agents in current channel"
   echo ""
-  echo "Broadcasts are stored but not injected — agents pick them up on next read."
+  echo "External agents (not launched via cdash):"
+  echo "  cdash chat send \"msg\" --name myagent --project myproject"
+  echo "  cdash chat read --name myagent --project myproject"
+  echo ""
+  echo "Broadcasts are stored but not injected — agents see them on next read."
   echo "Use --all only when all agents must act immediately."
 }
 
@@ -61,12 +65,27 @@ if [ "$1" = "chat" ]; then
   pid="${CDASH_PID:-$$}"
   proxy_pid="${CDASH_PROXY_PID:-}"
 
-  # Session name + channel: state file is the single source of truth
-  chat_db="$HOME/.claude/dashboard-chat.db"
-  result=$(python3 -c "
+  # Check for explicit --name and --project flags (for external agents)
+  explicit_name=""
+  explicit_project=""
+  args_rest=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) explicit_name="$2"; shift 2 ;;
+      --project) explicit_project="$2"; shift 2 ;;
+      *) args_rest+=("$1"); shift ;;
+    esac
+  done
+  set -- "${args_rest[@]+"${args_rest[@]}"}"
+
+  if [ -n "$explicit_name" ] && [ -n "$explicit_project" ]; then
+    session_name="$explicit_name"
+    project="$explicit_project"
+  else
+    # Session name + channel: state file is the single source of truth
+    result=$(python3 -c "
 import os, json, subprocess, sqlite3
 state_dir = '/tmp/claude-dash'
-# Walk up process tree to find our state file
 pids = set()
 p = os.getpid()
 while p > 1:
@@ -85,7 +104,6 @@ for fname in os.listdir(state_dir):
             name = d.get('name', '')
             if name: break
 if not name: name = os.environ.get('CDASH_SESSION_NAME', os.path.basename(os.getcwd()))
-# Look up channel from chat db
 channel = ''
 db_path = os.path.expanduser('~/.claude/dashboard-chat.db')
 if os.path.exists(db_path):
@@ -96,13 +114,14 @@ if os.path.exists(db_path):
     db.close()
 print(f'{name}|{channel}')
 " 2>/dev/null)
-  session_name="${result%%|*}"
-  project="${result#*|}"
-  if [ -z "$session_name" ]; then
-    echo "Error: no cdash session found. Launch with: cdash claude" >&2
-    exit 1
+    session_name="${result%%|*}"
+    project="${result#*|}"
+    if [ -z "$session_name" ]; then
+      echo "Error: no cdash session found. Use --name and --project, or launch with: cdash claude" >&2
+      exit 1
+    fi
+    project="${project:-${CDASH_PROJECT:-$(git_root_name)}}"
   fi
-  project="${project:-${CDASH_PROJECT:-$(git_root_name)}}"
 
   case "$subcmd" in
     send)
