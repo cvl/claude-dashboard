@@ -1819,7 +1819,6 @@ class ChatPanelView: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         var isAll = false
         if msg.hasPrefix("@all ") || msg == "@all" {
             isAll = true
-            msg = String(msg.dropFirst(4)).trimmingCharacters(in: .whitespaces)
         } else if msg.hasPrefix("@") {
             let parts = msg.dropFirst().split(separator: " ", maxSplits: 1)
             if let name = parts.first {
