@@ -3489,16 +3489,17 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 .map { $0.name }
             let memberList = members.isEmpty ? "none yet" : members.joined(separator: ", ")
             let injectPath = "\(stateDir)/\(s.pid).inject"
+            let membersLine = members.isEmpty
+                ? "No other agents in the channel yet."
+                : "Other agents in the channel: \(members.joined(separator: ", "))."
             let intro = "You have been added to team chat channel \"\(project)\". " +
-                "Other agents: \(memberList). " +
-                "IMPORTANT: `cdash chat send \"msg\"` does NOT notify anyone — agents see it only when they run `cdash chat read`. " +
-                "To actually interrupt agents, use `--to NAME` (one agent) or `--all` (everyone). " +
-                "Commands: " +
-                "`cdash chat read` — check messages. Run regularly and before breaking changes. " +
-                "`cdash chat send \"msg\"` — broadcast, no interruption. Others see it on their next read. " +
-                "`cdash chat send \"msg\" --all` — urgent broadcast, interrupts ALL agents. Use sparingly. " +
-                "`cdash chat send \"msg\" --to NAME` — DM, interrupts that agent immediately. " +
-                "`cdash chat send \"msg\" --to human` — escalate to human, triggers notification. " +
+                "\(membersLine) " +
+                "How messaging works: " +
+                "`cdash chat send \"msg\"` — posts to channel. Nobody is interrupted. Others see it when they check. " +
+                "`cdash chat send \"msg\" --to NAME` — DM. Interrupts that agent immediately. " +
+                "`cdash chat send \"msg\" --to human` — escalates to human. Triggers desktop notification. " +
+                "`cdash chat send \"msg\" --all` — urgent broadcast. Interrupts ALL agents. Use only when everyone must act now. " +
+                "`cdash chat read` — check for new messages. Run before making breaking changes. " +
                 "`cdash chat list` — see who's in the channel."
             try? intro.write(toFile: injectPath, atomically: true, encoding: .utf8)
             if !self.showChat { self.showChat = true }
