@@ -70,7 +70,7 @@ func saveTabs(_ tabs: [TabBucket]) {
 // MARK: - Model
 
 enum State: String, CaseIterable {
-    case working, needsInput, idle, dead
+    case working, needsInput, idle, dead, rateLimited
 
     var label: String {
         switch self {
@@ -78,14 +78,16 @@ enum State: String, CaseIterable {
         case .needsInput: return "NEEDS INPUT"
         case .idle: return "IDLE"
         case .dead: return "DEAD"
+        case .rateLimited: return "RATE LIMITED"
         }
     }
     var color: NSColor {
         switch self {
-        case .working:    return NSColor(calibratedRed: 0.25, green: 0.72, blue: 0.35, alpha: 1)
-        case .needsInput: return NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 1)
-        case .idle:       return NSColor(calibratedWhite: 0.78, alpha: 1)
-        case .dead:       return NSColor(calibratedRed: 0.85, green: 0.35, blue: 0.35, alpha: 1)
+        case .working:      return NSColor(calibratedRed: 0.25, green: 0.72, blue: 0.35, alpha: 1)
+        case .needsInput:   return NSColor(calibratedRed: 0.95, green: 0.65, blue: 0.15, alpha: 1)
+        case .idle:         return NSColor(calibratedWhite: 0.78, alpha: 1)
+        case .dead:         return NSColor(calibratedRed: 0.85, green: 0.35, blue: 0.35, alpha: 1)
+        case .rateLimited:  return NSColor(calibratedRed: 0.9, green: 0.45, blue: 0.15, alpha: 1)
         }
     }
     var emoji: String {
@@ -94,12 +96,13 @@ enum State: String, CaseIterable {
         case .needsInput: return "🟡"
         case .idle: return "⚫"
         case .dead: return "🔴"
+        case .rateLimited: return "🟠"
         }
     }
     var order: Int {
         switch self {
-        case .working: return 0; case .needsInput: return 1
-        case .idle: return 2; case .dead: return 3
+        case .working: return 0; case .needsInput: return 1; case .rateLimited: return 2
+        case .idle: return 3; case .dead: return 4
         }
     }
 }
@@ -245,9 +248,10 @@ func resolveState(_ pid: pid_t) -> State {
     }
     let state: State
     switch sf?.event {
-    case "working":     state = .working
-    case "needs_input": state = .needsInput
-    case "stop":        state = .idle
+    case "working":      state = .working
+    case "needs_input":  state = .needsInput
+    case "rate_limited": state = .rateLimited
+    case "stop":         state = .idle
     default:            state = .idle
     }
     // Log state transitions
