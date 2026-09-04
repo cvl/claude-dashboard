@@ -582,8 +582,17 @@ int main(int argc, char *argv[]) {
                     inject_buf[n] = '\0';
                     /* Append single chat footer based on content type */
                     if (strstr(inject_buf, "[CHAT from ")) {
-                        /* Has DM(s) — use DM footer (covers broadcast syntax too) */
-                        const char *footer = "\n(Reply with `cdash chat send \"msg\" --to NAME`, or broadcast with `cdash chat send \"msg\"`.)";
+                        /* DM — reply footer */
+                        const char *footer = "\n(Reply with `cdash chat send \"msg\" --to NAME`, or broadcast with `cdash chat send \"msg\"`. Run `cdash chat read` for full context.)";
+                        size_t flen = strlen(footer);
+                        if (n + flen < sizeof(inject_buf) - 1) {
+                            memcpy(inject_buf + n, footer, flen);
+                            n += flen;
+                            inject_buf[n] = '\0';
+                        }
+                    } else if (strstr(inject_buf, "[CHAT @all")) {
+                        /* @all — action required, read context */
+                        const char *footer = "\n(Action requested. Run `cdash chat read` for full context. Reply: `cdash chat send \"msg\"` or DM: `cdash chat send \"msg\" --to NAME`.)";
                         size_t flen = strlen(footer);
                         if (n + flen < sizeof(inject_buf) - 1) {
                             memcpy(inject_buf + n, footer, flen);
@@ -591,7 +600,7 @@ int main(int argc, char *argv[]) {
                             inject_buf[n] = '\0';
                         }
                     } else if (strstr(inject_buf, "[CHAT broadcast")) {
-                        /* Broadcast only */
+                        /* Broadcast only (shouldn't happen now, but kept for safety) */
                         const char *footer = "\n(FYI — reply with `cdash chat send \"msg\"` ONLY if you have relevant input. Do not acknowledge or respond in chat unless you have something substantive to add.)";
                         size_t flen = strlen(footer);
                         if (n + flen < sizeof(inject_buf) - 1) {

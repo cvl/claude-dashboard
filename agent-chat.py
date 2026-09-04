@@ -100,6 +100,7 @@ def cmd_send(args):
     agent_type = args["type"]
     message = args["message"]
     recipient = args.get("to")
+    inject_all = args.get("all", False)
     pid = args.get("pid")
     proxy_pid = args.get("proxy_pid")
     cwd = args.get("cwd")
@@ -114,26 +115,31 @@ def cmd_send(args):
                (project, name))
     db.commit()
 
-    # Find sessions to notify — use live state files with name/project from proxy
+    # Find sessions to notify
     rows = db.execute("SELECT display_name, pid FROM sessions WHERE project_id=? AND display_name!=? AND pid>0",
                        (project, name)).fetchall()
     db.close()
 
     state_files = find_all_state_files()
-
-    # Match by name in state files — channel is already scoped by the db query above
     target_names = {recipient} if recipient else {r[0] for r in rows}
 
-    # Only inject DMs and system notices — broadcasts don't inject (avoids rate limit stampede)
-    # Agents see broadcasts on next `cdash chat read`
-    if recipient or "joined the chat" in message:
+    # Inject policy:
+    # - DM (--to): always inject to recipient
+    # - --all: inject to everyone (use sparingly)
+    # - Regular broadcast: no injection — agents see it on next `cdash chat read`
+    # - System notices (join): inject to everyone
+    should_inject = recipient or inject_all or "joined the chat" in message
+    if should_inject:
         for sf_pid, sf_event, sf_proxy_pid, sf_tty, sf_name, sf_project in state_files:
             if sf_name not in target_names: continue
             snippet = message[:150] + ("..." if len(message) > 150 else "")
             if "joined the chat" in message:
                 line = f"- {name} joined the chat channel"
-            else:
+            elif recipient:
                 line = f"[CHAT from {name} → you]: {snippet}"
+            else:
+                line = (f"[CHAT @all from {name}]: {snippet}\n"
+                        f"Run `cdash chat read` for full context.")
             append_inject(sf_pid, line + "\n")
 
     active = len([r for r in rows if r[1] and r[1] > 0])

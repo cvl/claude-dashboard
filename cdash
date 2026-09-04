@@ -32,15 +32,16 @@ show_chat_help() {
   echo "cdash chat — Inter-agent communication"
   echo ""
   echo "Commands:"
-  echo "  cdash chat send \"message\"            Broadcast to all agents in channel"
-  echo "  cdash chat send \"message\" --to NAME  DM a specific agent"
+  echo "  cdash chat send \"message\"            Broadcast (no injection, agents see on next read)"
+  echo "  cdash chat send \"message\" --to NAME  DM a specific agent (injects immediately)"
   echo "  cdash chat send \"message\" --to human Escalate to human (triggers notification)"
+  echo "  cdash chat send \"message\" --all      Broadcast + inject to all agents (use sparingly)"
   echo "  cdash chat read                      Show new messages since last read"
   echo "  cdash chat read --all                Show all messages (last 5 days on first read)"
   echo "  cdash chat list                      Show agents in current channel"
   echo ""
-  echo "Channel is resolved from the chat database by session name."
-  echo "Session name comes from the proxy state file (set at launch)."
+  echo "Broadcasts are stored but not injected — agents pick them up on next read."
+  echo "Use --all only when all agents must act immediately."
 }
 
 if [ $# -eq 0 ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -106,14 +107,17 @@ print(f'{name}|{channel}')
   case "$subcmd" in
     send)
       msg="${1:-}"; shift 2>/dev/null || true
-      to_args=""
+      extra_args=""
       if [ "${1:-}" = "--to" ]; then
-        to_args="--to ${2:-}"
+        extra_args="--to ${2:-}"
         shift 2 2>/dev/null || true
+      elif [ "${1:-}" = "--all" ]; then
+        extra_args="--all"
+        shift 2>/dev/null || true
       fi
       python3 "$AGENT_CHAT_PY" send --project "$project" --name "$session_name" \
         --type "$agent_type" --pid "$pid" ${proxy_pid:+--proxy-pid "$proxy_pid"} \
-        ${to_args} --message "$msg"
+        ${extra_args} --message "$msg"
       ;;
     read)
       python3 "$AGENT_CHAT_PY" read --project "$project" --name "$session_name" \
