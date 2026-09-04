@@ -4144,10 +4144,11 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for i in 0..<mbrs.count {
             let sid = mbrs[i].sessionId
             let dbName = mbrs[i].name
-            let live = !sid.isEmpty
+            // Match by session_id first, fall back to name match for members without session_id
+            let live: Session? = !sid.isEmpty
                 ? (allSess.first(where: { $0.sessionId == sid && $0.state != .dead })
                    ?? allSess.first(where: { $0.sessionId == sid }))
-                : nil
+                : allSess.first(where: { $0.name == dbName && $0.state != .dead })
             if let live {
                 mbrs[i] = ChatMember(name: live.name, agentType: mbrs[i].agentType, state: live.state, sessionId: sid)
                 // Sync name in chat db if it changed (e.g. session renamed)
