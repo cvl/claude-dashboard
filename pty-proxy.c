@@ -566,20 +566,21 @@ int main(int argc, char *argv[]) {
                 char screen[CLEAN_SIZE];
                 int slen = ring_recent_clean(screen, CLEAN_SIZE - 1);
 
-                /* Extract model from screen (e.g. "Opus 4.6 (1M" or "Fable 5.1 (") */
+                /* Extract model from screen (e.g. "Opus 4.6", "Fable 5.1", "Opus 5") */
                 {
                     static const char *model_names[] = {"Opus ", "Fable ", "Sonnet ", "Haiku ", NULL};
                     for (const char **mp = model_names; *mp; mp++) {
                         const char *found = strstr(screen, *mp);
                         if (found) {
-                            const char *start = found;
-                            const char *end = start;
-                            /* Advance past name + version number (e.g. "Opus 4.6") */
-                            while (*end && *end != '(' && *end != '\n' && (end - start) < 20) end++;
-                            while (end > start && (end[-1] == ' ' || end[-1] == '\t')) end--;
-                            int len = (int)(end - start);
+                            const char *end = found + strlen(*mp);
+                            /* Capture version: digits, dots (e.g. "4.6", "5", "5.1") */
+                            while (*end >= '0' && *end <= '9') {
+                                end++;
+                                if (*end == '.') { end++; while (*end >= '0' && *end <= '9') end++; }
+                            }
+                            int len = (int)(end - found);
                             if (len > 0 && len < (int)sizeof(detected_model)) {
-                                memcpy(detected_model, start, len);
+                                memcpy(detected_model, found, len);
                                 detected_model[len] = '\0';
                             }
                             break;
@@ -616,9 +617,17 @@ int main(int argc, char *argv[]) {
                 }
                 /* needs_input → other: no debounce, transition immediately */
 
-                if (new_state != current_state) {
-                    const char *labels[] = {"idle","working","needs_input","rate_limited"};
-                    proxy_log("STATE %s → %s", labels[current_state], labels[new_state]);
+                static char prev_model[64] = "";
+                int model_changed = strcmp(detected_model, prev_model) != 0;
+                if (new_state != current_state || model_changed) {
+                    if (new_state != current_state) {
+                        const char *labels[] = {"idle","working","needs_input","rate_limited"};
+                        proxy_log("STATE %s → %s", labels[current_state], labels[new_state]);
+                    }
+                    if (model_changed) {
+                        proxy_log("MODEL %s → %s", prev_model[0] ? prev_model : "(none)", detected_model);
+                        snprintf(prev_model, sizeof(prev_model), "%s", detected_model);
+                    }
                     write_state(child_pid, new_state);
                     if (new_state == ST_RATE_LIMITED) last_retry_time = time(NULL);
                     current_state = new_state;
