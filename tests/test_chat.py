@@ -240,6 +240,42 @@ class TestDelivery(ChatTestBase):
                           "message": "hello", "to": "agent"})
         self.assertTrue(os.path.exists(os.path.join(self.state_dir, "99999.inject")))
 
+    def test_pty_attempts_recorded(self):
+        """PTY delivery records attempts=1."""
+        self._add_session("proj", "sender", "claude")
+        self._add_session("proj", "agent1", "claude", "pty", pid=99999)
+        self._write_state_file(99999, "agent1")
+        self.mod.cmd_send({"project": "proj", "name": "sender", "type": "claude",
+                          "message": "hello", "to": "agent1"})
+        db = self._get_db()
+        row = db.execute("SELECT attempts FROM message_deliveries WHERE recipient_name='agent1'").fetchone()
+        db.close()
+        self.assertEqual(row[0], 1)
+
+    def test_all_mixed_recipients(self):
+        """--all with codex, live PTY, dead PTY, human: correct partial results."""
+        self._add_session("proj", "sender", "claude")
+        self._add_session("proj", "codex-bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        self._add_session("proj", "live-pty", "claude", "pty", pid=99999)
+        self._add_session("proj", "dead-pty", "claude", "pty", pid=88888)
+        self._add_session("proj", "human", "human", "pty", pid=0)
+        self._write_state_file(99999, "live-pty")
+        # dead-pty has no state file
+        with self.assertRaises(SystemExit):  # partial failure from dead-pty
+            self.mod.cmd_send({"project": "proj", "name": "sender", "type": "claude",
+                              "message": "urgent", "all": True})
+        self.assertEqual(len(self.calls), 1)  # Only codex-bot queued
+        db = self._get_db()
+        codex_row = db.execute("SELECT state FROM message_deliveries WHERE recipient_name='codex-bot'").fetchone()
+        pty_row = db.execute("SELECT state FROM message_deliveries WHERE recipient_name='live-pty'").fetchone()
+        dead_row = db.execute("SELECT state FROM message_deliveries WHERE recipient_name='dead-pty'").fetchone()
+        human_row = db.execute("SELECT state FROM message_deliveries WHERE recipient_name='human'").fetchone()
+        db.close()
+        self.assertEqual(codex_row[0], "delivered")
+        self.assertEqual(pty_row[0], "delivered")
+        self.assertEqual(dead_row[0], "failed")
+        self.assertIsNone(human_row)  # Human not treated as agent delivery
+
     def test_multiple_dms_ordered(self):
         self._add_session("proj", "sender", "claude")
         self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")

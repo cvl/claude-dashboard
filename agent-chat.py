@@ -61,19 +61,18 @@ def ensure_project(db, project_id):
 
 def ensure_session(db, project_id, name, agent_type, pid=None, proxy_pid=None, cwd=None, session_id=None):
     ensure_project(db, project_id)
-    # If session_id is a valid UUID and agent_type is codex, refresh codex_queue transport
-    transport_update = ""
-    if session_id and UUID_RE.match(session_id) and agent_type == "codex":
-        transport_update = ", delivery_transport='codex_queue'"
-    db.execute(f"""INSERT INTO sessions(project_id, display_name, agent_type, working_directory, pid, proxy_pid, session_id)
-        VALUES(?, ?, ?, ?, ?, ?, ?)
+    is_codex = session_id and UUID_RE.match(session_id) and agent_type == "codex"
+    transport = "codex_queue" if is_codex else "pty"
+    db.execute("""INSERT INTO sessions(project_id, display_name, agent_type, working_directory, pid, proxy_pid, session_id, delivery_transport)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project_id, display_name) DO UPDATE SET
             agent_type=excluded.agent_type, pid=COALESCE(excluded.pid, pid),
             proxy_pid=COALESCE(excluded.proxy_pid, proxy_pid),
             working_directory=COALESCE(excluded.working_directory, working_directory),
             session_id=COALESCE(excluded.session_id, session_id),
-            last_seen=unixepoch(){transport_update}""",
-        (project_id, name, agent_type, cwd, pid, proxy_pid, session_id))
+            delivery_transport=CASE WHEN excluded.delivery_transport='codex_queue' THEN 'codex_queue' ELSE delivery_transport END,
+            last_seen=unixepoch()""",
+        (project_id, name, agent_type, cwd, pid, proxy_pid, session_id, transport))
     db.commit()
 
 def find_codex_bin():
@@ -164,15 +163,6 @@ def deliver_codex_queue(db, msg_id, project, sender_name, sender_type, recipient
 
     _record_delivery(db, msg_id, project, recipient, "codex_queue", "delivered", ext_id=ext_id)
     return True
-
-def read_state_file(pid):
-    """Read state file for a PID. Returns (event, proxy_pid) or None."""
-    try:
-        with open(f"{STATE_DIR}/{pid}.state") as f:
-            j = json.load(f)
-            return j.get("event", ""), j.get("proxy_pid", 0)
-    except Exception:
-        return None
 
 def find_all_state_files():
     """Read all state files. Returns list of (child_pid, event, proxy_pid, tty, name, project)."""
@@ -292,9 +282,10 @@ def cmd_read(args):
     pid = args.get("pid")
     proxy_pid = args.get("proxy_pid")
     cwd = args.get("cwd")
+    session_id = args.get("session_id")
 
     db = get_db()
-    ensure_session(db, project, name, agent_type, pid, proxy_pid, cwd)
+    ensure_session(db, project, name, agent_type, pid, proxy_pid, cwd, session_id)
 
     # Get read cursor
     cursor = 0
@@ -361,49 +352,37 @@ def cmd_list(args):
     print(f"── {project} sessions ──")
     now = int(time.time())
     for name, atype, pid, last_seen in rows:
-        alive = pid and pid > 0 and os.path.exists(f"/proc/{pid}") if sys.platform == "linux" else (
-            pid and pid > 0 and os.system(f"kill -0 {pid} 2>/dev/null") == 0)
-        if alive:
-            status = f"active   pid {pid}"
-        elif pid and pid > 0:
-            ago = now - last_seen
-            if ago < 60: status = f"idle     {ago}s ago"
-            elif ago < 3600: status = f"idle     {ago // 60}m ago"
-            else: status = f"offline  {ago // 3600}h ago"
-        else:
-            status = "disconnected"
+        alive = pid and pid > 0 and os.system(f"kill -0 {pid} 2>/dev/null") == 0
+        ago = now - last_seen
+        status = (f"active pid {pid}" if alive else
+                  f"idle {ago}s ago" if pid and ago < 60 else
+                  f"idle {ago//60}m ago" if pid and ago < 3600 else
+                  f"offline {ago//3600}h ago" if pid else "disconnected")
         print(f"  {atype}/{name:<20s} {status}")
 
+def _require(args, *keys):
+    for k in keys:
+        if not args.get(k): sys.exit(f"Error: --{k} required")
+    return [args[k] for k in keys]
+
 def cmd_attach(args):
-    project = args.get("project", "")
-    name = args.get("name", "")
+    project, name = _require(args, "project", "name")
     thread_id = args.get("thread") or os.environ.get("CODEX_THREAD_ID", "")
-    if not project or not name:
-        print("Error: --name and --project required", file=sys.stderr)
-        sys.exit(1)
-    if not thread_id:
-        print("Error: --thread UUID or CODEX_THREAD_ID env required", file=sys.stderr)
-        sys.exit(1)
-    if not UUID_RE.match(thread_id):
-        print(f"Error: invalid thread UUID: {thread_id}", file=sys.stderr)
-        sys.exit(1)
+    if not thread_id: sys.exit("Error: --thread UUID or CODEX_THREAD_ID env required")
+    if not UUID_RE.match(thread_id): sys.exit(f"Error: invalid thread UUID: {thread_id}")
     db = get_db()
     ensure_project(db, project)
-    db.execute("""INSERT INTO sessions(project_id, display_name, agent_type, session_id, delivery_transport)
-        VALUES(?,?,?,?,?) ON CONFLICT(project_id, display_name) DO UPDATE SET
+    db.execute("""INSERT INTO sessions(project_id, display_name, agent_type, session_id, delivery_transport, pid, proxy_pid)
+        VALUES(?,?,?,?,?,0,0) ON CONFLICT(project_id, display_name) DO UPDATE SET
         agent_type='codex', session_id=excluded.session_id, delivery_transport='codex_queue',
-        last_seen=unixepoch()""",
+        pid=0, proxy_pid=0, last_seen=unixepoch()""",
         (project, name, "codex", thread_id, "codex_queue"))
     db.commit()
     db.close()
     print(f"Attached {name} to {project} (thread {thread_id}, transport codex_queue)")
 
 def cmd_detach(args):
-    project = args.get("project", "")
-    name = args.get("name", "")
-    if not project or not name:
-        print("Error: --name and --project required", file=sys.stderr)
-        sys.exit(1)
+    project, name = _require(args, "project", "name")
     db = get_db()
     try:
         row = db.execute("SELECT 1 FROM sessions WHERE project_id=? AND display_name=?", (project, name)).fetchone()
@@ -418,11 +397,7 @@ def cmd_detach(args):
         db.close()
 
 def cmd_status(args):
-    project = args.get("project", "")
-    name = args.get("name", "")
-    if not project or not name:
-        print("Error: --name and --project required", file=sys.stderr)
-        sys.exit(1)
+    project, name = _require(args, "project", "name")
     db = get_db()
     row = db.execute("""SELECT agent_type, session_id, delivery_transport,
         delivery_last_success_at, delivery_last_error FROM sessions
@@ -431,18 +406,12 @@ def cmd_status(args):
     if not row:
         print(f"No session found: {name} in {project}")
         sys.exit(1)
-    atype, thread_id, transport, last_ok, last_err = row
-    transport = transport or "pty"
-    thread_display = thread_id or "(none)"
-    last_ok_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_ok)) if last_ok else "never"
-    print(f"Project:   {project}")
-    print(f"Name:      {name}")
-    print(f"Type:      {atype}")
-    print(f"Thread:    {thread_display}")
-    print(f"Transport: {transport}")
-    print(f"Last OK:   {last_ok_str}")
-    if last_err:
-        print(f"Last err:  {last_err}")
+    atype, tid, transport, last_ok, last_err = row
+    ok_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_ok)) if last_ok else "never"
+    lines = [f"Project: {project}", f"Name: {name}", f"Type: {atype}",
+             f"Thread: {tid or '(none)'}", f"Transport: {transport or 'pty'}", f"Last OK: {ok_str}"]
+    if last_err: lines.append(f"Last err: {last_err}")
+    print("\n".join(lines))
 
 def cmd_retry(args):
     msg_id = args.get("message_id") or args.get("message")
