@@ -256,3 +256,16 @@ The 24 isolated backend tests pass and no longer contact real Codex. The 69 Swif
 10. Add the requested mixed `--all` test: one Codex, one live PTY, one dead PTY, and human. Assert one queue call, one inject, one recorded failure/non-zero overall result, successful rows retained, and no agent-delivery row for human.
 11. Make the argv test exact: assert list length and every fixed element including argv[0], then assert the complete expected envelope string rather than several substrings.
 12. Reinstall only after the canonical combined gate passes; reattach and verify no transient-PID presence artifact. Message `1399` remains awaiting independent Desktop-turn confirmation.
+
+## Supervisor Review: Commit `1dfe674`
+
+The combined canonical gate now passes: 25 isolated Python tests and 69 Swift tests. The live PTY moved-channel regression is fixed. Remaining functional requirements are still unimplemented; fix them in a follow-up commit without amending or pushing.
+
+1. Fresh Desktop auto-registration is broken. Reproduction using source `cdash`, temporary DB, and `CODEX_THREAD_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`: `chat read --name fresh-codex --project audit`, then `chat status`, prints `Type: codex`, `Thread: (none)`, `Transport: pty`. Cause: `cmd_read` ignores `args.session_id`, and `ensure_session` assigns `codex_queue` only on conflict, not insert. Pass session ID through read and make both insert/update produce `codex_queue` for a valid Codex thread.
+2. Attach does not clear stale process identity. Reproduction: create session with PID `424242` and proxy PID `434343`, then attach; row remains `('codex', UUID, 'codex_queue', 424242, 434343)`. `cmd_attach` must set PID/proxy PID to zero/null so the Desktop endpoint never inherits stale PTY presence.
+3. Add the still-missing CLI integration test that reproduces item 1 through the source `cdash` with `CDASH_AGENT_CHAT_PY`, temporary DB/state directory, and controlled environment. Assert type, thread, transport, and PID before and after normal read/send.
+4. `agent-chat.py` remains 552 lines. Finish the requested reduction below about 500 lines. Prefer extracting repeated session/delivery helpers cleanly; if adding a module, install and test it.
+5. The PTY test selects `attempts` but never asserts it. Assert `attempts == 1`.
+6. The requested mixed `--all` test is still absent. Cover one Codex, one live PTY, one dead PTY, and human; assert partial non-zero, successful deliveries preserved, and human excluded from agent deliveries.
+7. Strengthen `test_dm_argv` to assert all six argv elements and the complete expected envelope, not substrings. Add retry-pending and row-error-cleared assertions introduced by the latest fixes.
+8. After fixes, run the combined gate, reinstall, attach/refresh `apisettle-supervisor`, and verify the database PID is zero/null. Do not claim completion without mapping each numbered item to a code change or test.
