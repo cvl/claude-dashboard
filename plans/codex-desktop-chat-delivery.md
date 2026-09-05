@@ -239,3 +239,20 @@ The real Desktop transport passed with message `1393`, but the implementation ga
 13. Remove misleading test comments/names unless their assertions actually prove the described behavior. The final test run must make no real `codex queue` call and emit no real App Server error.
 14. Reinstall only after the revised canonical gate passes. Reattach `apisettle-supervisor`, then show status with `Type: codex`, expected UUID, `Transport: codex_queue`, no transient PID presence artifact, and correct latest diagnostics.
 15. Message `1399` still requires independent next-turn receipt confirmation; seeing it through `cdash chat read` is not proof.
+
+## Supervisor Review: Commit `106afd6`
+
+The 24 isolated backend tests pass and no longer contact real Codex. The 69 Swift tests also pass with normal compiler-cache access. The agent claim that all second-review items were addressed is incorrect: this commit changed only `agent-chat.py` and `tests/test_chat.py`. Complete the remaining work in a follow-up commit; do not amend and do not push.
+
+1. Implement the untouched CLI requirements: `CDASH_AGENT_CHAT_PY` override; normal Desktop send/read passing `CODEX_THREAD_ID` as `--session-id`; no transient `$$` PID for external Desktop; automatic `codex_queue` refresh; attach clearing stale PID/proxy PID.
+2. Add CLI integration tests using the source `cdash`, temporary backend/database/state directory, and controlled environment. Prove attach plus normal read/send retains type `codex`, exact thread ID, transport `codex_queue`, and null/zero PID.
+3. Add the untouched Python-suite invocation to `scripts/run-tests`. One canonical command must run both Python chat tests and Swift tests without a real Codex call.
+4. `agent-chat.py` is still 552 lines. Reduce it below the repository guideline of about 500 through focused helpers/refactoring or an installed module; update installer/tests if split.
+5. The no-binary branch still bypasses `_record_delivery`, so `sessions.delivery_last_error` is not updated. Use the centralized failure path and extend the missing-binary test to assert session diagnostics.
+6. `_record_delivery(..., "pending")` uses `ON CONFLICT DO NOTHING`; a retry leaves the visible row in `failed` while the second queue call is in flight. On conflict, set state back to `pending`, update timestamp, and clear the row error without incrementing attempts until the attempt resolves. Test pending visibility during retry.
+7. Successful delivery updates do not clear `message_deliveries.last_error`, leaving `state=delivered` with a stale failure reason. Clear row-level error on success and assert it after fail-then-retry.
+8. PTY isolation currently accepts a state file with no project via `(not sf_project or sf_project == project)`. Require exact project equality. Add a regression proving a missing-project state cannot receive a channel message.
+9. PTY attempts were added but the current test does not assert `attempts == 1`. Add the assertion.
+10. Add the requested mixed `--all` test: one Codex, one live PTY, one dead PTY, and human. Assert one queue call, one inject, one recorded failure/non-zero overall result, successful rows retained, and no agent-delivery row for human.
+11. Make the argv test exact: assert list length and every fixed element including argv[0], then assert the complete expected envelope string rather than several substrings.
+12. Reinstall only after the canonical combined gate passes; reattach and verify no transient-PID presence artifact. Message `1399` remains awaiting independent Desktop-turn confirmation.
