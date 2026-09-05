@@ -269,3 +269,12 @@ The combined canonical gate now passes: 25 isolated Python tests and 69 Swift te
 6. The requested mixed `--all` test is still absent. Cover one Codex, one live PTY, one dead PTY, and human; assert partial non-zero, successful deliveries preserved, and human excluded from agent deliveries.
 7. Strengthen `test_dm_argv` to assert all six argv elements and the complete expected envelope, not substrings. Add retry-pending and row-error-cleared assertions introduced by the latest fixes.
 8. After fixes, run the combined gate, reinstall, attach/refresh `apisettle-supervisor`, and verify the database PID is zero/null. Do not claim completion without mapping each numbered item to a code change or test.
+
+## Final Acceptance Delta: Commit `7d40a49`
+
+Fresh registration and stale-PID cleanup now pass the direct reproduction. Combined gate passes 27 Python plus 69 Swift tests. The 522-line backend is close enough to the approximate repository guideline and is not a blocker. Complete only these remaining acceptance items; do not amend or push.
+
+1. Add the still-missing source-CLI integration test. Execute repository `./cdash chat read` with `CODEX_THREAD_ID`, `CDASH_AGENT_CHAT_PY`, temporary DB/state paths, and explicit name/project. Assert the resulting row is `codex`, exact UUID, `codex_queue`, PID zero, then run a normal send/read again and assert it remains correct. This test must fail against pre-`7d40a49` behavior.
+2. Fix chat presence for attached Desktop tasks. `cdash chat list` currently prints `codex/apisettle-supervisor disconnected` despite a valid `codex_queue` attachment. Select transport/thread ID in `cmd_list` and show a clear `attached` state with last-seen age when no PTY PID exists. Add a backend or CLI assertion.
+3. Tighten the queue argv assertion to compare the complete six-element list and complete expected envelope. Add assertions that retry changes the row to `pending` during the call and clears row-level `last_error` after success.
+4. Confirm E2E messages `1399` and prior were independently received in FIFO order. Run the combined gate, install through the repository script, reattach/refresh `apisettle-supervisor`, show `chat status` plus `chat list`, then send one final uniquely identified DM for boundary delivery proof.
