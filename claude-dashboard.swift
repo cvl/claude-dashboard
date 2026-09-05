@@ -119,7 +119,6 @@ struct Session {
     let lastActive: Date
     let hookTs: Int  // timestamp from hook state file, 0 if none
     let source: String  // "claude" or "codex"
-    var model: String? = nil  // detected model from proxy, e.g. "Opus 4.6"
 }
 
 struct Terminal {
@@ -221,7 +220,7 @@ func isCdashSession(_ pid: pid_t) -> Bool {
     return j["proxy_pid"] != nil
 }
 
-func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?, name: String?, model: String?)? {
+func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?, name: String?)? {
     let url = URL(fileURLWithPath: "\(stateDir)/\(pid).state")
     guard let data = try? Data(contentsOf: url),
           let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -232,8 +231,7 @@ func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?, name
     }
     let tty = j["tty"] as? String
     let name = j["name"] as? String
-    let model = j["model"] as? String
-    return (event, ts, tty, name, model)
+    return (event, ts, tty, name)
 }
 
 func resolveState(_ pid: pid_t) -> State {
@@ -418,7 +416,6 @@ func loadSessions() -> [Session] {
                 lastActive: lastActiveTime[p] ?? fallback,
                 hookTs: sf?.ts ?? 0,
                 source: "claude")
-            s.model = sf?.model
             // Skip agent-looper sessions (names like "xxx-rev-f1-ab" or "xxx-fix-f2-cd")
             if sname.range(of: #"-(?:rev|fix)-f\d+-[a-z]{2}$"#, options: .regularExpression) != nil { continue }
             if !sid.isEmpty { liveBySessionId[sid] = s }
@@ -481,7 +478,6 @@ func loadSessions() -> [Session] {
                          startedAt: s.startedAt, state: s.state, tty: s.tty,
                          hasNotes: hasNotesFile(name: s.name, sessionId: internalId),
                          lastActive: s.lastActive, hookTs: s.hookTs, source: s.source)
-        session.model = s.model
         result.append(session)
     }
     let livePids = Set(result.map(\.pid))
@@ -3448,15 +3444,16 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if s.source == "codex" {
                 cmd = "cd \(s.cwd) && cdash codex --name '\(s.name)' resume \(resumeId)"
             } else {
+                // Read model from Claude settings (updated by /model command)
                 var modelFlag = " --model claude-opus-4-6"
-                if let m = s.model?.lowercased() {
-                    if m.contains("fable") { modelFlag = " --model fable" }
-                    else if m.contains("opus 4.6") { modelFlag = " --model claude-opus-4-6" }
-                    else if m.contains("opus 4.7") { modelFlag = " --model claude-opus-4-7" }
-                    else if m.contains("opus 4.8") { modelFlag = " --model claude-opus-4-8" }
-                    else if m.contains("opus 5") { modelFlag = " --model opus" }
-                    else if m.contains("sonnet") { modelFlag = " --model sonnet" }
-                    else if m.contains("haiku") { modelFlag = " --model haiku" }
+                let settingsPath = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(".claude/settings.json").path
+                if let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
+                   let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let model = j["model"] as? String, !model.isEmpty {
+                    // Strip context suffix like "[1m]"
+                    let clean = model.replacingOccurrences(of: #"\[.*\]$"#, with: "", options: .regularExpression)
+                    modelFlag = " --model \(clean)"
                 }
                 cmd = "cd \(s.cwd) && cdash claude --resume \(resumeId) --name '\(s.name)'\(modelFlag) --effort max"
             }
