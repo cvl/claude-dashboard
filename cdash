@@ -208,12 +208,25 @@ case "$1" in
     export CDASH_SESSION_NAME="${session_name:-$(basename "$(pwd)")}"
     export CDASH_AGENT_TYPE="$agent_type"
     export CDASH_PROXY=1
-    # Default --effort max for claude
+    # Model picker for claude (skip if --model already specified)
     if [ "$agent_type" = "claude" ]; then
+      has_model=false
       has_effort=false
       for a in "${agent_args[@]+"${agent_args[@]}"}"; do
+        [ "$a" = "--model" ] && has_model=true
         [ "$a" = "--effort" ] && has_effort=true
       done
+      if [ "$has_model" = "false" ]; then
+        echo "Select model:"
+        echo "  1) Opus 4.6 max (default)"
+        echo "  2) Fable 5.1 max"
+        printf "Choice [1]: "
+        read -r choice
+        case "${choice:-1}" in
+          2) agent_args+=("--model" "fable") ;;
+          *) agent_args+=("--model" "claude-opus-4-6") ;;
+        esac
+      fi
       [ "$has_effort" = "false" ] && agent_args+=("--effort" "max")
     fi
     exec claude-dashboard-proxy "$agent_type" "${agent_args[@]+"${agent_args[@]}"}"
