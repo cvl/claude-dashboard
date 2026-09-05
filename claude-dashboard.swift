@@ -477,11 +477,11 @@ func loadSessions() -> [Session] {
     for (sid, s) in liveBySessionId {
         // Find the internal ID for this live session
         let internalId = store.first(where: { $0.value.activeSessionId == sid })?.key ?? sid
-        var session = s
-        session = Session(pid: s.pid, sessionId: internalId, name: s.name, cwd: s.cwd,
+        var session = Session(pid: s.pid, sessionId: internalId, name: s.name, cwd: s.cwd,
                          startedAt: s.startedAt, state: s.state, tty: s.tty,
                          hasNotes: hasNotesFile(name: s.name, sessionId: internalId),
                          lastActive: s.lastActive, hookTs: s.hookTs, source: s.source)
+        session.model = s.model
         result.append(session)
     }
     let livePids = Set(result.map(\.pid))
