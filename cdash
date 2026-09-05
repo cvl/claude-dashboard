@@ -31,7 +31,7 @@ show_help() {
 show_chat_help() {
   echo "cdash chat — Inter-agent communication"
   echo ""
-  echo "Commands:"
+  echo "Messaging:"
   echo "  cdash chat send \"msg\"                Broadcast (stored, no interruption)"
   echo "  cdash chat send \"msg\" --to NAME      Direct message (interrupts that agent)"
   echo "  cdash chat send \"msg\" --to human     Escalate to human (triggers notification)"
@@ -40,12 +40,21 @@ show_chat_help() {
   echo "  cdash chat read --all                Show all messages (last 5 days)"
   echo "  cdash chat list                      Show agents in current channel"
   echo ""
+  echo "Codex Desktop (attach external tasks to chat):"
+  echo "  cdash chat attach                    Register current task (uses CODEX_THREAD_ID)"
+  echo "  cdash chat attach --thread UUID      Register with explicit thread ID"
+  echo "  cdash chat detach                    Unregister (preserves history)"
+  echo "  cdash chat status                    Show attachment state and delivery info"
+  echo "  cdash chat retry --message-id N --to NAME   Retry failed delivery"
+  echo ""
   echo "External agents (not launched via cdash):"
   echo "  cdash chat send \"msg\" --name myagent --project myproject"
   echo "  cdash chat read --name myagent --project myproject"
+  echo "  cdash chat attach --name myagent --project myproject --thread UUID"
   echo ""
   echo "Broadcasts are stored but not injected — agents see them on next read."
   echo "Use --all only when all agents must act immediately."
+  echo "Attached Codex tasks receive DMs via codex queue (no PTY needed)."
 }
 
 if [ $# -eq 0 ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -145,9 +154,21 @@ print(f'{name}|{channel}')
     list)
       python3 "$AGENT_CHAT_PY" list --project "$project" "$@"
       ;;
+    attach)
+      python3 "$AGENT_CHAT_PY" attach --name "$session_name" --project "$project" "$@"
+      ;;
+    detach)
+      python3 "$AGENT_CHAT_PY" detach --name "$session_name" --project "$project"
+      ;;
+    status)
+      python3 "$AGENT_CHAT_PY" status --name "$session_name" --project "$project"
+      ;;
+    retry)
+      python3 "$AGENT_CHAT_PY" retry "$@"
+      ;;
     *)
       echo "Unknown chat command: $subcmd" >&2
-      echo "Usage: cdash chat <send|read|list>" >&2
+      echo "Usage: cdash chat <send|read|list|attach|detach|status|retry>" >&2
       exit 1
       ;;
   esac
