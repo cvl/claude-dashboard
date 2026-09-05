@@ -290,6 +290,21 @@ static int contains_ci(const char *haystack, const char *needle) {
     return 0;
 }
 
+/* Check if title contains half-circle spinner (U+25D0-U+25D3, UTF-8: E2 97 90-93) */
+static int title_has_halfcircle(const char *title) {
+    const unsigned char *p = (const unsigned char *)title;
+    while (*p) {
+        if (p[0] == 0xE2 && p[1] == 0x97 && p[2] >= 0x90 && p[2] <= 0x93) return 1;
+        if (*p >= 0x80) {
+            if ((*p & 0xE0) == 0xC0) { if (!p[1]) break; p += 2; }
+            else if ((*p & 0xF0) == 0xE0) { if (!p[1] || !p[2]) break; p += 3; }
+            else if ((*p & 0xF8) == 0xF0) { if (!p[1] || !p[2] || !p[3]) break; p += 4; }
+            else p++;
+        } else p++;
+    }
+    return 0;
+}
+
 /* Check if title contains braille spinner characters (U+2800-U+28FF) */
 static int title_has_braille(const char *title) {
     const unsigned char *p = (const unsigned char *)title;
@@ -356,11 +371,11 @@ static state_t detect_state(const char *screen, const char *title) {
                 if (*p == '\n') p++;
             }
         }
-        /* OSC title: braille spinner = working */
-        if (title_has_braille(title)) return ST_WORKING;
+        /* OSC title: braille spinner or half-circle spinner = working */
+        if (title_has_braille(title) || title_has_halfcircle(title)) return ST_WORKING;
         /* OSC title: ✳ = idle */
         if (title_starts_with_sparkle(title)) return ST_IDLE;
-        /* Fallback: output activity (for fullscreen renderer with no OSC titles) */
+        /* Fallback: output activity (for modes with no OSC titles, e.g. -p) */
         if (title[0] == '\0' && had_output) {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
@@ -550,10 +565,14 @@ int main(int argc, char *argv[]) {
 
                 /* Debug: dump screen + state when CDASH_DEBUG is set */
                 if (getenv("CDASH_DEBUG")) {
-                    FILE *dbg = fopen(STATE_DIR "/debug.log", "w");
+                    struct timespec dnow;
+                    clock_gettime(CLOCK_MONOTONIC, &dnow);
+                    long since = had_output ? (dnow.tv_sec - last_output_time.tv_sec) * 1000 +
+                        (dnow.tv_nsec - last_output_time.tv_nsec) / 1000000 : -1;
+                    FILE *dbg = fopen(STATE_DIR "/debug.log", "a");
                     if (dbg) {
-                        fprintf(dbg, "state=%d title=[%s] slen=%d\n---\n%.800s\n",
-                                new_state, osc_title, slen, screen);
+                        fprintf(dbg, "state=%d title=[%s] slen=%d output_ago=%ldms\n---\n%.400s\n===\n",
+                                new_state, osc_title, slen, since, screen);
                         fclose(dbg);
                     }
                 }
