@@ -199,3 +199,23 @@ After unit/integration tests pass:
 - Never push.
 - Report each commit hash, changed files, exact commands/results, installation steps, proof marker IDs, and remaining limitations.
 - Completion requires the real Desktop proof, all tests green, help/docs updated, and no regression to Claude delivery.
+
+## Supervisor Review: Commit `de9b472`
+
+This commit is an implementation checkpoint, not complete. Fix every item below in a follow-up commit; do not amend and do not push.
+
+1. Add the complete Python test suite from Step 5. The commit currently adds no tests.
+2. Update README usage, behavior, failure/retry semantics, and file/data notes. CLI help alone is insufficient.
+3. Fix automatic Codex identity. After attach followed by normal `cdash chat read`, `status` currently reports `Type: claude`. When `CODEX_THREAD_ID` exists, the shell wrapper must use `agent_type=codex`, pass the thread ID to the backend, avoid registering the short-lived shell PID as the agent PID, and preserve/refresh `codex_queue` transport.
+4. Add test-only path overrides for the backend, database, state directory, and Codex executable. Tests must never touch the real installed backend, home database, `/tmp/claude-dash`, or real Codex queue. An explicitly configured invalid `CODEX_BIN` must fail; it must not silently fall back to another binary on `PATH`.
+5. Fix missing-recipient behavior. A DM to an unknown recipient currently inserts the chat message and prints success because no row enters `codex_failures`. It must remain stored but return non-zero with a clear undelivered error and delivery record.
+6. Fix unattached/disconnected recipient behavior. A session without a matching live PTY state file currently prints success even though nothing was injected. Record and report failure. Change `append_inject` to return success/failure rather than swallowing exceptions.
+7. Fix `--all` targeting. Do not treat the human row or dead/unattached rows as successfully injected. Queue each attached Codex agent once, inject each live PTY agent once, and report partial failures visibly while preserving successful deliveries.
+8. Create delivery rows for PTY attempts too, as required by Step 3. Every wake attempt needs observable pending/delivered/failed state.
+9. Maintain session delivery diagnostics: set `delivery_last_error` on failure; clear it and set `delivery_last_success_at` on success. `status` must reflect the latest outcome.
+10. Catch `OSError` around subprocess launch and invalid/non-numeric retry IDs. Close the database on every early return/error path; use `try/finally` or context management.
+11. `detach` of a missing session must return non-zero instead of claiming success. Preserve messages/read cursor for a real session.
+12. Make queue-ID parsing strict enough not to accept any arbitrary 36-character hyphen string. Missing queue ID after exit 0 can remain delivered if the CLI contract permits it, but report it honestly.
+13. Run and report every gate from Step 5. Also verify the migration against a fixture containing exactly the pre-`de9b472` schema.
+14. Reinstall only after tests pass, then reattach `apisettle-supervisor` and verify `Type: codex`, correct thread UUID, `Transport: codex_queue`, and latest success/error fields.
+15. The current E2E message `1393` is not confirmed merely because `cdash chat read` printed it. It passes only if it independently starts the next visible Desktop turn at the safe boundary.
