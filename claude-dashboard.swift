@@ -3444,16 +3444,12 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if s.source == "codex" {
                 cmd = "cd \(s.cwd) && cdash codex --name '\(s.name)' resume \(resumeId)"
             } else {
-                // Read model from Claude settings (updated by /model command)
+                // Read per-session model from statusLine-written file
                 var modelFlag = " --model claude-opus-4-6"
-                let settingsPath = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent(".claude/settings.json").path
-                if let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
-                   let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let model = j["model"] as? String, !model.isEmpty {
-                    // Strip context suffix like "[1m]"
-                    let clean = model.replacingOccurrences(of: #"\[.*\]$"#, with: "", options: .regularExpression)
-                    modelFlag = " --model \(clean)"
+                let modelPath = "\(stateDir)/\(s.pid).model"
+                if let modelId = try? String(contentsOfFile: modelPath, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !modelId.isEmpty {
+                    modelFlag = " --model \(modelId)"
                 }
                 cmd = "cd \(s.cwd) && cdash claude --resume \(resumeId) --name '\(s.name)'\(modelFlag) --effort max"
             }
