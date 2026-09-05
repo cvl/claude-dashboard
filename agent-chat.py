@@ -341,8 +341,8 @@ def cmd_list(args):
     project = args["project"]
     db = get_db()
     ensure_project(db, project)
-    rows = db.execute("""SELECT display_name, agent_type, pid, last_seen FROM sessions
-        WHERE project_id=? ORDER BY last_seen DESC""", (project,)).fetchall()
+    rows = db.execute("""SELECT display_name, agent_type, pid, last_seen, COALESCE(delivery_transport,'pty'), session_id
+        FROM sessions WHERE project_id=? ORDER BY last_seen DESC""", (project,)).fetchall()
     db.close()
 
     if not rows:
@@ -351,13 +351,17 @@ def cmd_list(args):
 
     print(f"── {project} sessions ──")
     now = int(time.time())
-    for name, atype, pid, last_seen in rows:
+    for name, atype, pid, last_seen, transport, thread_id in rows:
         alive = pid and pid > 0 and os.system(f"kill -0 {pid} 2>/dev/null") == 0
-        ago = now - last_seen
-        status = (f"active pid {pid}" if alive else
-                  f"idle {ago}s ago" if pid and ago < 60 else
-                  f"idle {ago//60}m ago" if pid and ago < 3600 else
-                  f"offline {ago//3600}h ago" if pid else "disconnected")
+        ago = now - last_seen if last_seen else 0
+        if alive:
+            status = f"active pid {pid}"
+        elif transport == "codex_queue" and thread_id:
+            status = f"attached {ago//60}m ago" if ago < 3600 else f"attached {ago//3600}h ago"
+        elif pid and pid > 0:
+            status = f"idle {ago}s ago" if ago < 60 else f"idle {ago//60}m ago" if ago < 3600 else f"offline {ago//3600}h ago"
+        else:
+            status = "disconnected"
         print(f"  {atype}/{name:<20s} {status}")
 
 def _require(args, *keys):

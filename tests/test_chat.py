@@ -416,5 +416,48 @@ class TestMigration(ChatTestBase):
             self.assertIn(col, cols)
 
 
+class TestCLIIntegration(ChatTestBase):
+    def test_codex_identity_via_cli(self):
+        """CLI with CODEX_THREAD_ID produces correct identity after read+send."""
+        import subprocess as sp
+        cdash_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cdash")
+        agent_chat_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agent-chat.py")
+        env = dict(os.environ,
+            CDASH_AGENT_CHAT_PY=agent_chat_path,
+            CDASH_CHAT_DB=self.db_path,
+            CDASH_STATE_DIR=self.state_dir,
+            CODEX_THREAD_ID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            CODEX_BIN="/nonexistent-not-needed")
+        # Read — should create session with codex identity
+        sp.run([cdash_path, "chat", "read", "--name", "desktop-agent", "--project", "test-proj"],
+               env=env, capture_output=True, text=True)
+        db = sqlite3.connect(self.db_path)
+        row = db.execute("SELECT agent_type, session_id, delivery_transport, pid FROM sessions WHERE display_name='desktop-agent'").fetchone()
+        db.close()
+        self.assertEqual(row[0], "codex")
+        self.assertEqual(row[1], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        self.assertEqual(row[2], "codex_queue")
+        self.assertEqual(row[3], 0)  # No transient PID
+        # Send — identity must persist
+        sp.run([cdash_path, "chat", "send", "hello", "--name", "desktop-agent", "--project", "test-proj"],
+               env=env, capture_output=True, text=True)
+        db = sqlite3.connect(self.db_path)
+        row2 = db.execute("SELECT agent_type, session_id, delivery_transport FROM sessions WHERE display_name='desktop-agent'").fetchone()
+        db.close()
+        self.assertEqual(row2, ("codex", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "codex_queue"))
+
+
+class TestList(ChatTestBase):
+    def test_attached_codex_shows_attached(self):
+        """Attached codex_queue session shows as attached, not disconnected."""
+        self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", pid=0)
+        import io, contextlib
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.mod.cmd_list({"project": "proj"})
+        self.assertIn("attached", out.getvalue())
+        self.assertNotIn("disconnected", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
