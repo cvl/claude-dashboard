@@ -73,17 +73,49 @@ def ensure_session(db, project_id, name, agent_type, pid=None, proxy_pid=None, c
     db.commit()
 
 def find_codex_bin():
-    """Find the codex binary."""
+    """Find the codex binary. If CODEX_BIN is set, use only that (no fallback)."""
     custom = os.environ.get("CODEX_BIN")
-    if custom and os.path.isfile(custom): return custom
-    path = shutil.which("codex")
-    return path
+    if custom is not None:
+        if os.path.isfile(custom) and os.access(custom, os.X_OK):
+            return custom
+        return None  # Explicit CODEX_BIN set but invalid — never fall back
+    return shutil.which("codex")
+
+# Injectable subprocess runner for testing
+_subprocess_runner = None
+def _run_codex(argv, **kwargs):
+    if _subprocess_runner:
+        return _subprocess_runner(argv, **kwargs)
+    return subprocess.run(argv, **kwargs)
 
 UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
 
+def _record_delivery(db, msg_id, project, recipient, transport, state, error=None, ext_id=None):
+    """Centralized delivery recording — updates both deliveries and session diagnostics."""
+    if state == "pending":
+        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts)
+            VALUES(?,?,?,?,?,0) ON CONFLICT(message_id, recipient_name) DO NOTHING""",
+            (msg_id, project, recipient, transport, state))
+    elif state == "delivered":
+        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts, external_id, delivered_at)
+            VALUES(?,?,?,?,?,1,?,unixepoch()) ON CONFLICT(message_id, recipient_name) DO UPDATE SET
+            state='delivered', attempts=attempts+1, external_id=COALESCE(excluded.external_id, external_id),
+            delivered_at=unixepoch(), updated_at=unixepoch()""",
+            (msg_id, project, recipient, transport, state, ext_id))
+        db.execute("UPDATE sessions SET delivery_last_success_at=unixepoch(), delivery_last_error=NULL WHERE project_id=? AND display_name=?",
+            (project, recipient))
+    elif state == "failed":
+        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts, last_error)
+            VALUES(?,?,?,?,?,1,?) ON CONFLICT(message_id, recipient_name) DO UPDATE SET
+            state='failed', attempts=attempts+1, last_error=excluded.last_error, updated_at=unixepoch()""",
+            (msg_id, project, recipient, transport, state, error))
+        db.execute("UPDATE sessions SET delivery_last_error=? WHERE project_id=? AND display_name=?",
+            (error, project, recipient))
+    db.commit()
+
 def deliver_codex_queue(db, msg_id, project, sender_name, sender_type, recipient, body, thread_id):
     """Deliver a chat message via codex queue. Returns True on success."""
-    codex_bin = find_codex_bin()
+    codex_bin = "codex" if _subprocess_runner else find_codex_bin()
     if not codex_bin:
         db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts, last_error)
             VALUES(?,?,?,?,?,?,?) ON CONFLICT(message_id, recipient_name) DO UPDATE SET
@@ -103,36 +135,24 @@ def deliver_codex_queue(db, msg_id, project, sender_name, sender_type, recipient
                 f"{body}\n\n"
                 f"Reply through: cdash chat send \"<reply>\" --to {sender_name} --name {recipient} --project {project}")
 
+    # Insert pending row BEFORE calling codex — observable even if process dies
+    _record_delivery(db, msg_id, project, recipient, "codex_queue", "pending")
+
+    argv = [codex_bin, "queue", "--thread", thread_id, "--message", envelope]
     try:
-        result = subprocess.run(
-            [codex_bin, "queue", "--thread", thread_id, "--message", envelope],
-            text=True, capture_output=True, timeout=15, check=False)
+        result = _run_codex(argv, text=True, capture_output=True, timeout=15, check=False)
     except OSError as e:
-        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts, last_error)
-            VALUES(?,?,?,?,?,?,?) ON CONFLICT(message_id, recipient_name) DO UPDATE SET
-            state='failed', attempts=attempts+1, last_error=excluded.last_error, updated_at=unixepoch()""",
-            (msg_id, project, recipient, "codex_queue", "failed", 1, str(e)[:200]))
-        db.execute("UPDATE sessions SET delivery_last_error=? WHERE project_id=? AND display_name=?",
-            (str(e)[:200], project, recipient))
-        db.commit()
+        _record_delivery(db, msg_id, project, recipient, "codex_queue", "failed", error=str(e)[:200])
         print(f"Error: failed to launch codex: {e}", file=sys.stderr)
         return False
     except subprocess.TimeoutExpired:
-        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts, last_error)
-            VALUES(?,?,?,?,?,?,?) ON CONFLICT(message_id, recipient_name) DO UPDATE SET
-            state='failed', attempts=attempts+1, last_error=excluded.last_error, updated_at=unixepoch()""",
-            (msg_id, project, recipient, "codex_queue", "failed", 1, "timeout"))
-        db.commit()
+        _record_delivery(db, msg_id, project, recipient, "codex_queue", "failed", error="timeout")
         print(f"Error: codex queue timed out for {recipient}", file=sys.stderr)
         return False
 
     if result.returncode != 0:
         err = (result.stderr or result.stdout or "unknown error").strip()[:200]
-        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts, last_error)
-            VALUES(?,?,?,?,?,?,?) ON CONFLICT(message_id, recipient_name) DO UPDATE SET
-            state='failed', attempts=attempts+1, last_error=excluded.last_error, updated_at=unixepoch()""",
-            (msg_id, project, recipient, "codex_queue", "failed", 1, err))
-        db.commit()
+        _record_delivery(db, msg_id, project, recipient, "codex_queue", "failed", error=err)
         print(f"Error: codex queue failed for {recipient}: {err}", file=sys.stderr)
         return False
 
@@ -141,13 +161,7 @@ def deliver_codex_queue(db, msg_id, project, sender_name, sender_type, recipient
     m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', result.stdout or "", re.I)
     if m: ext_id = m.group(1)
 
-    db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts, external_id, delivered_at)
-        VALUES(?,?,?,?,?,?,?,unixepoch()) ON CONFLICT(message_id, recipient_name) DO UPDATE SET
-        state='delivered', attempts=attempts+1, external_id=excluded.external_id, delivered_at=unixepoch(), updated_at=unixepoch()""",
-        (msg_id, project, recipient, "codex_queue", "delivered", 1, ext_id))
-    db.execute("UPDATE sessions SET delivery_last_success_at=unixepoch() WHERE project_id=? AND display_name=?",
-        (project, recipient))
-    db.commit()
+    _record_delivery(db, msg_id, project, recipient, "codex_queue", "delivered", ext_id=ext_id)
     return True
 
 def read_state_file(pid):
@@ -239,29 +253,19 @@ def cmd_send(args):
                     else:
                         failures.append(r_name)
                 else:
-                    # PTY injection
+                    # PTY injection — match by name AND project
                     snippet = message[:150] + ("..." if len(message) > 150 else "")
                     line = f"[CHAT from {name} → you]: {snippet}" if recipient else f"[CHAT @all from {name}]: {snippet}"
                     injected = False
                     for sf_pid, sf_event, sf_proxy_pid, sf_tty, sf_name, sf_project in state_files:
-                        if sf_name == r_name:
+                        if sf_name == r_name and (not sf_project or sf_project == project):
                             injected = append_inject(sf_pid, line + "\n")
                             break
-                    # Record delivery
                     if injected:
-                        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, delivered_at)
-                            VALUES(?,?,?,?,?,unixepoch()) ON CONFLICT DO NOTHING""",
-                            (msg_id, project, r_name, "pty", "delivered"))
-                        db.execute("UPDATE sessions SET delivery_last_success_at=unixepoch(), delivery_last_error=NULL WHERE project_id=? AND display_name=?",
-                            (project, r_name))
+                        _record_delivery(db, msg_id, project, r_name, "pty", "delivered")
                     else:
-                        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, last_error)
-                            VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
-                            (msg_id, project, r_name, "pty", "failed", "no live PTY session"))
-                        db.execute("UPDATE sessions SET delivery_last_error=? WHERE project_id=? AND display_name=?",
-                            ("no live PTY session", project, r_name))
+                        _record_delivery(db, msg_id, project, r_name, "pty", "failed", error="no live PTY session")
                         failures.append(r_name)
-                    db.commit()
 
         if recipient:
             if failures:
@@ -451,33 +455,33 @@ def cmd_retry(args):
         print(f"Error: invalid message ID: {msg_id}", file=sys.stderr)
         sys.exit(1)
     db = get_db()
-    # Check delivery state
-    row = db.execute("SELECT state, transport FROM message_deliveries WHERE message_id=? AND recipient_name=?",
-                     (msg_id, recipient)).fetchone()
-    if not row:
-        print(f"No delivery record for message {msg_id} to {recipient}", file=sys.stderr)
-        sys.exit(1)
-    if row[0] == "delivered":
-        print(f"Already delivered (message {msg_id} to {recipient})")
-        return
-    # Get message and session info
-    msg = db.execute("SELECT project_id, sender_name, sender_type, body FROM messages WHERE id=?", (msg_id,)).fetchone()
-    if not msg:
-        print(f"Message {msg_id} not found", file=sys.stderr)
-        sys.exit(1)
-    project, sender_name, sender_type, body = msg
-    sess = db.execute("SELECT session_id, delivery_transport FROM sessions WHERE project_id=? AND display_name=?",
-                      (project, recipient)).fetchone()
-    if not sess or sess[1] != "codex_queue" or not sess[0]:
-        print(f"Cannot retry: {recipient} not attached via codex_queue", file=sys.stderr)
-        sys.exit(1)
-    ok = deliver_codex_queue(db, msg_id, project, sender_name, sender_type, recipient, body, sess[0])
-    db.close()
-    if ok:
-        print(f"Retried and delivered message {msg_id} to {recipient}")
-    else:
-        print(f"Retry failed for message {msg_id} to {recipient}", file=sys.stderr)
-        sys.exit(1)
+    try:
+        row = db.execute("SELECT state, transport FROM message_deliveries WHERE message_id=? AND recipient_name=?",
+                         (msg_id, recipient)).fetchone()
+        if not row:
+            print(f"No delivery record for message {msg_id} to {recipient}", file=sys.stderr)
+            sys.exit(1)
+        if row[0] == "delivered":
+            print(f"Already delivered (message {msg_id} to {recipient})")
+            return
+        msg = db.execute("SELECT project_id, sender_name, sender_type, body FROM messages WHERE id=?", (msg_id,)).fetchone()
+        if not msg:
+            print(f"Message {msg_id} not found", file=sys.stderr)
+            sys.exit(1)
+        project, sender_name, sender_type, body = msg
+        sess = db.execute("SELECT session_id, delivery_transport FROM sessions WHERE project_id=? AND display_name=?",
+                          (project, recipient)).fetchone()
+        if not sess or sess[1] != "codex_queue" or not sess[0]:
+            print(f"Cannot retry: {recipient} not attached via codex_queue", file=sys.stderr)
+            sys.exit(1)
+        ok = deliver_codex_queue(db, msg_id, project, sender_name, sender_type, recipient, body, sess[0])
+        if ok:
+            print(f"Retried and delivered message {msg_id} to {recipient}")
+        else:
+            print(f"Retry failed for message {msg_id} to {recipient}", file=sys.stderr)
+            sys.exit(1)
+    finally:
+        db.close()
 
 def cmd_cleanup(args):
     db = get_db()

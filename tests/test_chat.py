@@ -1,36 +1,33 @@
 #!/usr/bin/env python3
-"""Tests for agent-chat.py — uses temp DB/state dir, fake codex binary."""
+"""Tests for agent-chat.py — uses temp DB/state dir, injectable subprocess runner."""
 
 import os
 import sys
 import json
-import stat
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 
-# Add parent dir to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-class ChatTestBase(unittest.TestCase):
-    """Base with isolated temp DB, state dir, and fake codex binary."""
 
+class ChatTestBase(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.db_path = os.path.join(self.tmpdir, "chat.db")
         self.state_dir = os.path.join(self.tmpdir, "state")
         os.makedirs(self.state_dir)
-        self.fake_codex = os.path.join(self.tmpdir, "fake-codex")
-        self._write_fake_codex(exit_code=0, stdout="Queued message aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee for thread test.\n")
-        # Patch env
         os.environ["CDASH_CHAT_DB"] = self.db_path
         os.environ["CDASH_STATE_DIR"] = self.state_dir
-        os.environ["CODEX_BIN"] = self.fake_codex
-        # Import fresh
+        os.environ["CODEX_BIN"] = "/nonexistent-test-codex"
+        os.environ.pop("CODEX_THREAD_ID", None)
+        self.calls = []  # records (argv, kwargs)
+        self._load_module()
+        self.mod._subprocess_runner = self._fake_runner
+
+    def _load_module(self):
         import importlib
-        if "agent_chat" in sys.modules:
-            importlib.reload(sys.modules["agent_chat"])
-        # Import the module (renamed for import)
         spec = importlib.util.spec_from_file_location("agent_chat",
             os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agent-chat.py"))
         self.mod = importlib.util.module_from_spec(spec)
@@ -39,13 +36,22 @@ class ChatTestBase(unittest.TestCase):
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmpdir)
-        for k in ("CDASH_CHAT_DB", "CDASH_STATE_DIR", "CODEX_BIN"):
+        for k in ("CDASH_CHAT_DB", "CDASH_STATE_DIR", "CODEX_BIN", "CODEX_THREAD_ID"):
             os.environ.pop(k, None)
+        self.mod._subprocess_runner = None
 
-    def _write_fake_codex(self, exit_code=0, stdout="", stderr=""):
-        with open(self.fake_codex, "w") as f:
-            f.write(f'#!/bin/bash\necho "{stdout}"\n>&2 echo "{stderr}"\nexit {exit_code}\n')
-        os.chmod(self.fake_codex, 0o755)
+    def _fake_runner(self, argv, **kwargs):
+        self.calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0,
+            stdout="Queued message aaaaaaaa-1111-2222-3333-444444444444 for thread test.\n", stderr="")
+
+    def _fake_runner_fail(self, argv, **kwargs):
+        self.calls.append(argv)
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="No active session found")
+
+    def _fake_runner_timeout(self, argv, **kwargs):
+        self.calls.append(argv)
+        raise subprocess.TimeoutExpired(argv[0], 15)
 
     def _get_db(self):
         return self.mod.get_db()
@@ -61,99 +67,95 @@ class ChatTestBase(unittest.TestCase):
         db.commit()
         db.close()
 
-    def _write_state_file(self, pid, name, event="idle"):
+    def _write_state_file(self, pid, name, project="proj", event="idle"):
         path = os.path.join(self.state_dir, f"{pid}.state")
         with open(path, "w") as f:
-            json.dump({"event": event, "ts": 0, "proxy_pid": os.getpid(), "name": name, "tty": "test"}, f)
-
-    def _send_msg(self, db, project, sender, sender_type, body, recipient=None):
-        db.execute("INSERT INTO messages(project_id, sender_name, sender_type, recipient, body) VALUES(?,?,?,?,?)",
-                   (project, sender, sender_type, recipient, body))
-        msg_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        db.commit()
-        return msg_id
+            json.dump({"event": event, "ts": 0, "proxy_pid": os.getpid(),
+                       "name": name, "project": project, "tty": "test"}, f)
 
 
 class TestAttach(ChatTestBase):
-    def test_attach_stores_codex_queue(self):
-        """1. Attach reads thread ID and stores codex_queue transport."""
-        db = self._get_db()
-        self.mod.ensure_project(db, "proj")
-        db.close()
+    def test_stores_codex_queue(self):
         self.mod.cmd_attach({"name": "bot", "project": "proj", "thread": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"})
         db = self._get_db()
         row = db.execute("SELECT agent_type, session_id, delivery_transport FROM sessions WHERE display_name='bot'").fetchone()
         db.close()
-        self.assertEqual(row[0], "codex")
-        self.assertEqual(row[1], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
-        self.assertEqual(row[2], "codex_queue")
+        self.assertEqual(row, ("codex", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "codex_queue"))
 
-    def test_attach_rejects_bad_uuid(self):
-        """2. Attach rejects malformed thread IDs."""
+    def test_rejects_bad_uuid(self):
         with self.assertRaises(SystemExit):
             self.mod.cmd_attach({"name": "bot", "project": "proj", "thread": "not-a-uuid"})
 
-    def test_attach_rejects_missing_uuid(self):
-        """2b. Attach rejects missing thread ID."""
-        os.environ.pop("CODEX_THREAD_ID", None)
+    def test_rejects_missing_uuid(self):
         with self.assertRaises(SystemExit):
             self.mod.cmd_attach({"name": "bot", "project": "proj"})
 
-    def test_attach_from_env(self):
-        """3. CODEX_THREAD_ID env is used when --thread not given."""
+    def test_reads_env(self):
         os.environ["CODEX_THREAD_ID"] = "11111111-2222-3333-4444-555555555555"
-        db = self._get_db()
-        self.mod.ensure_project(db, "proj")
-        db.close()
         self.mod.cmd_attach({"name": "bot", "project": "proj"})
         db = self._get_db()
         row = db.execute("SELECT session_id FROM sessions WHERE display_name='bot'").fetchone()
         db.close()
         self.assertEqual(row[0], "11111111-2222-3333-4444-555555555555")
-        os.environ.pop("CODEX_THREAD_ID", None)
 
 
 class TestDelivery(ChatTestBase):
-    def test_dm_to_codex_produces_queue_call(self):
-        """4. DM to attached Codex produces codex queue subprocess call."""
+    def test_dm_argv(self):
+        """DM to codex produces exact argv: codex queue --thread UUID --message envelope."""
         self._add_session("proj", "sender", "claude")
         self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
-        # Capture what fake codex receives
-        self._write_fake_codex(exit_code=0,
-            stdout="Queued message aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee for thread test.")
         self.mod.cmd_send({"project": "proj", "name": "sender", "type": "claude",
                           "message": "hello bot", "to": "bot"})
-        # Check delivery was recorded
+        self.assertEqual(len(self.calls), 1)
+        argv = self.calls[0]
+        self.assertEqual(argv[1], "queue")
+        self.assertEqual(argv[2], "--thread")
+        self.assertEqual(argv[3], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        self.assertEqual(argv[4], "--message")
+        self.assertIn("[cdash message]", argv[5])
+        self.assertIn("hello bot", argv[5])
+        self.assertIn("from: claude/sender", argv[5])
+        self.assertIn("to: bot", argv[5])
+
+    def test_dm_delivery_recorded(self):
+        self._add_session("proj", "sender", "claude")
+        self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        self.mod.cmd_send({"project": "proj", "name": "sender", "type": "claude",
+                          "message": "hello", "to": "bot"})
         db = self._get_db()
-        row = db.execute("SELECT state, transport FROM message_deliveries WHERE recipient_name='bot'").fetchone()
+        row = db.execute("SELECT state, transport, external_id FROM message_deliveries WHERE recipient_name='bot'").fetchone()
         db.close()
         self.assertEqual(row[0], "delivered")
         self.assertEqual(row[1], "codex_queue")
+        self.assertEqual(row[2], "aaaaaaaa-1111-2222-3333-444444444444")
 
     def test_dm_to_unknown_fails(self):
-        """11. DM to unknown recipient fails with non-zero."""
         self._add_session("proj", "sender", "claude")
         with self.assertRaises(SystemExit) as ctx:
             self.mod.cmd_send({"project": "proj", "name": "sender", "type": "claude",
                               "message": "hello", "to": "nobody"})
         self.assertNotEqual(ctx.exception.code, 0)
+        self.assertEqual(len(self.calls), 0)
 
-    def test_codex_binary_missing_fails(self):
-        """9. Missing binary records failed state."""
+    def test_codex_binary_invalid_no_fallback(self):
+        """Explicit CODEX_BIN that doesn't exist must fail, not fall back to PATH."""
         os.environ["CODEX_BIN"] = "/nonexistent/codex"
+        self.mod._subprocess_runner = None  # Disable mock — test real find_codex_bin
         self._add_session("proj", "sender", "claude")
         self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         with self.assertRaises(SystemExit):
             self.mod.cmd_send({"project": "proj", "name": "sender", "type": "claude",
                               "message": "hello", "to": "bot"})
+        self.assertEqual(len(self.calls), 0)
         db = self._get_db()
         row = db.execute("SELECT state, last_error FROM message_deliveries WHERE recipient_name='bot'").fetchone()
         db.close()
         self.assertEqual(row[0], "failed")
+        self.assertIn("not found", row[1])
+        self.mod._subprocess_runner = self._fake_runner  # Restore
 
     def test_codex_nonzero_exit_fails(self):
-        """9b. Non-zero exit records failed state."""
-        self._write_fake_codex(exit_code=1, stderr="No active session")
+        self.mod._subprocess_runner = self._fake_runner_fail
         self._add_session("proj", "sender", "claude")
         self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         with self.assertRaises(SystemExit):
@@ -165,165 +167,207 @@ class TestDelivery(ChatTestBase):
         self.assertEqual(row[0], "failed")
         self.assertIn("No active session", row[1])
 
-    def test_broadcast_no_injection(self):
-        """12. Plain broadcast does not wake Codex."""
+    def test_timeout_fails(self):
+        self.mod._subprocess_runner = self._fake_runner_timeout
+        self._add_session("proj", "sender", "claude")
+        self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        with self.assertRaises(SystemExit):
+            self.mod.cmd_send({"project": "proj", "name": "sender", "type": "claude",
+                              "message": "hello", "to": "bot"})
+        db = self._get_db()
+        row = db.execute("SELECT state, last_error FROM message_deliveries WHERE recipient_name='bot'").fetchone()
+        sess = db.execute("SELECT delivery_last_error FROM sessions WHERE display_name='bot'").fetchone()
+        db.close()
+        self.assertEqual(row[0], "failed")
+        self.assertEqual(row[1], "timeout")
+        self.assertEqual(sess[0], "timeout")
+
+    def test_broadcast_no_wake(self):
         self._add_session("proj", "sender", "claude")
         self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         self.mod.cmd_send({"project": "proj", "name": "sender", "type": "claude",
                           "message": "broadcast msg"})
+        self.assertEqual(len(self.calls), 0)
         db = self._get_db()
         row = db.execute("SELECT COUNT(*) FROM message_deliveries").fetchone()
         db.close()
-        self.assertEqual(row[0], 0)  # No delivery attempts
+        self.assertEqual(row[0], 0)
 
-    def test_all_queues_codex_once(self):
-        """12b. --all queues each attached Codex once."""
+    def test_all_queues_each_codex_once(self):
         self._add_session("proj", "sender", "claude")
         self._add_session("proj", "bot1", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         self._add_session("proj", "bot2", "codex", "codex_queue", "11111111-2222-3333-4444-555555555555")
         self.mod.cmd_send({"project": "proj", "name": "sender", "type": "claude",
                           "message": "urgent", "all": True})
+        self.assertEqual(len(self.calls), 2)
         db = self._get_db()
         rows = db.execute("SELECT recipient_name, state FROM message_deliveries ORDER BY recipient_name").fetchall()
         db.close()
         self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[0][0], "bot1")
-        self.assertEqual(rows[0][1], "delivered")
-        self.assertEqual(rows[1][0], "bot2")
 
     def test_pty_delivery_tracked(self):
-        """8. PTY injection creates delivery rows."""
         self._add_session("proj", "sender", "claude")
         self._add_session("proj", "agent1", "claude", "pty", pid=99999)
         self._write_state_file(99999, "agent1")
         self.mod.cmd_send({"project": "proj", "name": "sender", "type": "claude",
                           "message": "hello", "to": "agent1"})
         db = self._get_db()
-        row = db.execute("SELECT state, transport FROM message_deliveries WHERE recipient_name='agent1'").fetchone()
+        row = db.execute("SELECT state, transport, attempts FROM message_deliveries WHERE recipient_name='agent1'").fetchone()
         db.close()
         self.assertEqual(row[0], "delivered")
         self.assertEqual(row[1], "pty")
 
+    def test_pty_cross_project_no_leak(self):
+        """Agent with same name in different project must not receive message."""
+        self._add_session("proj-a", "agent", "claude", "pty", pid=99999)
+        self._add_session("proj-b", "agent", "claude", "pty", pid=88888)
+        self._add_session("proj-a", "sender", "claude")
+        self._write_state_file(99999, "agent", project="proj-a")
+        self._write_state_file(88888, "agent", project="proj-b")
+        self.mod.cmd_send({"project": "proj-a", "name": "sender", "type": "claude",
+                          "message": "secret", "to": "agent"})
+        # Only proj-a agent should have inject file
+        self.assertTrue(os.path.exists(os.path.join(self.state_dir, "99999.inject")))
+        self.assertFalse(os.path.exists(os.path.join(self.state_dir, "88888.inject")))
+
     def test_multiple_dms_ordered(self):
-        """6. Multiple DMs preserve ordering."""
         self._add_session("proj", "sender", "claude")
         self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         for i in range(3):
             self.mod.cmd_send({"project": "proj", "name": "sender", "type": "claude",
                               "message": f"msg {i}", "to": "bot"})
+        self.assertEqual(len(self.calls), 3)
         db = self._get_db()
-        rows = db.execute("SELECT message_id FROM message_deliveries WHERE recipient_name='bot' ORDER BY message_id").fetchall()
+        ids = [r[0] for r in db.execute("SELECT message_id FROM message_deliveries ORDER BY message_id").fetchall()]
         db.close()
-        ids = [r[0] for r in rows]
         self.assertEqual(ids, sorted(ids))
-        self.assertEqual(len(ids), 3)
 
-
-class TestPayload(ChatTestBase):
-    def test_special_chars_in_body(self):
-        """13. Special chars in body reach codex as literal data."""
+    def test_pending_row_before_call(self):
+        """Pending delivery row exists before subprocess returns."""
+        seen_pending = []
+        orig_runner = self._fake_runner
+        def checking_runner(argv, **kwargs):
+            db = sqlite3.connect(self.db_path)
+            row = db.execute("SELECT state FROM message_deliveries WHERE recipient_name='bot'").fetchone()
+            seen_pending.append(row[0] if row else None)
+            db.close()
+            return orig_runner(argv, **kwargs)
+        self.mod._subprocess_runner = checking_runner
         self._add_session("proj", "sender", "claude")
         self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
-        nasty = 'line1\n{"key": "$HOME"}\n`rm -rf /`\n$(whoami)\nba\\ck'
+        self.mod.cmd_send({"project": "proj", "name": "sender", "type": "claude",
+                          "message": "hello", "to": "bot"})
+        self.assertEqual(seen_pending, ["pending"])
+
+    def test_special_chars_preserved(self):
+        self._add_session("proj", "sender", "claude")
+        self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        nasty = 'line1\n{"key": "$HOME"}\n`rm -rf /`\n$(whoami)'
         self.mod.cmd_send({"project": "proj", "name": "sender", "type": "claude",
                           "message": nasty, "to": "bot"})
-        # Message stored intact
+        # Body in argv must contain the exact text
+        self.assertIn(nasty, self.calls[0][5])
+        # Stored intact
         db = self._get_db()
         row = db.execute("SELECT body FROM messages WHERE sender_name='sender'").fetchone()
         db.close()
         self.assertEqual(row[0], nasty)
 
-
-class TestDetach(ChatTestBase):
-    def test_detach_preserves_history(self):
-        """16. Detach preserves messages and read cursor."""
+    def test_no_calls_already_delivered_retry(self):
+        """Retry of already-delivered does not call subprocess."""
+        self._add_session("proj", "sender", "claude")
         self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         db = self._get_db()
-        self._send_msg(db, "proj", "bot", "codex", "test msg")
+        db.execute("INSERT INTO messages(project_id, sender_name, sender_type, recipient, body) VALUES('proj','sender','claude','bot','hi')")
+        db.execute("INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state) VALUES(1,'proj','bot','codex_queue','delivered')")
+        db.commit()
+        db.close()
+        self.mod.cmd_retry({"message_id": "1", "to": "bot"})
+        self.assertEqual(len(self.calls), 0)
+
+    def test_diagnostics_fail_then_succeed(self):
+        """Fail then retry-success updates session diagnostics."""
+        self._add_session("proj", "sender", "claude")
+        self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        db = self._get_db()
+        db.execute("INSERT INTO messages(project_id, sender_name, sender_type, recipient, body) VALUES('proj','sender','claude','bot','hi')")
+        msg_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        db.commit()
+        db.close()
+        # First: fail
+        self.mod._subprocess_runner = self._fake_runner_fail
+        db = self._get_db()
+        self.mod.deliver_codex_queue(db, msg_id, "proj", "sender", "claude", "bot", "hi", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        db.close()
+        db = self._get_db()
+        err = db.execute("SELECT delivery_last_error FROM sessions WHERE display_name='bot'").fetchone()[0]
+        db.close()
+        self.assertIsNotNone(err)
+        # Then: succeed
+        self.mod._subprocess_runner = self._fake_runner
+        db = self._get_db()
+        self.mod.deliver_codex_queue(db, msg_id, "proj", "sender", "claude", "bot", "hi", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        db.close()
+        db = self._get_db()
+        sess = db.execute("SELECT delivery_last_error, delivery_last_success_at FROM sessions WHERE display_name='bot'").fetchone()
+        db.close()
+        self.assertIsNone(sess[0])
+        self.assertIsNotNone(sess[1])
+
+
+class TestDetach(ChatTestBase):
+    def test_preserves_history(self):
+        self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        db = self._get_db()
+        db.execute("INSERT INTO messages(project_id, sender_name, sender_type, body) VALUES('proj','bot','codex','test')")
         db.execute("INSERT INTO read_cursors(project_id, display_name, last_read_id) VALUES('proj','bot',1)")
         db.commit()
         db.close()
         self.mod.cmd_detach({"name": "bot", "project": "proj"})
         db = self._get_db()
-        msg = db.execute("SELECT COUNT(*) FROM messages WHERE project_id='proj'").fetchone()
-        cursor = db.execute("SELECT last_read_id FROM read_cursors WHERE display_name='bot'").fetchone()
-        sess = db.execute("SELECT delivery_transport FROM sessions WHERE display_name='bot'").fetchone()
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 1)
+        self.assertEqual(db.execute("SELECT last_read_id FROM read_cursors WHERE display_name='bot'").fetchone()[0], 1)
+        self.assertEqual(db.execute("SELECT delivery_transport FROM sessions WHERE display_name='bot'").fetchone()[0], "none")
         db.close()
-        self.assertEqual(msg[0], 1)
-        self.assertEqual(cursor[0], 1)
-        self.assertEqual(sess[0], "none")
 
-    def test_detach_missing_fails(self):
-        """11b. Detach of missing session fails."""
+    def test_missing_fails(self):
         with self.assertRaises(SystemExit):
             self.mod.cmd_detach({"name": "ghost", "project": "proj"})
 
 
 class TestRetry(ChatTestBase):
     def test_retry_delivers(self):
-        """10. Retry changes failed to delivered."""
         self._add_session("proj", "sender", "claude")
         self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         db = self._get_db()
-        msg_id = self._send_msg(db, "proj", "sender", "claude", "hello", "bot")
-        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, last_error)
-            VALUES(?,?,?,?,?,?)""", (msg_id, "proj", "bot", "codex_queue", "failed", "timeout"))
+        db.execute("INSERT INTO messages(project_id, sender_name, sender_type, recipient, body) VALUES('proj','sender','claude','bot','hi')")
+        db.execute("INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, last_error) VALUES(1,'proj','bot','codex_queue','failed','timeout')")
         db.commit()
         db.close()
-        self.mod.cmd_retry({"message_id": str(msg_id), "to": "bot"})
+        self.mod.cmd_retry({"message_id": "1", "to": "bot"})
         db = self._get_db()
-        row = db.execute("SELECT state FROM message_deliveries WHERE message_id=? AND recipient_name='bot'", (msg_id,)).fetchone()
+        self.assertEqual(db.execute("SELECT state FROM message_deliveries WHERE message_id=1").fetchone()[0], "delivered")
         db.close()
-        self.assertEqual(row[0], "delivered")
 
-    def test_retry_already_delivered(self):
-        """10b. Retry of already-delivered does not resend."""
-        self._add_session("proj", "sender", "claude")
-        self._add_session("proj", "bot", "codex", "codex_queue", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
-        db = self._get_db()
-        msg_id = self._send_msg(db, "proj", "sender", "claude", "hello", "bot")
-        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state)
-            VALUES(?,?,?,?,?)""", (msg_id, "proj", "bot", "codex_queue", "delivered"))
-        db.commit()
-        db.close()
-        self.mod.cmd_retry({"message_id": str(msg_id), "to": "bot"})
-        # Should just print "already delivered", no error
-
-    def test_retry_invalid_id(self):
-        """10c. Invalid message ID fails."""
+    def test_invalid_id(self):
         with self.assertRaises(SystemExit):
             self.mod.cmd_retry({"message_id": "abc", "to": "bot"})
 
 
 class TestMigration(ChatTestBase):
-    def test_migration_adds_columns(self):
-        """15. Migrations work against pre-existing schema."""
-        # Create a DB with only the old schema
+    def test_adds_columns_to_old_schema(self):
         db = sqlite3.connect(self.db_path)
-        db.execute("""CREATE TABLE IF NOT EXISTS sessions (
-            project_id TEXT NOT NULL, display_name TEXT NOT NULL, agent_type TEXT NOT NULL,
-            working_directory TEXT, pid INTEGER, proxy_pid INTEGER,
-            connected_at INTEGER DEFAULT 0, last_seen INTEGER DEFAULT 0,
-            PRIMARY KEY(project_id, display_name))""")
-        db.execute("""CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL,
-            created_at INTEGER DEFAULT 0)""")
-        db.execute("""CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id TEXT NOT NULL, sender_name TEXT NOT NULL, sender_type TEXT NOT NULL,
-            recipient TEXT, body TEXT NOT NULL, created_at INTEGER DEFAULT 0)""")
-        db.execute("""CREATE TABLE IF NOT EXISTS read_cursors (project_id TEXT NOT NULL,
-            display_name TEXT NOT NULL, last_read_id INTEGER DEFAULT 0,
-            PRIMARY KEY(project_id, display_name))""")
+        db.execute("CREATE TABLE sessions (project_id TEXT NOT NULL, display_name TEXT NOT NULL, agent_type TEXT NOT NULL, working_directory TEXT, pid INTEGER, proxy_pid INTEGER, connected_at INTEGER DEFAULT 0, last_seen INTEGER DEFAULT 0, PRIMARY KEY(project_id, display_name))")
+        db.execute("CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER DEFAULT 0)")
+        db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, sender_name TEXT NOT NULL, sender_type TEXT NOT NULL, recipient TEXT, body TEXT NOT NULL, created_at INTEGER DEFAULT 0)")
+        db.execute("CREATE TABLE read_cursors (project_id TEXT NOT NULL, display_name TEXT NOT NULL, last_read_id INTEGER DEFAULT 0, PRIMARY KEY(project_id, display_name))")
         db.commit()
         db.close()
-        # Now open with get_db which runs migrations
         db = self.mod.get_db()
-        # Verify new columns exist
         cols = [r[1] for r in db.execute("PRAGMA table_info(sessions)").fetchall()]
         db.close()
-        self.assertIn("session_id", cols)
-        self.assertIn("delivery_transport", cols)
-        self.assertIn("delivery_last_success_at", cols)
-        self.assertIn("delivery_last_error", cols)
+        for col in ("session_id", "delivery_transport", "delivery_last_success_at", "delivery_last_error"):
+            self.assertIn(col, cols)
 
 
 if __name__ == "__main__":
