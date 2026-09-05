@@ -55,6 +55,11 @@ static state_t current_state = ST_IDLE;
 static time_t last_retry_time = 0;
 static const char *agent_type = NULL; /* "claude" or "codex" */
 
+/* Output activity tracking — renderer-agnostic working detection */
+static struct timespec last_output_time;
+static int had_output = 0;  /* any output received this check interval */
+#define OUTPUT_IDLE_MS 1500  /* ms without output = idle */
+
 /* Debounce: hold working→idle until confirmed N times */
 static int idle_confirmations = 0;
 static int did_chat_intro = 0;
@@ -285,6 +290,21 @@ static int contains_ci(const char *haystack, const char *needle) {
     return 0;
 }
 
+/* Check if title contains half-circle spinner (U+25D0-U+25D3, UTF-8: E2 97 90-93) */
+static int title_has_halfcircle(const char *title) {
+    const unsigned char *p = (const unsigned char *)title;
+    while (*p) {
+        if (p[0] == 0xE2 && p[1] == 0x97 && p[2] >= 0x90 && p[2] <= 0x93) return 1;
+        if (*p >= 0x80) {
+            if ((*p & 0xE0) == 0xC0) { if (!p[1]) break; p += 2; }
+            else if ((*p & 0xF0) == 0xE0) { if (!p[1] || !p[2]) break; p += 3; }
+            else if ((*p & 0xF8) == 0xF0) { if (!p[1] || !p[2] || !p[3]) break; p += 4; }
+            else p++;
+        } else p++;
+    }
+    return 0;
+}
+
 /* Check if title contains braille spinner characters (U+2800-U+28FF) */
 static int title_has_braille(const char *title) {
     const unsigned char *p = (const unsigned char *)title;
@@ -351,10 +371,18 @@ static state_t detect_state(const char *screen, const char *title) {
                 if (*p == '\n') p++;
             }
         }
-        /* OSC title: braille spinner = working */
-        if (title_has_braille(title)) return ST_WORKING;
+        /* OSC title: braille spinner or half-circle spinner = working */
+        if (title_has_braille(title) || title_has_halfcircle(title)) return ST_WORKING;
         /* OSC title: ✳ = idle */
         if (title_starts_with_sparkle(title)) return ST_IDLE;
+        /* Fallback: output activity (for modes with no OSC titles, e.g. -p) */
+        if (title[0] == '\0' && had_output) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long since_output = (now.tv_sec - last_output_time.tv_sec) * 1000 +
+                                (now.tv_nsec - last_output_time.tv_nsec) / 1000000;
+            if (since_output < OUTPUT_IDLE_MS) return ST_WORKING;
+        }
     } else if (strcmp(agent_type, "codex") == 0) {
         /* OSC title: "Action Required" = blocked */
         if (contains_ci(title, "Action Required")) return ST_NEEDS_INPUT;
@@ -513,6 +541,8 @@ int main(int argc, char *argv[]) {
                 write(STDOUT_FILENO, buf, n);
                 ring_append(buf, n);
                 track_osc(buf, n);
+                clock_gettime(CLOCK_MONOTONIC, &last_output_time);
+                had_output = 1;
             } else if (n == 0) break;
         }
 
@@ -531,14 +561,19 @@ int main(int argc, char *argv[]) {
             if (elapsed_ms >= CHECK_INTERVAL_MS) {
                 char screen[CLEAN_SIZE];
                 int slen = ring_recent_clean(screen, CLEAN_SIZE - 1);
+
                 state_t new_state = detect_state(screen, osc_title);
 
                 /* Debug: dump screen + state when CDASH_DEBUG is set */
                 if (getenv("CDASH_DEBUG")) {
-                    FILE *dbg = fopen(STATE_DIR "/debug.log", "w");
+                    struct timespec dnow;
+                    clock_gettime(CLOCK_MONOTONIC, &dnow);
+                    long since = had_output ? (dnow.tv_sec - last_output_time.tv_sec) * 1000 +
+                        (dnow.tv_nsec - last_output_time.tv_nsec) / 1000000 : -1;
+                    FILE *dbg = fopen(STATE_DIR "/debug.log", "a");
                     if (dbg) {
-                        fprintf(dbg, "state=%d title=[%s] slen=%d\n---\n%.800s\n",
-                                new_state, osc_title, slen, screen);
+                        fprintf(dbg, "state=%d title=[%s] slen=%d output_ago=%ldms\n---\n%.400s\n===\n",
+                                new_state, osc_title, slen, since, screen);
                         fclose(dbg);
                     }
                 }

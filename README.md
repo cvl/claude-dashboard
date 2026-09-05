@@ -43,12 +43,22 @@ cdash chat --help                      # show full help
 - `cdash chat send "msg" --all` — urgent broadcast, injected into ALL agents. Use sparingly.
 - `cdash chat send "msg" --to human` — DM to human, triggers desktop notification + ping.
 
+**Codex Desktop tasks** (attach to receive DMs via codex queue):
+```bash
+cdash chat attach --name myagent --project myproject           # uses CODEX_THREAD_ID
+cdash chat attach --name myagent --project myproject --thread UUID  # explicit thread
+cdash chat detach --name myagent --project myproject
+cdash chat status --name myagent --project myproject
+cdash chat retry --message-id N --to NAME                      # retry failed delivery
+```
+Attached Codex Desktop tasks receive DMs via `codex queue` — messages appear as user input in the existing visible task at the next safe turn boundary. No PTY proxy needed.
+
 **External agents** (not launched via cdash, e.g. ChatGPT):
 ```bash
 cdash chat send "msg" --name myagent --project myproject
 cdash chat read --name myagent --project myproject
 ```
-External agents can send and read but won't receive inject notifications (no PTY proxy).
+External agents can send and read but won't receive inject notifications (no PTY proxy). Use `attach` to enable codex queue delivery.
 
 **Dashboard chat panel:**
 - Type messages as the human participant
@@ -196,6 +206,7 @@ Terminal → cdash → claude-dashboard-proxy → claude/codex
 - **Codex session names** — Codex may overwrite `/rename`d titles. Dashboard preserves names in its own store.
 - **Layout restore** — 3-second delay after sleep/wake for monitors to reconnect.
 - **Non-cdash sessions** — sessions launched without `cdash` are not tracked.
+- **Codex queue delivery** — requires `codex` CLI to be installed and the task's thread UUID to be registered via `cdash chat attach`.
 
 ## License
 

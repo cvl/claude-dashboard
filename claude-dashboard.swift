@@ -226,7 +226,6 @@ func stateFileEvent(_ pid: pid_t) -> (event: String, ts: Int, tty: String?, name
           let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let event = j["event"] as? String,
           let ts = j["ts"] as? Int else { return nil }
-    // If proxy_pid is set, check it's still alive (stale file from crashed proxy)
     if let proxyPid = j["proxy_pid"] as? Int, proxyPid > 0 {
         if kill(pid_t(proxyPid), 0) != 0 { return nil }
     }
@@ -401,21 +400,21 @@ func loadSessions() -> [Session] {
             guard kill(p, 0) == 0 else { continue } // skip dead PIDs
             guard isCdashSession(p) else { continue } // skip non-cdash sessions
             let sid = (j["sessionId"] as? String) ?? ""
-            let sname = (j["name"] as? String) ?? stateFileEvent(p)?.name ?? "session-\(pid)"
+            let sf = stateFileEvent(p)
+            let sname = (j["name"] as? String) ?? sf?.name ?? "session-\(pid)"
             let startedAt = (j["startedAt"] as? Double) ?? 0
             let fallback = Date(timeIntervalSince1970: startedAt / 1000)
             let resolvedState = resolveState(p)
-            let hookTs = stateFileEvent(p)?.ts ?? 0
-            let s = Session(
+            var s = Session(
                 pid: p, sessionId: sid,
                 name: sname,
                 cwd: (j["cwd"] as? String) ?? "",
                 startedAt: startedAt,
                 state: resolvedState,
-                tty: stateFileEvent(p)?.tty ?? shell("/bin/ps", "-o", "tty=", "-p", "\(pid)"),
+                tty: sf?.tty ?? shell("/bin/ps", "-o", "tty=", "-p", "\(pid)"),
                 hasNotes: hasNotesFile(name: sname, sessionId: sid),
                 lastActive: lastActiveTime[p] ?? fallback,
-                hookTs: hookTs,
+                hookTs: sf?.ts ?? 0,
                 source: "claude")
             // Skip agent-looper sessions (names like "xxx-rev-f1-ab" or "xxx-fix-f2-cd")
             if sname.range(of: #"-(?:rev|fix)-f\d+-[a-z]{2}$"#, options: .regularExpression) != nil { continue }
@@ -475,8 +474,7 @@ func loadSessions() -> [Session] {
     for (sid, s) in liveBySessionId {
         // Find the internal ID for this live session
         let internalId = store.first(where: { $0.value.activeSessionId == sid })?.key ?? sid
-        var session = s
-        session = Session(pid: s.pid, sessionId: internalId, name: s.name, cwd: s.cwd,
+        var session = Session(pid: s.pid, sessionId: internalId, name: s.name, cwd: s.cwd,
                          startedAt: s.startedAt, state: s.state, tty: s.tty,
                          hasNotes: hasNotesFile(name: s.name, sessionId: internalId),
                          lastActive: s.lastActive, hookTs: s.hookTs, source: s.source)
@@ -3446,7 +3444,14 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if s.source == "codex" {
                 cmd = "cd \(s.cwd) && cdash codex --name '\(s.name)' resume \(resumeId)"
             } else {
-                cmd = "cd \(s.cwd) && cdash claude --resume \(resumeId) --name '\(s.name)' --effort max"
+                // Read per-session model from statusLine-written file
+                var modelFlag = " --model claude-opus-4-6"
+                let modelPath = "\(stateDir)/\(s.pid).model"
+                if let modelId = try? String(contentsOfFile: modelPath, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !modelId.isEmpty {
+                    modelFlag = " --model \(modelId)"
+                }
+                cmd = "cd \(s.cwd) && cdash claude --resume \(resumeId) --name '\(s.name)'\(modelFlag) --effort max"
             }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(cmd, forType: .string)
@@ -3680,8 +3685,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.dismissNotification(id)
         }
         notifView.onClearAll = { [weak self] in
-            self?.dashNotifications.removeAll()
-            self?.layoutNotifPanel()
+            guard let self else { return }
+            // Only clear notifications visible in active tab (+ chat)
+            self.dashNotifications.removeAll { self.isNotifForActiveTab($0) }
+            self.layoutNotifPanel()
         }
 
         // Chat panel — separate floating window
@@ -3784,6 +3791,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         tabs = loadTabs()
+        activeTabId = tabs.first?.id ?? "main"
         tabSidebar.tabs = tabs
         tabSidebar.activeTabId = activeTabId
 

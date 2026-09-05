@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AGENT_CHAT_PY="/usr/local/lib/claude-dashboard/agent-chat.py"
+AGENT_CHAT_PY="${CDASH_AGENT_CHAT_PY:-/usr/local/lib/claude-dashboard/agent-chat.py}"
 
 git_root_name() {
   local root
@@ -31,7 +31,7 @@ show_help() {
 show_chat_help() {
   echo "cdash chat — Inter-agent communication"
   echo ""
-  echo "Commands:"
+  echo "Messaging:"
   echo "  cdash chat send \"msg\"                Broadcast (stored, no interruption)"
   echo "  cdash chat send \"msg\" --to NAME      Direct message (interrupts that agent)"
   echo "  cdash chat send \"msg\" --to human     Escalate to human (triggers notification)"
@@ -40,12 +40,21 @@ show_chat_help() {
   echo "  cdash chat read --all                Show all messages (last 5 days)"
   echo "  cdash chat list                      Show agents in current channel"
   echo ""
+  echo "Codex Desktop (attach external tasks to chat):"
+  echo "  cdash chat attach                    Register current task (uses CODEX_THREAD_ID)"
+  echo "  cdash chat attach --thread UUID      Register with explicit thread ID"
+  echo "  cdash chat detach                    Unregister (preserves history)"
+  echo "  cdash chat status                    Show attachment state and delivery info"
+  echo "  cdash chat retry --message-id N --to NAME   Retry failed delivery"
+  echo ""
   echo "External agents (not launched via cdash):"
   echo "  cdash chat send \"msg\" --name myagent --project myproject"
   echo "  cdash chat read --name myagent --project myproject"
+  echo "  cdash chat attach --name myagent --project myproject --thread UUID"
   echo ""
   echo "Broadcasts are stored but not injected — agents see them on next read."
   echo "Use --all only when all agents must act immediately."
+  echo "Attached Codex tasks receive DMs via codex queue (no PTY needed)."
 }
 
 if [ $# -eq 0 ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -61,9 +70,18 @@ if [ "$1" = "chat" ]; then
   fi
   subcmd="${1:-read}"; shift 2>/dev/null || true
 
-  agent_type="${CDASH_AGENT_TYPE:-claude}"
-  pid="${CDASH_PID:-$$}"
-  proxy_pid="${CDASH_PROXY_PID:-}"
+  # Detect codex identity from env
+  codex_thread_args=""
+  if [ -n "${CODEX_THREAD_ID:-}" ]; then
+    agent_type="codex"
+    codex_thread_args="--session-id ${CODEX_THREAD_ID}"
+    pid="0"  # Don't store transient shell PID for external Desktop tasks
+    proxy_pid=""
+  else
+    agent_type="${CDASH_AGENT_TYPE:-claude}"
+    pid="${CDASH_PID:-$$}"
+    proxy_pid="${CDASH_PROXY_PID:-}"
+  fi
 
   # Check for explicit --name and --project flags (for external agents)
   explicit_name=""
@@ -136,18 +154,31 @@ print(f'{name}|{channel}')
       fi
       python3 "$AGENT_CHAT_PY" send --project "$project" --name "$session_name" \
         --type "$agent_type" --pid "$pid" ${proxy_pid:+--proxy-pid "$proxy_pid"} \
-        ${extra_args} --message "$msg"
+        ${codex_thread_args} ${extra_args} --message "$msg"
       ;;
     read)
       python3 "$AGENT_CHAT_PY" read --project "$project" --name "$session_name" \
-        --type "$agent_type" --pid "$pid" ${proxy_pid:+--proxy-pid "$proxy_pid"} "$@"
+        --type "$agent_type" --pid "$pid" ${proxy_pid:+--proxy-pid "$proxy_pid"} \
+        ${codex_thread_args} "$@"
       ;;
     list)
       python3 "$AGENT_CHAT_PY" list --project "$project" "$@"
       ;;
+    attach)
+      python3 "$AGENT_CHAT_PY" attach --name "$session_name" --project "$project" "$@"
+      ;;
+    detach)
+      python3 "$AGENT_CHAT_PY" detach --name "$session_name" --project "$project"
+      ;;
+    status)
+      python3 "$AGENT_CHAT_PY" status --name "$session_name" --project "$project"
+      ;;
+    retry)
+      python3 "$AGENT_CHAT_PY" retry "$@"
+      ;;
     *)
       echo "Unknown chat command: $subcmd" >&2
-      echo "Usage: cdash chat <send|read|list>" >&2
+      echo "Usage: cdash chat <send|read|list|attach|detach|status|retry>" >&2
       exit 1
       ;;
   esac
@@ -177,12 +208,25 @@ case "$1" in
     export CDASH_SESSION_NAME="${session_name:-$(basename "$(pwd)")}"
     export CDASH_AGENT_TYPE="$agent_type"
     export CDASH_PROXY=1
-    # Default --effort max for claude
+    # Model picker for claude (skip if --model already specified)
     if [ "$agent_type" = "claude" ]; then
+      has_model=false
       has_effort=false
       for a in "${agent_args[@]+"${agent_args[@]}"}"; do
+        [ "$a" = "--model" ] && has_model=true
         [ "$a" = "--effort" ] && has_effort=true
       done
+      if [ "$has_model" = "false" ]; then
+        echo "Select model:"
+        echo "  1) Opus 4.6 max (default)"
+        echo "  2) Fable 5.1 max"
+        printf "Choice [1]: "
+        read -r choice
+        case "${choice:-1}" in
+          2) agent_args+=("--model" "fable") ;;
+          *) agent_args+=("--model" "claude-opus-4-6") ;;
+        esac
+      fi
       [ "$has_effort" = "false" ] && agent_args+=("--effort" "max")
     fi
     exec claude-dashboard-proxy "$agent_type" "${agent_args[@]+"${agent_args[@]}"}"
