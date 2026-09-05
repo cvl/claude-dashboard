@@ -3786,6 +3786,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         tabs = loadTabs()
+        activeTabId = tabs.first?.id ?? "main"
         tabSidebar.tabs = tabs
         tabSidebar.activeTabId = activeTabId
 
