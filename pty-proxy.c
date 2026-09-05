@@ -566,24 +566,28 @@ int main(int argc, char *argv[]) {
                 char screen[CLEAN_SIZE];
                 int slen = ring_recent_clean(screen, CLEAN_SIZE - 1);
 
-                /* Extract model from screen (e.g. "Opus 4.6", "Fable 5.1", "Opus 5") */
+                /* Extract model from screen — use LAST occurrence (status bar at bottom) */
                 {
                     static const char *model_names[] = {"Opus ", "Fable ", "Sonnet ", "Haiku ", NULL};
+                    const char *latest = NULL;
+                    const char *latest_name = NULL;
                     for (const char **mp = model_names; *mp; mp++) {
-                        const char *found = strstr(screen, *mp);
-                        if (found) {
-                            const char *end = found + strlen(*mp);
-                            /* Capture version: digits, dots (e.g. "4.6", "5", "5.1") */
-                            while (*end >= '0' && *end <= '9') {
-                                end++;
-                                if (*end == '.') { end++; while (*end >= '0' && *end <= '9') end++; }
-                            }
-                            int len = (int)(end - found);
-                            if (len > 0 && len < (int)sizeof(detected_model)) {
-                                memcpy(detected_model, found, len);
-                                detected_model[len] = '\0';
-                            }
-                            break;
+                        const char *p = screen;
+                        while ((p = strstr(p, *mp)) != NULL) {
+                            if (!latest || p > latest) { latest = p; latest_name = *mp; }
+                            p++;
+                        }
+                    }
+                    if (latest && latest_name) {
+                        const char *end = latest + strlen(latest_name);
+                        while (*end >= '0' && *end <= '9') {
+                            end++;
+                            if (*end == '.') { end++; while (*end >= '0' && *end <= '9') end++; }
+                        }
+                        int len = (int)(end - latest);
+                        if (len > 0 && len < (int)sizeof(detected_model)) {
+                            memcpy(detected_model, latest, len);
+                            detected_model[len] = '\0';
                         }
                     }
                 }
