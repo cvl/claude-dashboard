@@ -60,6 +60,9 @@ static struct timespec last_output_time;
 static int had_output = 0;  /* any output received this check interval */
 #define OUTPUT_IDLE_MS 1500  /* ms without output = idle */
 
+/* Model detection from screen content */
+static char detected_model[64] = "";
+
 /* Debounce: hold working→idle until confirmed N times */
 static int idle_confirmations = 0;
 static int did_chat_intro = 0;
@@ -168,8 +171,9 @@ static void write_state(pid_t pid, state_t state) {
     snprintf(tmp, sizeof(tmp), STATE_DIR "/%d.state.tmp", pid);
     FILE *f = fopen(tmp, "w");
     if (f) {
-        fprintf(f, "{\"event\":\"%s\",\"ts\":%ld,\"tty\":\"%s\",\"proxy_pid\":%d,\"name\":\"%s\",\"project\":\"%s\"}",
-                event, (long)time(NULL), real_tty, (int)getpid(), session_name, session_project);
+        fprintf(f, "{\"event\":\"%s\",\"ts\":%ld,\"tty\":\"%s\",\"proxy_pid\":%d,\"name\":\"%s\",\"project\":\"%s\"%s%s%s}",
+                event, (long)time(NULL), real_tty, (int)getpid(), session_name, session_project,
+                detected_model[0] ? ",\"model\":\"" : "", detected_model, detected_model[0] ? "\"" : "");
         fclose(f);
         rename(tmp, path);
     }
@@ -561,6 +565,28 @@ int main(int argc, char *argv[]) {
             if (elapsed_ms >= CHECK_INTERVAL_MS) {
                 char screen[CLEAN_SIZE];
                 int slen = ring_recent_clean(screen, CLEAN_SIZE - 1);
+
+                /* Extract model from screen (e.g. "Opus 4.6 (1M" or "Fable 5.1 (") */
+                {
+                    static const char *model_names[] = {"Opus ", "Fable ", "Sonnet ", "Haiku ", NULL};
+                    for (const char **mp = model_names; *mp; mp++) {
+                        const char *found = strstr(screen, *mp);
+                        if (found) {
+                            const char *start = found;
+                            const char *end = start;
+                            /* Advance past name + version number (e.g. "Opus 4.6") */
+                            while (*end && *end != '(' && *end != '\n' && (end - start) < 20) end++;
+                            while (end > start && (end[-1] == ' ' || end[-1] == '\t')) end--;
+                            int len = (int)(end - start);
+                            if (len > 0 && len < (int)sizeof(detected_model)) {
+                                memcpy(detected_model, start, len);
+                                detected_model[len] = '\0';
+                            }
+                            break;
+                        }
+                    }
+                }
+
                 state_t new_state = detect_state(screen, osc_title);
 
                 /* Debug: dump screen + state when CDASH_DEBUG is set */
