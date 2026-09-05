@@ -11,8 +11,8 @@ import glob
 import re
 import shutil
 
-DB_PATH = os.path.expanduser("~/.claude/dashboard-chat.db")
-STATE_DIR = "/tmp/claude-dash"
+DB_PATH = os.environ.get("CDASH_CHAT_DB", os.path.expanduser("~/.claude/dashboard-chat.db"))
+STATE_DIR = os.environ.get("CDASH_STATE_DIR", "/tmp/claude-dash")
 
 def get_db():
     db = sqlite3.connect(DB_PATH)
@@ -107,6 +107,16 @@ def deliver_codex_queue(db, msg_id, project, sender_name, sender_type, recipient
         result = subprocess.run(
             [codex_bin, "queue", "--thread", thread_id, "--message", envelope],
             text=True, capture_output=True, timeout=15, check=False)
+    except OSError as e:
+        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts, last_error)
+            VALUES(?,?,?,?,?,?,?) ON CONFLICT(message_id, recipient_name) DO UPDATE SET
+            state='failed', attempts=attempts+1, last_error=excluded.last_error, updated_at=unixepoch()""",
+            (msg_id, project, recipient, "codex_queue", "failed", 1, str(e)[:200]))
+        db.execute("UPDATE sessions SET delivery_last_error=? WHERE project_id=? AND display_name=?",
+            (str(e)[:200], project, recipient))
+        db.commit()
+        print(f"Error: failed to launch codex: {e}", file=sys.stderr)
+        return False
     except subprocess.TimeoutExpired:
         db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts, last_error)
             VALUES(?,?,?,?,?,?,?) ON CONFLICT(message_id, recipient_name) DO UPDATE SET
@@ -126,9 +136,9 @@ def deliver_codex_queue(db, msg_id, project, sender_name, sender_type, recipient
         print(f"Error: codex queue failed for {recipient}: {err}", file=sys.stderr)
         return False
 
-    # Extract queue item ID from stdout
+    # Extract queue item ID from stdout (strict UUID match)
     ext_id = None
-    m = re.search(r'([0-9a-f-]{36})', result.stdout or "")
+    m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', result.stdout or "", re.I)
     if m: ext_id = m.group(1)
 
     db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts, external_id, delivered_at)
@@ -167,13 +177,14 @@ def find_all_state_files():
     return results
 
 def append_inject(pid, text):
-    """Append to inject file for a proxy child PID. Multiple messages accumulate."""
+    """Append to inject file for a proxy child PID. Returns True on success."""
     path = f"{STATE_DIR}/{pid}.inject"
     try:
         with open(path, "a") as f:
             f.write(text)
+        return True
     except Exception:
-        pass
+        return False
 
 def cmd_send(args):
     project = args["project"]
@@ -190,55 +201,81 @@ def cmd_send(args):
     db = get_db()
     ensure_session(db, project, name, agent_type, pid, proxy_pid, cwd, session_id)
 
-    db.execute("INSERT INTO messages(project_id, sender_name, sender_type, recipient, body) VALUES(?,?,?,?,?)",
-               (project, name, agent_type, recipient, message))
-    msg_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-    db.execute("UPDATE sessions SET last_seen=unixepoch() WHERE project_id=? AND display_name=?",
-               (project, name))
-    db.commit()
+    try:
+        db.execute("INSERT INTO messages(project_id, sender_name, sender_type, recipient, body) VALUES(?,?,?,?,?)",
+                   (project, name, agent_type, recipient, message))
+        msg_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        db.execute("UPDATE sessions SET last_seen=unixepoch() WHERE project_id=? AND display_name=?",
+                   (project, name))
+        db.commit()
 
-    # Find sessions to notify
-    rows = db.execute("SELECT display_name, pid, COALESCE(delivery_transport,'pty'), session_id FROM sessions WHERE project_id=? AND display_name!=?",
-                       (project, name)).fetchall()
-    target_names = {recipient} if recipient else {r[0] for r in rows}
+        # Find sessions to notify
+        rows = db.execute("SELECT display_name, pid, COALESCE(delivery_transport,'pty'), session_id FROM sessions WHERE project_id=? AND display_name!=?",
+                           (project, name)).fetchall()
+        target_names = {recipient} if recipient else {r[0] for r in rows if r[0] != "human"}
 
-    # Inject/deliver: DMs and --all only. Broadcasts are read via cdash chat read.
-    codex_failures = []
-    if recipient or inject_all:
-        state_files = find_all_state_files()
-        for r_name, r_pid, r_transport, r_thread_id in rows:
-            if r_name not in target_names: continue
-
-            if r_transport == "codex_queue" and r_thread_id:
-                # Codex Desktop — deliver via codex queue
-                ok = deliver_codex_queue(db, msg_id, project, name, agent_type, r_name, message, r_thread_id)
-                if ok:
-                    print(f"Queued to {r_name} (codex)")
-                else:
-                    codex_failures.append(r_name)
-            else:
-                # PTY injection — existing path
-                snippet = message[:150] + ("..." if len(message) > 150 else "")
-                if recipient:
-                    line = f"[CHAT from {name} → you]: {snippet}"
-                else:
-                    line = f"[CHAT @all from {name}]: {snippet}"
-                for sf_pid, sf_event, sf_proxy_pid, sf_tty, sf_name, sf_project in state_files:
-                    if sf_name == r_name:
-                        append_inject(sf_pid, line + "\n")
-                        break
-
-    db.close()
-    active = len([r for r in rows if r[1] and r[1] > 0])
-    if recipient:
-        if codex_failures:
-            print(f"Sent to {recipient} (delivery failed)", file=sys.stderr)
+        # DM to unknown recipient — store message but report failure
+        if recipient and recipient != "human" and not any(r[0] == recipient for r in rows):
+            db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, last_error)
+                VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                (msg_id, project, recipient, "none", "failed", "unknown recipient"))
+            db.commit()
+            print(f"Error: unknown recipient '{recipient}' in {project} (message stored)", file=sys.stderr)
             sys.exit(1)
+
+        # Inject/deliver: DMs and --all only. Broadcasts are read via cdash chat read.
+        failures = []
+        if recipient or inject_all:
+            state_files = find_all_state_files()
+            for r_name, r_pid, r_transport, r_thread_id in rows:
+                if r_name not in target_names: continue
+                if r_name == "human": continue  # human gets dashboard notification, not injection
+
+                if r_transport == "codex_queue" and r_thread_id:
+                    # Codex Desktop — deliver via codex queue
+                    ok = deliver_codex_queue(db, msg_id, project, name, agent_type, r_name, message, r_thread_id)
+                    if ok:
+                        print(f"Queued to {r_name} (codex)")
+                    else:
+                        failures.append(r_name)
+                else:
+                    # PTY injection
+                    snippet = message[:150] + ("..." if len(message) > 150 else "")
+                    line = f"[CHAT from {name} → you]: {snippet}" if recipient else f"[CHAT @all from {name}]: {snippet}"
+                    injected = False
+                    for sf_pid, sf_event, sf_proxy_pid, sf_tty, sf_name, sf_project in state_files:
+                        if sf_name == r_name:
+                            injected = append_inject(sf_pid, line + "\n")
+                            break
+                    # Record delivery
+                    if injected:
+                        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, delivered_at)
+                            VALUES(?,?,?,?,?,unixepoch()) ON CONFLICT DO NOTHING""",
+                            (msg_id, project, r_name, "pty", "delivered"))
+                        db.execute("UPDATE sessions SET delivery_last_success_at=unixepoch(), delivery_last_error=NULL WHERE project_id=? AND display_name=?",
+                            (project, r_name))
+                    else:
+                        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, last_error)
+                            VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                            (msg_id, project, r_name, "pty", "failed", "no live PTY session"))
+                        db.execute("UPDATE sessions SET delivery_last_error=? WHERE project_id=? AND display_name=?",
+                            ("no live PTY session", project, r_name))
+                        failures.append(r_name)
+                    db.commit()
+
+        if recipient:
+            if failures:
+                print(f"Error: delivery to {recipient} failed", file=sys.stderr)
+            else:
+                print(f"Sent to {recipient}")
         else:
-            print(f"Sent to {recipient}")
-    else:
-        print(f"Sent to {project} ({active} active sessions)")
-    if codex_failures:
+            active = len([r for r in rows if r[1] and r[1] > 0])
+            print(f"Sent to {project} ({active} active sessions)")
+            if failures:
+                print(f"Warning: delivery failed for: {', '.join(failures)}", file=sys.stderr)
+    finally:
+        db.close()
+    if failures:
         sys.exit(1)
 
 def cmd_read(args):
@@ -363,11 +400,17 @@ def cmd_detach(args):
         print("Error: --name and --project required", file=sys.stderr)
         sys.exit(1)
     db = get_db()
-    db.execute("""UPDATE sessions SET delivery_transport='none', session_id=NULL
-        WHERE project_id=? AND display_name=?""", (project, name))
-    db.commit()
-    db.close()
-    print(f"Detached {name} from {project} (history preserved)")
+    try:
+        row = db.execute("SELECT 1 FROM sessions WHERE project_id=? AND display_name=?", (project, name)).fetchone()
+        if not row:
+            print(f"Error: no session '{name}' in {project}", file=sys.stderr)
+            sys.exit(1)
+        db.execute("""UPDATE sessions SET delivery_transport='none', session_id=NULL
+            WHERE project_id=? AND display_name=?""", (project, name))
+        db.commit()
+        print(f"Detached {name} from {project} (history preserved)")
+    finally:
+        db.close()
 
 def cmd_status(args):
     project = args.get("project", "")
@@ -402,7 +445,11 @@ def cmd_retry(args):
     if not msg_id or not recipient:
         print("Error: --message-id and --to required", file=sys.stderr)
         sys.exit(1)
-    msg_id = int(msg_id)
+    try:
+        msg_id = int(msg_id)
+    except (ValueError, TypeError):
+        print(f"Error: invalid message ID: {msg_id}", file=sys.stderr)
+        sys.exit(1)
     db = get_db()
     # Check delivery state
     row = db.execute("SELECT state, transport FROM message_deliveries WHERE message_id=? AND recipient_name=?",

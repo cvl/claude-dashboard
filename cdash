@@ -70,7 +70,12 @@ if [ "$1" = "chat" ]; then
   fi
   subcmd="${1:-read}"; shift 2>/dev/null || true
 
-  agent_type="${CDASH_AGENT_TYPE:-claude}"
+  # Detect codex identity from env
+  if [ -n "${CODEX_THREAD_ID:-}" ]; then
+    agent_type="codex"
+  else
+    agent_type="${CDASH_AGENT_TYPE:-claude}"
+  fi
   pid="${CDASH_PID:-$$}"
   proxy_pid="${CDASH_PROXY_PID:-}"
 
