@@ -55,6 +55,11 @@ static state_t current_state = ST_IDLE;
 static time_t last_retry_time = 0;
 static const char *agent_type = NULL; /* "claude" or "codex" */
 
+/* Output activity tracking — renderer-agnostic working detection */
+static struct timespec last_output_time;
+static int had_output = 0;  /* any output received this check interval */
+#define OUTPUT_IDLE_MS 1500  /* ms without output = idle */
+
 /* Debounce: hold working→idle until confirmed N times */
 static int idle_confirmations = 0;
 static int did_chat_intro = 0;
@@ -355,6 +360,14 @@ static state_t detect_state(const char *screen, const char *title) {
         if (title_has_braille(title)) return ST_WORKING;
         /* OSC title: ✳ = idle */
         if (title_starts_with_sparkle(title)) return ST_IDLE;
+        /* Fallback: output activity (for fullscreen renderer with no OSC titles) */
+        if (title[0] == '\0' && had_output) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long since_output = (now.tv_sec - last_output_time.tv_sec) * 1000 +
+                                (now.tv_nsec - last_output_time.tv_nsec) / 1000000;
+            if (since_output < OUTPUT_IDLE_MS) return ST_WORKING;
+        }
     } else if (strcmp(agent_type, "codex") == 0) {
         /* OSC title: "Action Required" = blocked */
         if (contains_ci(title, "Action Required")) return ST_NEEDS_INPUT;
@@ -513,6 +526,8 @@ int main(int argc, char *argv[]) {
                 write(STDOUT_FILENO, buf, n);
                 ring_append(buf, n);
                 track_osc(buf, n);
+                clock_gettime(CLOCK_MONOTONIC, &last_output_time);
+                had_output = 1;
             } else if (n == 0) break;
         }
 
