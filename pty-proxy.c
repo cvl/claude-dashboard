@@ -566,21 +566,37 @@ int main(int argc, char *argv[]) {
                 char screen[CLEAN_SIZE];
                 int slen = ring_recent_clean(screen, CLEAN_SIZE - 1);
 
-                /* Extract model from status bar: "Model N.N ctx:" pattern */
+                /* Extract model — search raw ring buffer for "ctx:" anchor */
                 {
-                    const char *ctx = strstr(screen, "ctx:");
+                    int avail = ring_len < RING_SIZE ? ring_len : RING_SIZE;
+                    char raw_buf[RING_SIZE + 1];
+                    int rstart = (ring_pos - avail + RING_SIZE) % RING_SIZE;
+                    for (int ri = 0; ri < avail; ri++)
+                        raw_buf[ri] = ring[(rstart + ri) % RING_SIZE];
+                    raw_buf[avail] = '\0';
+                    /* Strip ESC sequences inline for model search only */
+                    char clean[RING_SIZE + 1];
+                    int ci = 0;
+                    for (int ri = 0; ri < avail && ci < RING_SIZE - 1; ri++) {
+                        unsigned char c = (unsigned char)raw_buf[ri];
+                        if (c == 0x1b) {
+                            ri++;
+                            if (ri < avail && raw_buf[ri] == '[') {
+                                while (ri < avail && !((unsigned char)raw_buf[ri] >= 0x40 && (unsigned char)raw_buf[ri] <= 0x7e)) ri++;
+                            }
+                        } else if (c >= 0x20 || c == '\n') {
+                            clean[ci++] = c;
+                        }
+                    }
+                    clean[ci] = '\0';
+                    const char *ctx = strstr(clean, "ctx:");
                     if (ctx) {
-                        /* Walk backwards from "ctx:" to find model name */
                         static const char *model_names[] = {"Opus ", "Fable ", "Sonnet ", "Haiku ", NULL};
                         for (const char **mp = model_names; *mp; mp++) {
-                            /* Search within 30 chars before ctx: */
-                            const char *search_start = ctx - 30 > screen ? ctx - 30 : screen;
+                            const char *search_start = ctx - 30 > clean ? ctx - 30 : clean;
                             const char *found = NULL;
                             const char *p = search_start;
-                            while (p < ctx && (p = strstr(p, *mp)) != NULL && p < ctx) {
-                                found = p;
-                                p++;
-                            }
+                            while (p < ctx && (p = strstr(p, *mp)) != NULL && p < ctx) { found = p; p++; }
                             if (found) {
                                 const char *end = found + strlen(*mp);
                                 while (*end >= '0' && *end <= '9') {
