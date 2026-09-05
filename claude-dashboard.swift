@@ -3680,8 +3680,10 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.dismissNotification(id)
         }
         notifView.onClearAll = { [weak self] in
-            self?.dashNotifications.removeAll()
-            self?.layoutNotifPanel()
+            guard let self else { return }
+            // Only clear notifications visible in active tab (+ chat)
+            self.dashNotifications.removeAll { self.isNotifForActiveTab($0) }
+            self.layoutNotifPanel()
         }
 
         // Chat panel — separate floating window
