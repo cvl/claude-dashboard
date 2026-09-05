@@ -3,7 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-echo "Compiling tests..."
+echo "=== Python chat tests ==="
+python3 -m unittest tests/test_chat.py -v 2>&1
+
+echo ""
+echo "=== Swift tests ==="
 swiftc -o /tmp/claude-dashboard-tests tests/test-dashboard.swift
 
 echo ""

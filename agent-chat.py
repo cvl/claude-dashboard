@@ -61,14 +61,18 @@ def ensure_project(db, project_id):
 
 def ensure_session(db, project_id, name, agent_type, pid=None, proxy_pid=None, cwd=None, session_id=None):
     ensure_project(db, project_id)
-    db.execute("""INSERT INTO sessions(project_id, display_name, agent_type, working_directory, pid, proxy_pid, session_id)
+    # If session_id is a valid UUID and agent_type is codex, refresh codex_queue transport
+    transport_update = ""
+    if session_id and UUID_RE.match(session_id) and agent_type == "codex":
+        transport_update = ", delivery_transport='codex_queue'"
+    db.execute(f"""INSERT INTO sessions(project_id, display_name, agent_type, working_directory, pid, proxy_pid, session_id)
         VALUES(?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project_id, display_name) DO UPDATE SET
             agent_type=excluded.agent_type, pid=COALESCE(excluded.pid, pid),
             proxy_pid=COALESCE(excluded.proxy_pid, proxy_pid),
             working_directory=COALESCE(excluded.working_directory, working_directory),
             session_id=COALESCE(excluded.session_id, session_id),
-            last_seen=unixepoch()""",
+            last_seen=unixepoch(){transport_update}""",
         (project_id, name, agent_type, cwd, pid, proxy_pid, session_id))
     db.commit()
 
@@ -94,13 +98,14 @@ def _record_delivery(db, msg_id, project, recipient, transport, state, error=Non
     """Centralized delivery recording — updates both deliveries and session diagnostics."""
     if state == "pending":
         db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts)
-            VALUES(?,?,?,?,?,0) ON CONFLICT(message_id, recipient_name) DO NOTHING""",
+            VALUES(?,?,?,?,?,0) ON CONFLICT(message_id, recipient_name) DO UPDATE SET
+            state='pending', last_error=NULL, updated_at=unixepoch()""",
             (msg_id, project, recipient, transport, state))
     elif state == "delivered":
         db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts, external_id, delivered_at)
             VALUES(?,?,?,?,?,1,?,unixepoch()) ON CONFLICT(message_id, recipient_name) DO UPDATE SET
             state='delivered', attempts=attempts+1, external_id=COALESCE(excluded.external_id, external_id),
-            delivered_at=unixepoch(), updated_at=unixepoch()""",
+            last_error=NULL, delivered_at=unixepoch(), updated_at=unixepoch()""",
             (msg_id, project, recipient, transport, state, ext_id))
         db.execute("UPDATE sessions SET delivery_last_success_at=unixepoch(), delivery_last_error=NULL WHERE project_id=? AND display_name=?",
             (project, recipient))
@@ -117,11 +122,7 @@ def deliver_codex_queue(db, msg_id, project, sender_name, sender_type, recipient
     """Deliver a chat message via codex queue. Returns True on success."""
     codex_bin = "codex" if _subprocess_runner else find_codex_bin()
     if not codex_bin:
-        db.execute("""INSERT INTO message_deliveries(message_id, project_id, recipient_name, transport, state, attempts, last_error)
-            VALUES(?,?,?,?,?,?,?) ON CONFLICT(message_id, recipient_name) DO UPDATE SET
-            state='failed', attempts=attempts+1, last_error=excluded.last_error, updated_at=unixepoch()""",
-            (msg_id, project, recipient, "codex_queue", "failed", 1, "codex binary not found"))
-        db.commit()
+        _record_delivery(db, msg_id, project, recipient, "codex_queue", "failed", error="codex binary not found")
         print(f"Error: codex binary not found", file=sys.stderr)
         return False
 
@@ -253,12 +254,12 @@ def cmd_send(args):
                     else:
                         failures.append(r_name)
                 else:
-                    # PTY injection — match by name AND project
+                    # PTY injection — match by child PID + name (not project, which goes stale on channel move)
                     snippet = message[:150] + ("..." if len(message) > 150 else "")
                     line = f"[CHAT from {name} → you]: {snippet}" if recipient else f"[CHAT @all from {name}]: {snippet}"
                     injected = False
                     for sf_pid, sf_event, sf_proxy_pid, sf_tty, sf_name, sf_project in state_files:
-                        if sf_name == r_name and (not sf_project or sf_project == project):
+                        if sf_name == r_name and (r_pid and sf_pid == r_pid):
                             injected = append_inject(sf_pid, line + "\n")
                             break
                     if injected:

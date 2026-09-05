@@ -226,9 +226,19 @@ class TestDelivery(ChatTestBase):
         self._write_state_file(88888, "agent", project="proj-b")
         self.mod.cmd_send({"project": "proj-a", "name": "sender", "type": "claude",
                           "message": "secret", "to": "agent"})
-        # Only proj-a agent should have inject file
+        # Only proj-a agent (PID 99999) should have inject file
         self.assertTrue(os.path.exists(os.path.join(self.state_dir, "99999.inject")))
         self.assertFalse(os.path.exists(os.path.join(self.state_dir, "88888.inject")))
+
+    def test_pty_channel_move(self):
+        """Session moved to different channel still receives — matched by PID not project."""
+        self._add_session("new-channel", "agent", "claude", "pty", pid=99999)
+        self._add_session("new-channel", "sender", "claude")
+        # State file has old project name (before channel move)
+        self._write_state_file(99999, "agent", project="old-project")
+        self.mod.cmd_send({"project": "new-channel", "name": "sender", "type": "claude",
+                          "message": "hello", "to": "agent"})
+        self.assertTrue(os.path.exists(os.path.join(self.state_dir, "99999.inject")))
 
     def test_multiple_dms_ordered(self):
         self._add_session("proj", "sender", "claude")
