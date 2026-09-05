@@ -3448,7 +3448,7 @@ class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if s.source == "codex" {
                 cmd = "cd \(s.cwd) && cdash codex --name '\(s.name)' resume \(resumeId)"
             } else {
-                var modelFlag = ""
+                var modelFlag = " --model claude-opus-4-6"
                 if let m = s.model?.lowercased() {
                     if m.contains("fable") { modelFlag = " --model fable" }
                     else if m.contains("opus 4.6") { modelFlag = " --model claude-opus-4-6" }
